@@ -1,0 +1,11 @@
+{
+  "id": "web-search-plus-plugin",
+  "name": "Web Search Plus",
+  "version": "1.0.0",
+  "description": "Multi-provider web search (Serper/Tavily/Exa) as native tool",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
