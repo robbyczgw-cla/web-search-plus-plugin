@@ -46,6 +46,8 @@ Add plugin path to `plugins.load.paths` and enable in `plugins.entries`.
 
 ## Environment variables
 
+Copy `.env.template` to `.env` and add your API keys.
+
 At least one provider key is required:
 - `SERPER_API_KEY` — [console.serper.dev](https://console.serper.dev)
 - `TAVILY_API_KEY` — [tavily.com](https://tavily.com)

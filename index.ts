@@ -1,5 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import { spawnSync } from "child_process";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -11,6 +12,23 @@ function getPluginDir(): string {
     return path.dirname(fileURLToPath(import.meta.url));
   } catch {}
   return path.join(process.cwd(), "skills", "web-search-plus-plugin");
+}
+
+function loadEnvFile(envPath: string): Record<string, string> {
+  if (!fs.existsSync(envPath)) return {};
+  const env: Record<string, string> = {};
+  const lines = fs.readFileSync(envPath, "utf8").split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const stripped = trimmed.startsWith("export ") ? trimmed.slice(7) : trimmed;
+    const eqIdx = stripped.indexOf("=");
+    if (eqIdx < 0) continue;
+    const key = stripped.slice(0, eqIdx).trim();
+    const val = stripped.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, "");
+    if (key) env[key] = val;
+  }
+  return env;
 }
 
 const PLUGIN_DIR = getPluginDir();
@@ -56,10 +74,20 @@ export default function (api: any) {
           args.push("--max-results", String(Math.max(1, Math.floor(params.count))));
         }
 
+        const envPaths = [
+          path.join(PLUGIN_DIR, ".env"),
+          path.join(PLUGIN_DIR, "..", "web-search-plus", ".env"),
+        ];
+        const fileEnv: Record<string, string> = {};
+        for (const envPath of envPaths) {
+          Object.assign(fileEnv, loadEnvFile(envPath));
+        }
+        const childEnv = { ...process.env, ...fileEnv };
+
         try {
           const child = spawnSync("python3", args, {
             timeout: 30000,
-            env: process.env,
+            env: childEnv,
             shell: false,
             encoding: "utf8",
           });
