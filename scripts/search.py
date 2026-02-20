@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Web Search Plus — Unified Multi-Provider Search with Intelligent Auto-Routing
-Supports: Serper (Google), Tavily (Research), Exa (Neural)
+Supports: Serper (Google), Tavily (Research), Exa (Neural), Perplexity (Direct Answers)
 
 Smart Routing uses multi-signal analysis:
   - Query intent classification (shopping, research, discovery)
@@ -275,7 +275,7 @@ DEFAULT_CONFIG = {
     "auto_routing": {
         "enabled": True,
         "fallback_provider": "serper",
-        "provider_priority": ["serper", "tavily", "exa", "you", "searxng"],
+        "provider_priority": ["tavily", "exa", "perplexity", "serper", "you", "searxng"],
         "disabled_providers": [],
         "confidence_threshold": 0.3,  # Below this, note low confidence
     },
@@ -290,6 +290,10 @@ DEFAULT_CONFIG = {
     },
     "exa": {
         "type": "neural"
+    },
+    "perplexity": {
+        "api_url": "https://api.kilo.ai/api/gateway/chat/completions",
+        "model": "perplexity/sonar-pro"
     },
     "you": {
         "country": "us",
@@ -352,6 +356,7 @@ def get_api_key(provider: str, config: Dict[str, Any] = None) -> Optional[str]:
         "tavily": "TAVILY_API_KEY",
         "exa": "EXA_API_KEY",
         "you": "YOU_API_KEY",
+        "perplexity": "KILOCODE_API_KEY",
     }
     return os.environ.get(key_map.get(provider, ""))
 
@@ -470,14 +475,16 @@ def validate_api_key(provider: str, config: Dict[str, Any] = None) -> str:
             "serper": "SERPER_API_KEY",
             "tavily": "TAVILY_API_KEY", 
             "exa": "EXA_API_KEY",
-            "you": "YOU_API_KEY"
+            "you": "YOU_API_KEY",
+            "perplexity": "KILOCODE_API_KEY"
         }[provider]
         
         urls = {
             "serper": "https://serper.dev",
             "tavily": "https://tavily.com",
             "exa": "https://exa.ai",
-            "you": "https://api.you.com"
+            "you": "https://api.you.com",
+            "perplexity": "https://api.kilo.ai"
         }
         
         error_msg = {
@@ -609,6 +616,9 @@ class QueryAnalyzer:
         r'\banalysis\b': 3.5,
         r'\bcompare\b(?!\s*prices?)': 3.0,  # compare but not "compare prices"
         r'\bcomparison\b': 3.0,
+        r'\bstatus of\b': 3.5,
+        r'\bstatus\b': 2.5,
+        r'\bwhat happened with\b': 4.0,
         r'\bpros and cons\b': 4.0,
         r'\badvantages?\b': 3.0,
         r'\bdisadvantages?\b': 3.0,
@@ -685,7 +695,9 @@ class QueryAnalyzer:
         r'\bstartups? (like|that|doing|building)\b': 4.5,
         r'\bwho else\b': 4.0,
         r'\bother (companies|startups|tools|apps)\b': 3.5,
-        r'\bfind (companies|startups|tools)\b': 4.0,
+        r'\bfind (companies|startups|tools|examples?)\b': 4.5,
+        r'\bevents? in\b': 4.0,
+        r'\bthings to do in\b': 4.5,
         
         # Funding/business patterns
         r'\bseries [a-d]\b': 4.0,
@@ -775,6 +787,23 @@ class QueryAnalyzer:
         r'\bsituation (in|with|around)\b': 3.5,
     }
     
+    # Direct answer / synthesis signals → Perplexity via Kilo Gateway
+    DIRECT_ANSWER_SIGNALS = {
+        r'\bwhat is\b': 3.0,
+        r'\bwhat are\b': 2.5,
+        r'\bcurrent status\b': 4.0,
+        r'\bstatus of\b': 3.5,
+        r'\bstatus\b': 2.5,
+        r'\bwhat happened with\b': 4.0,
+        r"\bwhat'?s happening with\b": 4.0,
+        r'\bas of (today|now)\b': 4.0,
+        r'\bthis weekend\b': 3.5,
+        r'\bevents? in\b': 3.5,
+        r'\bthings to do in\b': 4.0,
+        r'\bnear me\b': 3.0,
+        r'\bcan you (tell me|summarize|explain)\b': 3.5,
+    }
+
     # Privacy/Multi-source signals → SearXNG (self-hosted meta-search)
     # SearXNG is ideal for privacy-focused queries and aggregating multiple sources
     PRIVACY_SIGNALS = {
@@ -1001,6 +1030,9 @@ class QueryAnalyzer:
         privacy_score, privacy_matches = self._calculate_signal_score(
             query, self.PRIVACY_SIGNALS
         )
+        direct_answer_score, direct_answer_matches = self._calculate_signal_score(
+            query, self.DIRECT_ANSWER_SIGNALS
+        )
         
         # Apply product/brand bonus to shopping
         brand_bonus = self._detect_product_brand_combo(query)
@@ -1037,10 +1069,11 @@ class QueryAnalyzer:
         
         # Map intents to providers with final scores
         provider_scores = {
-            "serper": shopping_score + local_news_score + (recency_score * 0.5),
-            "tavily": research_score + (complexity["complexity_score"] if not complexity["is_complex"] else 0),
-            "exa": discovery_score,
-            "you": rag_score + (recency_score * 0.3),  # You.com good for real-time + RAG
+            "serper": shopping_score + local_news_score + (recency_score * 0.35),
+            "tavily": research_score + (complexity["complexity_score"] if not complexity["is_complex"] else 0) + (0.2 * recency_score),
+            "exa": discovery_score + (1.0 if re.search(r"\b(similar|alternatives?|examples?)\b", query, re.IGNORECASE) else 0.0),
+            "perplexity": direct_answer_score + (local_news_score * 0.4) + (recency_score * 0.55),
+            "you": rag_score + (recency_score * 0.25),  # You.com good for real-time + RAG
             "searxng": privacy_score,  # SearXNG for privacy/multi-source queries
         }
         
@@ -1049,6 +1082,7 @@ class QueryAnalyzer:
             "serper": shopping_matches + local_news_matches,
             "tavily": research_matches,
             "exa": discovery_matches,
+            "perplexity": direct_answer_matches,
             "you": rag_matches,
             "searxng": privacy_matches,
         }
@@ -1095,7 +1129,7 @@ class QueryAnalyzer:
         total_score = sum(available.values()) or 1.0
         
         # Handle ties using priority
-        priority = self.auto_config.get("provider_priority", ["serper", "tavily", "exa", "you", "searxng"])
+        priority = self.auto_config.get("provider_priority", ["tavily", "exa", "perplexity", "serper", "you", "searxng"])
         winners = [p for p, s in available.items() if s == max_score]
         
         if len(winners) > 1:
@@ -1218,7 +1252,7 @@ def explain_routing(query: str, config: Dict[str, Any]) -> Dict[str, Any]:
             if matches
         },
         "available_providers": [
-            p for p in ["serper", "tavily", "exa", "you", "searxng"] 
+            p for p in ["serper", "tavily", "exa", "perplexity", "you", "searxng"] 
             if get_env_key(p) and p not in config.get("auto_routing", {}).get("disabled_providers", [])
         ]
     }
@@ -1592,6 +1626,68 @@ def search_exa(
 
 
 # =============================================================================
+# Perplexity via Kilo Gateway (Synthesized Direct Answers)
+# =============================================================================
+
+def search_perplexity(
+    query: str,
+    api_key: str,
+    max_results: int = 5,
+    model: str = "perplexity/sonar-pro",
+    api_url: str = "https://api.kilo.ai/api/gateway/chat/completions",
+) -> dict:
+    """Search/answer using Perplexity Sonar Pro via Kilo Gateway."""
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Answer with concise factual summary and include source URLs."},
+            {"role": "user", "content": query},
+        ],
+        "temperature": 0.2,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    data = make_request(api_url, headers, body)
+    choices = data.get("choices", [])
+    message = choices[0].get("message", {}) if choices else {}
+    answer = (message.get("content") or "").strip()
+
+    urls = re.findall(r"https?://[^\s)\]}>\"']+", answer)
+    unique_urls = []
+    seen = set()
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            unique_urls.append(u)
+
+    results = []
+    for i, u in enumerate(unique_urls[:max_results]):
+        results.append({
+            "title": f"Source {i+1}",
+            "url": u,
+            "snippet": "Referenced source from Perplexity answer",
+            "score": round(1.0 - i * 0.1, 3),
+        })
+
+    return {
+        "provider": "perplexity",
+        "query": query,
+        "results": results,
+        "images": [],
+        "answer": answer,
+        "metadata": {
+            "model": model,
+            "usage": data.get("usage", {}),
+        }
+    }
+
+
+
+# =============================================================================
 # You.com (LLM-Ready Web & News Search)
 # =============================================================================
 
@@ -1918,6 +2014,9 @@ Intelligent Auto-Routing:
   Discovery Intent → Exa (Neural)
     "similar to", "companies like", "alternatives", URLs, startups, papers
 
+  Direct Answer Intent → Perplexity (via Kilo Gateway)
+    "what is", "current status", local events, synthesized up-to-date answers
+
 Examples:
   python3 search.py -q "iPhone 16 Pro Max price"          # → Serper (shopping)
   python3 search.py -q "how does HTTPS encryption work"   # → Tavily (research)
@@ -1931,7 +2030,7 @@ Full docs: See README.md and SKILL.md
     # Common arguments
     parser.add_argument(
         "--provider", "-p", 
-        choices=["serper", "tavily", "exa", "you", "searxng", "auto"],
+        choices=["serper", "tavily", "exa", "perplexity", "you", "searxng", "auto"],
         help="Search provider (auto=intelligent routing)"
     )
     parser.add_argument(
@@ -2146,7 +2245,7 @@ Full docs: See README.md and SKILL.md
     
     # Build provider fallback list
     auto_config = config.get("auto_routing", {})
-    provider_priority = auto_config.get("provider_priority", ["serper", "tavily", "exa"])
+    provider_priority = auto_config.get("provider_priority", ["tavily", "exa", "perplexity", "serper"])
     disabled_providers = auto_config.get("disabled_providers", [])
 
     # Start with the selected provider, then try others in priority order
@@ -2206,6 +2305,15 @@ Full docs: See README.md and SKILL.md
                 similar_url=args.similar_url,
                 include_domains=args.include_domains,
                 exclude_domains=args.exclude_domains,
+            )
+        elif prov == "perplexity":
+            perplexity_config = config.get("perplexity", {})
+            return search_perplexity(
+                query=args.query,
+                api_key=key,
+                max_results=args.max_results,
+                model=perplexity_config.get("model", "perplexity/sonar-pro"),
+                api_url=perplexity_config.get("api_url", "https://api.kilo.ai/api/gateway/chat/completions"),
             )
         elif prov == "you":
             return search_you(
