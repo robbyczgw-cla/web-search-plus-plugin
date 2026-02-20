@@ -1635,8 +1635,23 @@ def search_perplexity(
     max_results: int = 5,
     model: str = "perplexity/sonar-pro",
     api_url: str = "https://api.kilo.ai/api/gateway/chat/completions",
+    freshness: Optional[str] = None,
 ) -> dict:
-    """Search/answer using Perplexity Sonar Pro via Kilo Gateway."""
+    """Search/answer using Perplexity Sonar Pro via Kilo Gateway.
+
+    Args:
+        query: Search query
+        api_key: Kilo Gateway API key
+        max_results: Maximum results to return
+        model: Perplexity model to use
+        api_url: Kilo Gateway endpoint
+        freshness: Filter by recency — 'day', 'week', 'month', 'year' (maps to
+                   Perplexity's search_recency_filter parameter)
+    """
+    # Map generic freshness values to Perplexity's search_recency_filter
+    recency_map = {"day": "day", "pd": "day", "week": "week", "pw": "week", "month": "month", "pm": "month", "year": "year", "py": "year"}
+    recency_filter = recency_map.get(freshness or "", None)
+
     body = {
         "model": model,
         "messages": [
@@ -1645,6 +1660,8 @@ def search_perplexity(
         ],
         "temperature": 0.2,
     }
+    if recency_filter:
+        body["search_recency_filter"] = recency_filter
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -2327,6 +2344,7 @@ Full docs: See README.md and SKILL.md
                 max_results=args.max_results,
                 model=perplexity_config.get("model", "perplexity/sonar-pro"),
                 api_url=perplexity_config.get("api_url", "https://api.kilo.ai/api/gateway/chat/completions"),
+                freshness=getattr(args, "freshness", None),
             )
         elif prov == "you":
             return search_you(
