@@ -1665,12 +1665,25 @@ def search_perplexity(
             unique_urls.append(u)
 
     results = []
-    for i, u in enumerate(unique_urls[:max_results]):
+
+    # Primary result: the synthesized answer itself
+    if answer:
+        # Clean citation markers [1][2] for the snippet
+        clean_answer = re.sub(r'\[\d+\]', '', answer).strip()
+        results.append({
+            "title": f"Perplexity Answer: {query[:80]}",
+            "url": "https://www.perplexity.ai",
+            "snippet": clean_answer[:500],
+            "score": 1.0,
+        })
+
+    # Additional results: extracted source URLs
+    for i, u in enumerate(unique_urls[:max_results - 1]):
         results.append({
             "title": f"Source {i+1}",
             "url": u,
             "snippet": "Referenced source from Perplexity answer",
-            "score": round(1.0 - i * 0.1, 3),
+            "score": round(0.9 - i * 0.1, 3),
         })
 
     return {
