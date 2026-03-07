@@ -1,6 +1,6 @@
 {
   "name": "web-search-plus-plugin",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Tavily, Exa, Perplexity) as native tool",
   "type": "module",
   "main": "index.ts",
