@@ -35,11 +35,28 @@ const PLUGIN_DIR = getPluginDir();
 const scriptPath = path.join(PLUGIN_DIR, "scripts", "search.py");
 
 export default function (api: any) {
+  // Bridge OpenClaw config fields to env vars expected by search.py
+  const configEnv: Record<string, string> = {};
+  const pluginConfig: Record<string, string> = (api as any)?.config ?? {};
+  const configKeyMap: Record<string, string> = {
+    serperApiKey: "SERPER_API_KEY",
+    tavilyApiKey: "TAVILY_API_KEY",
+    exaApiKey: "EXA_API_KEY",
+    perplexityApiKey: "PERPLEXITY_API_KEY",
+    kilocodeApiKey: "KILOCODE_API_KEY",
+    youApiKey: "YOU_API_KEY",
+    searxngInstanceUrl: "SEARXNG_INSTANCE_URL",
+  };
+  for (const [cfgKey, envKey] of Object.entries(configKeyMap)) {
+    const val = pluginConfig[cfgKey];
+    if (val && typeof val === "string") configEnv[envKey] = val;
+  }
+
   api.registerTool(
     {
       name: "web_search_plus",
       description:
-        "Search the web using multi-provider routing (Serper/Google, Tavily/Research, Exa/Neural). Automatically routes to the best provider based on query intent. Use this for ALL web searches instead of web_search.",
+        "Search the web using multi-provider intelligent routing (Serper/Google, Tavily/Research, Exa/Neural+Deep, Perplexity, You.com, SearXNG). Automatically selects the best provider based on query intent. Use for ALL web searches. Set depth='deep' for multi-source synthesis, 'deep-reasoning' for complex cross-document analysis.",
       parameters: Type.Object({
         query: Type.String({ description: "Search query" }),
         provider: Type.Optional(
@@ -48,6 +65,9 @@ export default function (api: any) {
               Type.Literal("serper"),
               Type.Literal("tavily"),
               Type.Literal("exa"),
+              Type.Literal("perplexity"),
+              Type.Literal("you"),
+              Type.Literal("searxng"),
               Type.Literal("auto"),
             ],
             {
@@ -59,10 +79,28 @@ export default function (api: any) {
         count: Type.Optional(
           Type.Number({ description: "Number of results (default: 5)" }),
         ),
+        depth: Type.Optional(
+          Type.Union(
+            [
+              Type.Literal("normal"),
+              Type.Literal("deep"),
+              Type.Literal("deep-reasoning"),
+            ],
+            {
+              description:
+                "Exa search depth: 'deep' synthesizes across sources (4-12s), 'deep-reasoning' for complex cross-reference analysis (12-50s). Only applies when routed to Exa.",
+            },
+          ),
+        ),
       }),
       async execute(
         _id: string,
-        params: { query: string; provider?: string; count?: number },
+        params: {
+          query: string;
+          provider?: string;
+          count?: number;
+          depth?: string;
+        },
       ) {
         const args = [scriptPath, "--query", params.query, "--compact"];
 
@@ -71,7 +109,14 @@ export default function (api: any) {
         }
 
         if (typeof params.count === "number" && Number.isFinite(params.count)) {
-          args.push("--max-results", String(Math.max(1, Math.floor(params.count))));
+          args.push(
+            "--max-results",
+            String(Math.max(1, Math.floor(params.count))),
+          );
+        }
+
+        if (params.depth && params.depth !== "normal") {
+          args.push("--exa-depth", params.depth);
         }
 
         const envPaths = [
@@ -82,11 +127,11 @@ export default function (api: any) {
         for (const envPath of envPaths) {
           Object.assign(fileEnv, loadEnvFile(envPath));
         }
-        const childEnv = { ...process.env, ...fileEnv };
+        const childEnv = { ...process.env, ...configEnv, ...fileEnv };
 
         try {
           const child = spawnSync("python3", args, {
-            timeout: 30000,
+            timeout: 65000,
             env: childEnv,
             shell: false,
             encoding: "utf8",
