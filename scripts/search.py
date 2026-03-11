@@ -753,6 +753,19 @@ class QueryAnalyzer:
         r'\bheadlines?\b': 3.0,
         r'\b202[4-9]\b': 2.0,  # Current year mentions
         r'\blast (week|month|year)\b': 2.0,
+
+        # German local patterns
+        r'\bin der nähe\b': 4.0,
+        r'\bin meiner nähe\b': 4.0,
+        r'\böffnungszeiten\b': 3.0,
+        r'\badresse von\b': 3.0,
+        r'\bweg(beschreibung)? nach\b': 3.5,
+
+        # German news/recency patterns
+        r'\bheute\b': 2.5,
+        r'\bmorgen\b': 2.0,
+        r'\baktuell\b': 2.5,
+        r'\bnachrichten\b': 3.0,
     }
     
     # RAG/AI signals → You.com
@@ -805,6 +818,11 @@ class QueryAnalyzer:
         r'\bthings to do in\b': 4.0,
         r'\bnear me\b': 3.0,
         r'\bcan you (tell me|summarize|explain)\b': 3.5,
+        # German
+        r'\bwann\b': 3.0,
+        r'\bwer\b': 3.0,
+        r'\bwo\b': 2.5,
+        r'\bwie viele\b': 3.0,
     }
 
     # Privacy/Multi-source signals → SearXNG (self-hosted meta-search)
@@ -875,6 +893,14 @@ class QueryAnalyzer:
         r'\bstructured (output|data|report)\b': 4.0,
         r'\bmarket research\b': 4.0,
         r'\bindustry (report|analysis|overview)\b': 4.0,
+        r'\bresearch (on|about|into)\b': 4.0,
+        r'\bwhitepaper\b': 4.5,
+        r'\btechnical report\b': 4.0,
+        r'\bsurvey of\b': 4.5,
+        r'\bmeta.?analysis\b': 5.0,
+        r'\bsystematic review\b': 5.0,
+        r'\bcase study\b': 3.5,
+        r'\bbenchmark(s|ing)?\b': 3.5,
         # German
         r'\btiefenrecherche\b': 5.0,
         r'\bumfassende (analyse|übersicht|recherche)\b': 4.5,
@@ -898,11 +924,16 @@ class QueryAnalyzer:
         r'\bpatent (landscape|analysis|search)\b': 4.5,
         r'\bmarket intelligence\b': 4.5,
         r'\bcompetitive (intelligence|landscape)\b': 4.5,
+        r'\btrade.?offs?\b': 4.0,
+        r'\bpros and cons of\b': 4.0,
+        r'\bshould I (use|choose|pick)\b': 3.5,
+        r'\bwhich is better\b': 4.0,
         # German
         r'\bkomplexe analyse\b': 4.5,
         r'\bwidersprüche\b': 4.5,
         r'\bquellen abwägen\b': 4.5,
         r'\brechtliche analyse\b': 4.5,
+        r'\bvergleich(e|en)?\b': 3.5,
     }
 
 
