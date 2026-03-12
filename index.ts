@@ -41,6 +41,7 @@ export default function (api: any) {
   const configKeyMap: Record<string, string> = {
     serperApiKey: "SERPER_API_KEY",
     tavilyApiKey: "TAVILY_API_KEY",
+    queritApiKey: "QUERIT_API_KEY",
     exaApiKey: "EXA_API_KEY",
     perplexityApiKey: "PERPLEXITY_API_KEY",
     kilocodeApiKey: "KILOCODE_API_KEY",
@@ -56,7 +57,7 @@ export default function (api: any) {
     {
       name: "web_search_plus",
       description:
-        "Search the web using multi-provider intelligent routing (Serper/Google, Tavily/Research, Exa/Neural+Deep, Perplexity, You.com, SearXNG). Automatically selects the best provider based on query intent. Use for ALL web searches. Set depth='deep' for multi-source synthesis, 'deep-reasoning' for complex cross-document analysis.",
+        "Search the web using multi-provider intelligent routing (Serper/Google, Tavily/Research, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity, You.com, SearXNG). Automatically selects the best provider based on query intent. Use for ALL web searches. Set depth='deep' for multi-source synthesis, 'deep-reasoning' for complex cross-document analysis.",
       parameters: Type.Object({
         query: Type.String({ description: "Search query" }),
         provider: Type.Optional(
@@ -64,6 +65,7 @@ export default function (api: any) {
             [
               Type.Literal("serper"),
               Type.Literal("tavily"),
+              Type.Literal("querit"),
               Type.Literal("exa"),
               Type.Literal("perplexity"),
               Type.Literal("you"),

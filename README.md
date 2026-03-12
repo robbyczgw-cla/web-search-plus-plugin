@@ -7,7 +7,7 @@ A standalone OpenClaw plugin that registers `web_search_plus` as a first-class t
 ## ✨ Features
 
 - **Intelligent auto-routing** — analyzes query intent and picks the best provider automatically
-- **6 search providers** — use one or all, graceful fallback if any is down
+- **7 search providers** — use one or all, graceful fallback if any is down
 - **Local result caching** — saves API costs on repeated queries
 - **Interactive setup wizard** — guided configuration via `python3 scripts/setup.py`
 - **Native OpenClaw tool** — registers as `web_search_plus`, not a skill
@@ -18,6 +18,7 @@ A standalone OpenClaw plugin that registers `web_search_plus` as a first-class t
 |----------|----------|-----------|
 | **Serper** (Google) | Facts, news, shopping, local businesses | 2,500 queries/month |
 | **Tavily** | Deep research, analysis, explanations | 1,000 queries/month |
+| **Querit** | Multi-lingual AI search with rich metadata and real-time info | 1,000 queries/month |
 | **Exa** (Neural) | Semantic discovery, finding similar content | 1,000 queries/month |
 | **Perplexity** | AI-synthesized answers with citations | Via API key |
 | **You.com** | Real-time RAG, LLM-ready snippets | Limited free tier |
@@ -31,6 +32,7 @@ The plugin analyzes your query and picks the best provider:
 |-------|-----------|-----|
 | "iPhone 16 Pro price" | Serper | Shopping intent detected |
 | "how does TCP/IP work" | Tavily | Research/explanation intent |
+| "latest multilingual EV market updates" | Querit | Real-time AI search with metadata-rich results |
 | "companies like Stripe" | Exa | Discovery/semantic intent |
 | "what is quantum computing" | Perplexity | Direct answer intent |
 | "latest news AI regulation" | Serper | News intent |
@@ -87,6 +89,7 @@ Copy `.env.template` to `.env` and add at least one API key:
 |----------|----------|---------|
 | `SERPER_API_KEY` | Serper (Google) | [console.serper.dev](https://console.serper.dev) |
 | `TAVILY_API_KEY` | Tavily | [tavily.com](https://tavily.com) |
+| `QUERIT_API_KEY` | Querit | [querit.ai](https://querit.ai) |
 | `EXA_API_KEY` | Exa | [exa.ai](https://exa.ai) |
 | `PERPLEXITY_API_KEY` | Perplexity | [perplexity.ai](https://docs.perplexity.ai) |
 | `KILOCODE_API_KEY` | Perplexity via Kilo | [kilocode.ai](https://kilocode.ai) |
@@ -119,7 +122,7 @@ The registered `web_search_plus` tool accepts:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | ✅ | Search query |
-| `provider` | string | ❌ | Force a provider: `serper`, `tavily`, `exa`, `perplexity`, `you`, `searxng`, or `auto` (default) |
+| `provider` | string | ❌ | Force a provider: `serper`, `tavily`, `querit`, `exa`, `perplexity`, `you`, `searxng`, or `auto` (default) |
 | `count` | number | ❌ | Number of results (default: 5) |
 
 ## 🧪 Test Directly
@@ -139,7 +142,7 @@ python3 scripts/search.py -q "your query" --max-results 10
 
 ## ❓ FAQ
 
-### Do I need all 6 providers?
+### Do I need all 7 providers?
 No. The plugin works with just one API key. Configure whichever providers you have — the auto-router will use what's available and skip what's not.
 
 ### What's the difference between this plugin and the `web-search-plus` skill?
@@ -149,7 +152,7 @@ The **plugin** registers a native tool that any agent can use directly. The **sk
 Yes, Python 3 is required. The search logic runs as a Python script. Most Linux servers and macOS have Python 3 pre-installed.
 
 ### How does auto-routing work?
-The router scores each provider based on query signals — keywords like "price" or "buy" boost Serper, research-oriented queries boost Tavily, semantic/discovery queries boost Exa, and direct questions boost Perplexity. The highest-scoring provider wins.
+The router scores each provider based on query signals — keywords like "price" or "buy" boost Serper, deep explanation queries boost Tavily, multilingual or metadata-rich real-time search can favor Querit, semantic/discovery queries boost Exa, and direct questions boost Perplexity. The highest-scoring provider wins.
 
 ### Does it cache results?
 Yes. Results are cached locally in a `.cache/` directory inside the plugin folder. Identical queries return cached results instantly and don't consume API credits. Cache is file-based and survives restarts.
