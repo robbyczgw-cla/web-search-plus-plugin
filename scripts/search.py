@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Web Search Plus — Unified Multi-Provider Search with Intelligent Auto-Routing
-Supports: Serper (Google), Tavily (Research), Exa (Neural), Perplexity (Direct Answers)
+Supports: Serper (Google), Tavily (Research), Querit (Multilingual AI Search),
+Exa (Neural), Perplexity (Direct Answers)
 
 Smart Routing uses multi-signal analysis:
   - Query intent classification (shopping, research, discovery)
@@ -12,7 +13,7 @@ Smart Routing uses multi-signal analysis:
 
 Usage:
     python3 search.py --query "..."                    # Auto-route based on query
-    python3 search.py --provider [serper|tavily|exa] --query "..." [options]
+    python3 search.py --provider [serper|tavily|querit|exa] --query "..." [options]
 
 Examples:
     python3 search.py -q "iPhone 16 Pro price"              # → Serper (shopping intent)
@@ -21,6 +22,7 @@ Examples:
 """
 
 import argparse
+from http.client import IncompleteRead
 import hashlib
 import json
 import os
@@ -275,7 +277,7 @@ DEFAULT_CONFIG = {
     "auto_routing": {
         "enabled": True,
         "fallback_provider": "serper",
-        "provider_priority": ["tavily", "exa", "perplexity", "serper", "you", "searxng"],
+        "provider_priority": ["tavily", "querit", "exa", "perplexity", "serper", "you", "searxng"],
         "disabled_providers": [],
         "confidence_threshold": 0.3,  # Below this, note low confidence
     },
@@ -287,6 +289,11 @@ DEFAULT_CONFIG = {
     "tavily": {
         "depth": "basic",
         "topic": "general"
+    },
+    "querit": {
+        "base_url": "https://api.querit.ai",
+        "base_path": "/v1/search",
+        "timeout": 10
     },
     "exa": {
         "type": "neural",
@@ -358,6 +365,7 @@ def get_api_key(provider: str, config: Dict[str, Any] = None) -> Optional[str]:
     key_map = {
         "serper": "SERPER_API_KEY",
         "tavily": "TAVILY_API_KEY",
+        "querit": "QUERIT_API_KEY",
         "exa": "EXA_API_KEY",
         "you": "YOU_API_KEY",
     }
@@ -474,7 +482,8 @@ def validate_api_key(provider: str, config: Dict[str, Any] = None) -> str:
     if not key:
         env_var = {
             "serper": "SERPER_API_KEY",
-            "tavily": "TAVILY_API_KEY", 
+            "tavily": "TAVILY_API_KEY",
+            "querit": "QUERIT_API_KEY",
             "exa": "EXA_API_KEY",
             "you": "YOU_API_KEY",
             "perplexity": "KILOCODE_API_KEY"
@@ -483,6 +492,7 @@ def validate_api_key(provider: str, config: Dict[str, Any] = None) -> str:
         urls = {
             "serper": "https://serper.dev",
             "tavily": "https://tavily.com",
+            "querit": "https://querit.ai",
             "exa": "https://exa.ai",
             "you": "https://api.you.com",
             "perplexity": "https://api.kilo.ai"
@@ -1161,6 +1171,7 @@ class QueryAnalyzer:
         provider_scores = {
             "serper": shopping_score + local_news_score + (recency_score * 0.35),
             "tavily": research_score + (complexity["complexity_score"] if not complexity["is_complex"] else 0) + (0.2 * recency_score),
+            "querit": (research_score * 0.65) + (rag_score * 0.35) + (recency_score * 0.45),
             "exa": discovery_score + (1.0 if re.search(r"\b(similar|alternatives?|examples?)\b", query, re.IGNORECASE) else 0.0) + (exa_deep_score * 0.5) + (exa_deep_reasoning_score * 0.5),
             "perplexity": direct_answer_score + (local_news_score * 0.4) + (recency_score * 0.55),
             "you": rag_score + (recency_score * 0.25),  # You.com good for real-time + RAG
@@ -1171,6 +1182,7 @@ class QueryAnalyzer:
         provider_matches = {
             "serper": shopping_matches + local_news_matches,
             "tavily": research_matches,
+            "querit": research_matches,
             "exa": discovery_matches + exa_deep_matches + exa_deep_reasoning_matches,
             "perplexity": direct_answer_matches,
             "you": rag_matches,
@@ -1221,7 +1233,7 @@ class QueryAnalyzer:
         total_score = sum(available.values()) or 1.0
         
         # Handle ties using priority
-        priority = self.auto_config.get("provider_priority", ["tavily", "exa", "perplexity", "serper", "you", "searxng"])
+        priority = self.auto_config.get("provider_priority", ["tavily", "querit", "exa", "perplexity", "serper", "you", "searxng"])
         winners = [p for p, s in available.items() if s == max_score]
         
         if len(winners) > 1:
@@ -1337,6 +1349,7 @@ def explain_routing(query: str, config: Dict[str, Any]) -> Dict[str, Any]:
         "intent_breakdown": {
             "shopping_signals": len(analysis["provider_matches"]["serper"]),
             "research_signals": len(analysis["provider_matches"]["tavily"]),
+            "querit_signals": len(analysis["provider_matches"]["querit"]),
             "discovery_signals": len(analysis["provider_matches"]["exa"]),
             "rag_signals": len(analysis["provider_matches"]["you"]),
             "exa_deep_score": round(analysis.get("exa_deep_score", 0), 2),
@@ -1358,7 +1371,7 @@ def explain_routing(query: str, config: Dict[str, Any]) -> Dict[str, Any]:
             if matches
         },
         "available_providers": [
-            p for p in ["serper", "tavily", "exa", "perplexity", "you", "searxng"]
+            p for p in ["serper", "tavily", "querit", "exa", "perplexity", "you", "searxng"]
             if get_api_key(p, config) and p not in config.get("auto_routing", {}).get("disabled_providers", [])
         ]
     }
@@ -1523,6 +1536,12 @@ def make_request(url: str, headers: dict, body: dict, timeout: int = 30) -> dict
         reason = str(getattr(e, "reason", e))
         is_timeout = "timed out" in reason.lower()
         raise ProviderRequestError(f"Network error: {reason}. Check your internet connection.", transient=is_timeout)
+    except IncompleteRead as e:
+        partial_len = len(getattr(e, "partial", b"") or b"")
+        raise ProviderRequestError(
+            f"Connection interrupted while reading response ({partial_len} bytes received). Please retry.",
+            transient=True,
+        )
     except TimeoutError:
         raise ProviderRequestError(f"Request timed out after {timeout}s. Try again or reduce max_results.", transient=True)
 
@@ -1669,6 +1688,114 @@ def search_tavily(
         "results": results,
         "images": data.get("images", []),
         "answer": data.get("answer", ""),
+    }
+
+
+# =============================================================================
+# Querit (Multi-lingual search API for AI, with rich metadata and real-time information)
+# =============================================================================
+
+def _map_querit_time_range(time_range: Optional[str]) -> Optional[str]:
+    """Map generic time ranges to Querit's compact date filter format."""
+    if not time_range:
+        return None
+    return {
+        "day": "d1",
+        "week": "w1",
+        "month": "m1",
+        "year": "y1",
+    }.get(time_range, time_range)
+
+
+def search_querit(
+    query: str,
+    api_key: str,
+    max_results: int = 5,
+    language: str = "en",
+    country: str = "us",
+    time_range: Optional[str] = None,
+    include_domains: Optional[List[str]] = None,
+    exclude_domains: Optional[List[str]] = None,
+    base_url: str = "https://api.querit.ai",
+    base_path: str = "/v1/search",
+    timeout: int = 30,
+) -> dict:
+    """Search using Querit.
+
+    Mirrors the Querit Python SDK payload shape:
+      - query
+      - count
+      - optional filters: languages, geo, sites, timeRange
+    """
+    endpoint = base_url.rstrip("/") + base_path
+
+    filters: Dict[str, Any] = {}
+    if language:
+        filters["languages"] = {"include": [language.lower()]}
+    if country:
+        filters["geo"] = {"countries": {"include": [country.upper()]}}
+    if include_domains or exclude_domains:
+        sites: Dict[str, List[str]] = {}
+        if include_domains:
+            sites["include"] = include_domains
+        if exclude_domains:
+            sites["exclude"] = exclude_domains
+        filters["sites"] = sites
+
+    querit_time_range = _map_querit_time_range(time_range)
+    if querit_time_range:
+        filters["timeRange"] = {"date": querit_time_range}
+
+    body: Dict[str, Any] = {
+        "query": query,
+        "count": max_results,
+    }
+    if filters:
+        body["filters"] = filters
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    data = make_request(endpoint, headers, body, timeout=timeout)
+
+    error_code = data.get("error_code")
+    error_msg = data.get("error_msg")
+    if error_msg or (error_code not in (None, 0, 200)):
+        message = error_msg or f"Querit request failed with error_code={error_code}"
+        raise ProviderRequestError(message)
+
+    raw_results = ((data.get("results") or {}).get("result")) or []
+    results = []
+    for i, item in enumerate(raw_results[:max_results]):
+        snippet = item.get("snippet") or item.get("page_age") or ""
+        result = {
+            "title": item.get("title") or _title_from_url(item.get("url", "")),
+            "url": item.get("url", ""),
+            "snippet": snippet,
+            "score": round(1.0 - i * 0.05, 3),
+        }
+        if item.get("page_time") is not None:
+            result["page_time"] = item["page_time"]
+        if item.get("page_age"):
+            result["date"] = item["page_age"]
+        if item.get("language") is not None:
+            result["language"] = item["language"]
+        results.append(result)
+
+    answer = results[0]["snippet"] if results else ""
+
+    return {
+        "provider": "querit",
+        "query": query,
+        "results": results,
+        "images": [],
+        "answer": answer,
+        "metadata": {
+            "search_id": data.get("search_id"),
+            "time_range": querit_time_range,
+        }
     }
 
 
@@ -2273,6 +2400,9 @@ Intelligent Auto-Routing:
   
   Research Intent → Tavily  
     "how does", "explain", "what is", analysis, pros/cons, tutorials
+
+  Multilingual + Real-Time AI Search → Querit
+    multilingual search, metadata-rich results, current information for AI workflows
   
   Discovery Intent → Exa (Neural)
     "similar to", "companies like", "alternatives", URLs, startups, papers
@@ -2293,7 +2423,7 @@ Full docs: See README.md and SKILL.md
     # Common arguments
     parser.add_argument(
         "--provider", "-p", 
-        choices=["serper", "tavily", "exa", "perplexity", "you", "searxng", "auto"],
+        choices=["serper", "tavily", "querit", "exa", "perplexity", "you", "searxng", "auto"],
         help="Search provider (auto=intelligent routing)"
     )
     parser.add_argument(
@@ -2353,6 +2483,19 @@ Full docs: See README.md and SKILL.md
     )
     parser.add_argument("--raw-content", action="store_true")
     
+    # Querit-specific
+    querit_config = config.get("querit", {})
+    parser.add_argument(
+        "--querit-base-url",
+        default=querit_config.get("base_url", "https://api.querit.ai"),
+        help="Querit API base URL"
+    )
+    parser.add_argument(
+        "--querit-base-path",
+        default=querit_config.get("base_path", "/v1/search"),
+        help="Querit API path"
+    )
+
     # Exa-specific
     exa_config = config.get("exa", {})
     parser.add_argument(
@@ -2520,7 +2663,7 @@ Full docs: See README.md and SKILL.md
     
     # Build provider fallback list
     auto_config = config.get("auto_routing", {})
-    provider_priority = auto_config.get("provider_priority", ["tavily", "exa", "perplexity", "serper"])
+    provider_priority = auto_config.get("provider_priority", ["tavily", "querit", "exa", "perplexity", "serper", "you", "searxng"])
     disabled_providers = auto_config.get("disabled_providers", [])
 
     # Start with the selected provider, then try others in priority order
@@ -2569,6 +2712,20 @@ Full docs: See README.md and SKILL.md
                 exclude_domains=args.exclude_domains,
                 include_images=args.images,
                 include_raw_content=args.raw_content,
+            )
+        elif prov == "querit":
+            return search_querit(
+                query=args.query,
+                api_key=key,
+                max_results=args.max_results,
+                language=args.language,
+                country=args.country,
+                time_range=args.time_range or args.freshness,
+                include_domains=args.include_domains,
+                exclude_domains=args.exclude_domains,
+                base_url=args.querit_base_url,
+                base_path=args.querit_base_path,
+                timeout=int(querit_config.get("timeout", 30)),
             )
         elif prov == "exa":
             # CLI --exa-depth overrides; fallback to auto-routing suggestion
@@ -2653,6 +2810,8 @@ Full docs: See README.md and SKILL.md
         "locale": f"{args.country}:{args.language}",
         "freshness": args.freshness,
         "time_range": args.time_range,
+        "include_domains": sorted(args.include_domains) if args.include_domains else None,
+        "exclude_domains": sorted(args.exclude_domains) if args.exclude_domains else None,
         "topic": args.topic,
         "search_engines": sorted(args.engines) if args.engines else None,
         "include_news": not args.no_news,

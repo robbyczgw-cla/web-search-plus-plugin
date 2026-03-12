@@ -66,6 +66,14 @@ def print_provider_info():
             "strengths": ["AI-synthesized answers", "Full page content", "Domain filtering", "Academic research"]
         },
         {
+            "name": "Querit",
+            "emoji": "🗂️",
+            "best_for": "Multi-lingual AI search with rich metadata and real-time information",
+            "free_tier": "1,000 queries/month",
+            "signup": "https://querit.ai",
+            "strengths": ["Multi-lingual search", "Rich metadata", "Real-time information", "AI-ready results"]
+        },
+        {
             "name": "Exa",
             "emoji": "🧠",
             "best_for": "Semantic search, finding similar content, discovery",
@@ -294,11 +302,12 @@ def run_setup(skill_dir: Path, force_reset: bool = False):
             "auto_routing": {"enabled": True, "fallback_provider": "serper"},
             "serper": {},
             "tavily": {},
+            "querit": {},
             "exa": {}
         }
     
     # Remove any existing API keys from example
-    for provider in ["serper", "tavily", "exa"]:
+    for provider in ["serper", "tavily", "querit", "exa"]:
         if provider in config:
             config[provider].pop("api_key", None)
     
@@ -314,6 +323,7 @@ def run_setup(skill_dir: Path, force_reset: bool = False):
     providers_info = {
         "serper": ("Serper", "https://serper.dev", "Google results, shopping, local"),
         "tavily": ("Tavily", "https://tavily.com", "Research, explanations, analysis"),
+        "querit": ("Querit", "https://querit.ai", "Multi-lingual AI search, rich metadata, real-time info"),
         "exa": ("Exa", "https://exa.ai", "Semantic search, similar content"),
         "you": ("You.com", "https://api.you.com", "RAG applications, real-time info"),
         "searxng": ("SearXNG", "https://docs.searxng.org/admin/installation.html", "Privacy-first, self-hosted, $0 cost")
@@ -393,7 +403,7 @@ def run_setup(skill_dir: Path, force_reset: bool = False):
     config["defaults"]["max_results"] = max_results
     
     # Set disabled providers
-    all_providers = ["serper", "tavily", "exa", "you", "searxng"]
+    all_providers = ["serper", "tavily", "querit", "exa", "you", "searxng"]
     disabled = [p for p in all_providers if p not in enabled_providers]
     config["auto_routing"]["disabled_providers"] = disabled
     
