@@ -2,146 +2,258 @@
 
 ## Overview
 
+`web-search-plus-plugin` v2.0.0 is a **single-file pure TypeScript implementation**. The plugin registers `web_search_plus` directly in OpenClaw and performs provider routing, HTTP requests, retries, caching, cooldown tracking, deduplication, and SearXNG SSRF checks in-process.
+
 ```
-┌─────────────────────────────────────────────────┐
-│                 OpenClaw Gateway                 │
-│                                                  │
-│  Agent calls web_search_plus(query, provider)   │
-│         ↓                                        │
-│  ┌──────────────────────────────┐               │
-│  │     index.ts (Plugin)        │               │
-│  │  - Registers native tool     │               │
-│  │  - Loads .env                │               │
-│  │  - Spawns Python process     │               │
-│  └──────────┬───────────────────┘               │
-│              ↓                                   │
-│  ┌──────────────────────────────┐               │
-│  │    scripts/search.py         │               │
-│  │  - Auto-routing engine       │               │
-│  │  - Provider adapters         │               │
-│  │  - Result caching            │               │
-│  │  - Response normalization    │               │
-│  └──────────┬───────────────────┘               │
-│              ↓                                   │
-│  ┌─────┬─────┬──────┬─────┬──────┬─────┬───────┐  │
-│  │Serp.│Tav. │Querit│ Exa │Perpl.│You  │SearXNG│  │
-│  └─────┴─────┴──────┴─────┴──────┴─────┴───────┘  │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                       OpenClaw Gateway                      │
+│                                                              │
+│  Agent calls web_search_plus(query, provider, ...)          │
+│                           ↓                                  │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │                   index.ts (single file)              │  │
+│  │                                                        │  │
+│  │  Types → Config → HTTP Helper → Cache → Health        │  │
+│  │        → SSRF → QueryAnalyzer → Providers             │  │
+│  │        → Retry/Fallback → Dedup → Plugin Entry        │  │
+│  └───────────────────────────┬────────────────────────────┘  │
+│                              ↓                               │
+│      ┌───────┬────────┬────────┬──────┬────────────┬──────┬───────┐
+│      │Serper │ Tavily │ Querit │ Exa  │ Perplexity │ You  │SearXNG│
+│      └───────┴────────┴────────┴──────┴────────────┴──────┴───────┘
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## Components
+## Core Design
 
-### 1. Plugin Entry (`index.ts`)
+### Single-file architecture
 
-The plugin entry point registers `web_search_plus` as a native OpenClaw tool via the plugin API.
+All runtime logic now lives in `index.ts`.
 
-**Responsibilities:**
-- Register tool schema (query, provider, count parameters)
-- Load API keys from `.env` file (plugin dir, with fallback to sibling skill dir)
-- Spawn `search.py` as a child process with `spawnSync`
-- Pass environment variables securely to child process
-- Parse and return results
+That file contains:
+- Type definitions for tool input/output and internal state
+- Environment/config loading
+- Shared HTTP request helper built on native `fetch()`
+- File-based cache helpers
+- Provider health and cooldown state management
+- SearXNG SSRF validation using `dns/promises` and `net`
+- Query analysis and auto-routing heuristics
+- Provider-specific request/response adapters
+- Retry + fallback logic
+- Cross-provider deduplication
+- OpenClaw plugin entry + tool registration
 
-**Key design decisions:**
-- Uses `spawnSync` (synchronous) — search completes in <5s, no need for async process management
-- Loads `.env` manually (no `dotenv` dependency) to keep the plugin zero-dependency
-- 30s timeout on child process to prevent hangs
+One plugin entry, zero helper scripts, zero external runtime dependencies.
 
-### 2. Search Engine (`scripts/search.py`)
+## Runtime Layers
 
-The core search backend. A single Python script (~2500 lines) that handles routing, provider adapters, caching, and response normalization.
+### 1. Types
 
-**Subsystems:**
+Static types define the public tool contract and the normalized internal response shape.
 
-#### Auto-Router
-Scores each provider based on query signals:
-- **Keyword matching** — "price", "buy" → Serper; "how", "explain" → Tavily
-- **Pattern detection** — URLs → Exa; questions → Perplexity
-- **Intent classification** — shopping, research, discovery, news, direct-answer
-- **Provider availability** — only configured providers are scored
-- **Fallback chain** — if top-scored provider fails, tries next
+Examples:
+- `ToolParams`
+- `ProviderName`
+- `SearchResult`
+- `SearchResponse`
+- structured error classes such as `ProviderConfigError` and `ProviderRequestError`
 
-#### Provider Adapters
-Each provider has its own adapter that:
-- Constructs the API request (headers, params, body)
-- Parses provider-specific response format
-- Normalizes results to common schema: `{title, url, snippet, source}`
-- Handles provider-specific errors and rate limits
+### 2. Config
 
-#### Cache Layer
-- File-based cache in `.cache/` directory
-- Cache key = hash of (query + provider + max_results + params)
-- No TTL — cached results persist until manually cleared
-- Saves API costs on repeated/similar queries
+The plugin resolves its runtime directory, loads `.env` manually, and merges configuration from:
 
-#### SSRF Protection (SearXNG)
-- Validates instance URLs against private IP ranges
-- Blocks cloud metadata endpoints (169.254.169.254, etc.)
-- Can be overridden with `SEARXNG_ALLOW_PRIVATE=1` for local instances
+1. process environment
+2. OpenClaw plugin config
+3. local `.env`
 
-### 3. Setup Wizard (`scripts/setup.py`)
+This lets users configure keys either through OpenClaw UI/config or directly via `.env` for local development.
 
-Interactive CLI wizard for first-time configuration:
-- Walks through each provider (enable/disable, API key entry)
-- Tests SearXNG instance connectivity
-- Sets default provider and auto-routing preferences
-- Writes `config.json` (gitignored)
+Notable implementation detail:
+- `PLUGIN_DIR` resolution handles OpenClaw-transpiled plugin installs, so the plugin can still find `.env`, `.cache`, and package-local files reliably.
+
+### 3. HTTP Helper
+
+All provider calls use native `fetch()` from Node.js.
+
+Shared request behavior includes:
+- JSON request/response handling
+- common headers/body construction
+- response status validation
+- output sanitization for errors
+- per-request timeout via `AbortController`
+- transient error classification for retries (`408`, `425`, `429`, `500`, `502`, `503`, `504`)
+
+No `child_process`, no external interpreters.
+
+### 4. Cache
+
+The cache is file-based and stored in `.cache/` under the plugin directory.
+
+Characteristics:
+- cache key is derived from query + provider + result count + relevant search parameters
+- entries are JSON files on disk
+- cache survives gateway restarts
+- cache metadata tracks timestamp, params, provider, and query context
+- default TTL is currently one hour
+
+
+
+### 5. Provider Health / Cooldown
+
+Provider health state is stored in `.cache/provider_health.json`.
+
+Behavior:
+- repeated failures increase a provider's failure count
+- cooldown duration grows across predefined backoff steps
+- providers currently in cooldown are skipped when possible
+- successful requests reset provider health state
+
+This reduces repeated failures against rate-limited or degraded providers and improves fallback quality.
+
+### 6. SSRF Protection
+
+SearXNG support includes host validation before any request is sent.
+
+Checks include:
+- URL parsing and hostname validation
+- DNS resolution using `dns/promises`
+- IP classification using Node.js `net`
+- blocking private, loopback, link-local, and metadata-style targets by default
+- optional private-instance override through environment configuration
+
+Implemented entirely in TypeScript with Node.js builtins.
+
+### 7. QueryAnalyzer
+
+The auto-router inspects query content and scores providers by intent.
+
+Signals include:
+- shopping / pricing intent
+- research / explanation intent
+- multilingual or geo-rich search intent
+- semantic discovery intent
+- direct-answer intent
+- query complexity heuristics
+- provider availability
+
+The router returns:
+- chosen provider
+- confidence score
+- confidence level
+- reason for the choice
+- top matched signals
+- Exa depth recommendation when relevant
+
+### 8. Providers
+
+Each provider has a dedicated adapter function in `index.ts`.
+
+Current providers:
+- Serper
+- Tavily
+- Querit
+- Exa
+- Perplexity
+- You.com
+- SearXNG
+
+Each adapter is responsible for:
+- auth handling
+- provider-specific request shape
+- optional feature mapping (`time_range`, domain filters, Exa depth)
+- response parsing
+- normalization into a shared output schema
+
+### 9. Retry / Fallback
+
+When a request fails transiently, the plugin retries with exponential backoff.
+
+If a provider still fails:
+- the failure is recorded in provider health state
+- the router/fallback chain tries the next eligible configured provider
+- cooldown-skipped providers are tracked in output metadata when relevant
+
+
+
+### 10. Dedup
+
+When fallback or merged responses produce overlapping links, the plugin deduplicates results across providers before returning them.
+
+This keeps output compact and avoids repeated URLs in the final tool result.
+
+### 11. Plugin Entry
+
+The OpenClaw plugin entry:
+- registers the `web_search_plus` tool
+- exposes a JSON-schema tool contract
+- validates and normalizes tool parameters
+- performs routing, execution, caching, retries, fallback, and final result shaping
+- returns structured JSON back to OpenClaw
+
+## Tool Parameters
+
+The registered tool currently supports:
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `query` | string | Required search query |
+| `provider` | string | `serper`, `tavily`, `querit`, `exa`, `perplexity`, `you`, `searxng`, or `auto` |
+| `count` | number | Result count, clamped to safe limits |
+| `depth` | string | Exa depth: `normal`, `deep`, `deep-reasoning` |
+| `time_range` | string | `day`, `week`, `month`, `year` where supported |
+| `include_domains` | string[] | Provider-specific domain allowlist |
+| `exclude_domains` | string[] | Provider-specific domain denylist |
 
 ## Data Flow
 
 ```
 1. Agent invokes web_search_plus(query="iPhone price", provider="auto")
-2. index.ts spawns: python3 search.py --query "iPhone price" --compact
-3. search.py checks cache → miss
-4. Auto-router scores providers:
-   - Serper: 5.0 (shopping keywords + price)
-   - Tavily: 2.0 (default)
-   - Exa: 1.0 (no signals)
-5. Serper adapter calls Google Search API
-6. Response normalized to [{title, url, snippet}, ...]
-7. Result cached to .cache/<hash>.json
-8. JSON returned to index.ts → tool result to agent
+2. Plugin normalizes params and loads runtime config
+3. Cache lookup runs using query/provider/parameter context
+4. On cache miss, QueryAnalyzer scores available providers
+5. Selected provider is called directly with fetch()
+6. If request fails transiently, retry logic applies
+7. If provider still fails, fallback chain tries the next healthy provider
+8. Provider response is normalized to shared result schema
+9. Results are deduplicated if multiple providers contributed
+10. Final result is cached and returned to OpenClaw
 ```
 
 ## File Structure
 
 ```
 web-search-plus-plugin/
-├── index.ts                 # Plugin entry — tool registration
+├── index.ts                 # Entire runtime: tool registration + search engine
 ├── openclaw.plugin.json     # Plugin metadata
 ├── package.json             # npm package config
 ├── .env.template            # API key template
-├── .env                     # Your API keys (gitignored)
+├── .env                     # Local keys (gitignored)
 ├── .gitignore
 ├── LICENSE                  # MIT
 ├── README.md                # User documentation
 ├── CHANGELOG.md             # Version history
+├── SKILL.md                 # Plugin summary / usage notes
 ├── docs/
 │   └── ARCHITECTURE.md      # This file
-├── scripts/
-│   ├── search.py            # Search engine + auto-router
-│   └── setup.py             # Interactive setup wizard
-└── .cache/                  # Local result cache (gitignored)
+└── .cache/                  # Search cache + provider health state (gitignored)
 ```
 
 ## Security Model
 
-- **API keys** stay local in `.env` (gitignored, never committed)
-- **No outbound data** except search queries to configured providers
-- **SSRF protection** on SearXNG instance URLs
+- **No `child_process` or `spawn`** — no external interpreter execution
+- **No Python runtime** — fewer moving parts and no subprocess boundary
+- **Native `fetch()` with `AbortController` timeout** — requests cannot hang indefinitely
+- **API keys stay local** in `.env` or OpenClaw plugin config
 - **Input validation** on all tool parameters
-- **No dependencies** — zero npm dependencies, only Python stdlib + `urllib`
-- **30s timeout** on all external requests
-- **Child process isolation** — search.py runs as separate process
+- **Sanitized errors** to avoid leaking credentials/tokens
+- **SSRF protection** for SearXNG before outbound requests
+- **Provider cooldowns** reduce repeated failing calls
+- **Zero external runtime dependencies** — only Node.js builtins are used
 
-## Provider Comparison (Technical)
+## Changes from v1.x
 
-| Provider | Protocol | Auth | Response Format | Latency |
-|----------|----------|------|-----------------|---------|
-| Serper | REST | API key header | JSON | ~200ms |
-| Tavily | REST | API key in body | JSON | ~500ms |
-| Querit | REST | Bearer token | JSON | ~400ms |
-| Exa | REST | Bearer token | JSON | ~400ms |
-| Perplexity | REST (OpenAI-compatible) | Bearer token | JSON (chat) | ~1-3s |
-| You.com | REST | API key header | JSON | ~600ms |
-| SearXNG | REST | None (self-hosted) | JSON | ~300ms |
+Removed in v2.0.0:
+- `scripts/search.py`
+- `scripts/setup.py`
+
+The Python subprocess architecture has been replaced entirely by the in-process TypeScript implementation.

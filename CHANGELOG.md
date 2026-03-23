@@ -3,6 +3,17 @@
 All notable changes to web-search-plus-plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] - 2026-03-23
+
+### Changed
+- **BREAKING: Complete TypeScript rewrite** — Python backend and `child_process` removed entirely
+- **Zero external dependencies** — runtime uses only Node.js builtins (`fetch`, `dns/promises`, `net`, `fs`, `crypto`)
+- **Single-file architecture** — all provider logic, routing, caching, retries, and SSRF protection in `index.ts`
+- **No Python 3 required**, no install-time "dangerous code" warning
+
+### Fixed
+- `PLUGIN_DIR` resolution for OpenClaw transpiled plugin installs
+
 ## [1.4.0] - 2026-03-23
 
 ### Changed
@@ -176,25 +187,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [Semantic Ver
 - 🔧 **Perplexity results parsing** — synced from web-search-plus v2.8.3
 
 ## [1.1.0] - 2026-03-03
-
-### Added
-- 🔍 **Perplexity (Sonar Pro)** — new provider via direct API key or Kilo Gateway (`KILOCODE_API_KEY`)
-- 🧠 **Auto-routing improvements** — Perplexity scored for direct-answer queries
-- 🔄 Synced search.py with web-search-plus skill v2.8.0
-
-## [1.0.2] - 2026-02-28
-
-### Fixed
-- 🔑 **`.env` loading** — plugin loads `.env` from its own directory with fallback to sibling skill path
-- 🔒 **`.gitignore`** — `.env` added to prevent accidental key commits
-- 📄 **`.env.template`** — added for easy setup
-
-## [1.0.1] - 2026-02-27
-
-### Added
-- 📖 **You.com and SearXNG** providers documented in README
-
-## [1.0.0] - 2026-02-26
 
 ### Added
 - 🎉 **Initial release** — standalone OpenClaw plugin

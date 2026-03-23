@@ -2,15 +2,20 @@
 
 **Multi-provider web search as a native OpenClaw tool.**
 
-A standalone OpenClaw plugin that registers `web_search_plus` as a first-class tool with intelligent auto-routing. No skill dependency needed — install, configure, and go.
+An OpenClaw plugin that registers `web_search_plus` as a first-class tool with intelligent auto-routing. Install, configure an API key, go.
 
-## ✨ Features
+> **v2.0.0 is a complete rewrite.** The plugin now runs as a single pure TypeScript implementation with native `fetch()` and Node.js builtins only. No Python, no `child_process`, no setup wizard, no extra runtime dependencies.
 
-- **Intelligent auto-routing** — analyzes query intent and picks the best provider automatically
-- **7 search providers** — use one or all, graceful fallback if any is down
-- **Local result caching** — saves API costs on repeated queries
-- **Interactive setup wizard** — guided configuration via `python3 scripts/setup.py`
-- **Native OpenClaw tool** — registers as `web_search_plus`, not a skill
+## ✨ Highlights
+
+- **Pure TypeScript** — single-file implementation, all logic in `index.ts`
+- **Zero dependencies** — Node.js builtins only, no Python, no `child_process`
+- **7 providers** — Serper, Tavily, Querit, Exa, Perplexity, You.com, SearXNG
+- **Intelligent auto-routing** — analyzes query intent, picks the best provider
+- **Automatic fallback** — if a provider fails, the next healthy one takes over
+- **Local result caching** — file-based, survives restarts, saves API credits
+- **Provider health tracking** — exponential cooldown on repeated failures
+- **SSRF protection** — SearXNG URLs validated via `dns/promises` + `net`
 
 ## 🔎 Supported Providers
 
@@ -94,7 +99,9 @@ Copy `.env.template` to `.env` and add at least one API key:
 | `PERPLEXITY_API_KEY` | Perplexity | [perplexity.ai](https://docs.perplexity.ai) |
 | `KILOCODE_API_KEY` | Perplexity via Kilo | [kilocode.ai](https://kilocode.ai) |
 | `YOU_API_KEY` | You.com | [you.com/api](https://you.com/api) |
-| `SEARXNG_URL` | SearXNG (self-hosted) | [docs.searxng.org](https://docs.searxng.org) |
+| `SEARXNG_INSTANCE_URL` | SearXNG (self-hosted) | [docs.searxng.org](https://docs.searxng.org) |
+
+You can also configure these values through OpenClaw plugin config. Local `.env` values remain convenient for development.
 
 ## 🤖 Enable for an Agent
 
@@ -123,22 +130,11 @@ The registered `web_search_plus` tool accepts:
 |-----------|------|----------|-------------|
 | `query` | string | ✅ | Search query |
 | `provider` | string | ❌ | Force a provider: `serper`, `tavily`, `querit`, `exa`, `perplexity`, `you`, `searxng`, or `auto` (default) |
-| `count` | number | ❌ | Number of results (default: 5) |
-
-## 🧪 Test Directly
-
-You can test the search script standalone:
-
-```bash
-# Auto-route
-python3 scripts/search.py -q "your query here"
-
-# Force a specific provider
-python3 scripts/search.py -q "your query" -p tavily
-
-# More results
-python3 scripts/search.py -q "your query" --max-results 10
-```
+| `count` | number | ❌ | Number of results (default: 5, max: 10) |
+| `depth` | string | ❌ | Exa depth: `normal`, `deep`, or `deep-reasoning` |
+| `time_range` | string | ❌ | Recency filter where supported: `day`, `week`, `month`, `year` |
+| `include_domains` | string[] | ❌ | Restrict results to these domains where supported (Tavily, Exa, Querit) |
+| `exclude_domains` | string[] | ❌ | Exclude these domains where supported (Tavily, Exa, Querit) |
 
 ## ❓ FAQ
 
@@ -146,13 +142,10 @@ python3 scripts/search.py -q "your query" --max-results 10
 No. The plugin works with just one API key. Configure whichever providers you have — the auto-router will use what's available and skip what's not.
 
 ### What's the difference between this plugin and the `web-search-plus` skill?
-The **plugin** registers a native tool that any agent can use directly. The **skill** provides a SKILL.md with instructions for the agent. Both use the same search backend. Use the plugin for cleaner integration — it's the recommended approach.
-
-### Do I need Python?
-Yes, Python 3 is required. The search logic runs as a Python script. Most Linux servers and macOS have Python 3 pre-installed.
+The **plugin** registers a native tool that any agent can use directly. The **skill** provides a SKILL.md with instructions for the agent. The plugin is the recommended approach.
 
 ### How does auto-routing work?
-The router scores each provider based on query signals — keywords like "price" or "buy" boost Serper, deep explanation queries boost Tavily, multilingual or metadata-rich real-time search can favor Querit, semantic/discovery queries boost Exa, and direct questions boost Perplexity. The highest-scoring provider wins.
+The router scores each configured provider based on query signals. Shopping keywords boost Serper, explanation queries boost Tavily, multilingual/real-time queries favor Querit, semantic/discovery queries boost Exa, and direct questions boost Perplexity. Highest score wins, with automatic fallback on failure.
 
 ### Does it cache results?
 Yes. Results are cached locally in a `.cache/` directory inside the plugin folder. Identical queries return cached results instantly and don't consume API credits. Cache is file-based and survives restarts.
@@ -161,16 +154,15 @@ Yes. Results are cached locally in a `.cache/` directory inside the plugin folde
 Yes. Set `KILOCODE_API_KEY` in your `.env` — the plugin routes Perplexity requests through the Kilo Gateway automatically. You can also use a direct `PERPLEXITY_API_KEY`.
 
 ### What about SearXNG?
-SearXNG is a self-hosted meta search engine that aggregates 70+ sources. It's free but requires your own instance. The plugin validates the instance URL on setup and includes SSRF protection for security.
+SearXNG is a self-hosted meta search engine that aggregates 70+ sources. It's free but requires your own instance. The plugin validates instance URLs before querying and includes SSRF protection using Node.js DNS/IP checks for security.
 
 ### Does it work in sandboxed agents?
 Yes, as long as the tool is allowed in the agent's tool config. The plugin runs on the host alongside the gateway.
 
 ## 📋 Requirements
 
-- **OpenClaw** gateway (any recent version)
-- **Python 3** (3.8+)
-- At least **one API key** from a supported provider
+- **OpenClaw gateway** (any recent version)
+- At least **one API key** from a supported provider, or a **SearXNG instance URL**
 
 ## 📄 License
 
