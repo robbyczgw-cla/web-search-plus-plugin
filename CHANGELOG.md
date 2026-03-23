@@ -3,6 +3,44 @@
 All notable changes to web-search-plus-plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-03-23
+
+### Changed
+- **Zero dependencies:** Replaced `@sinclair/typebox` with plain JSON Schema for tool parameters — no npm install needed, works out of the box for all users
+- **Fully portable:** No external imports, no SDK imports — compatible with any OpenClaw version
+
+## [1.3.4] - 2026-03-23
+
+### Fixed
+- Revert `definePluginEntry` wrapper — external installs cannot resolve `openclaw/plugin-sdk/plugin-entry` outside the monorepo. Back to compatible `export default function(api)` pattern which works with all OpenClaw versions.
+
+## [1.3.3] - 2026-03-23
+
+### Security
+- **Output sanitization:** Redact potential API key/token patterns from stderr and stdout before returning to caller
+- **Error handling:** Harden process error handler to never expose env/args in error messages — `ENOENT` maps to "python3 not found", all others to "Process error"
+
+## [1.3.2] - 2026-03-23
+
+### Fixed
+- **Non-blocking execution:** Replace `spawnSync` with async `spawn` + Promise wrapper — no longer blocks the Node event loop during searches
+- **Script existence check:** Fail fast with a clear error if `search.py` is missing
+- **uiHints:** Add missing `queritApiKey` entry for consistency
+
+## [1.3.1] - 2026-03-23
+
+### Fixed
+- Use proper `api.pluginConfig` instead of `api.config` hack for plugin-specific config access
+
+## [1.3.0] - 2026-03-23
+
+### Changed
+- **SDK migration:** Migrated entry point to `definePluginEntry` from `openclaw/plugin-sdk/plugin-entry` for compatibility with OpenClaw v2026.3.22+
+- **Config access:** Use proper `api.pluginConfig` instead of `api.config` hack for plugin-specific config
+- **Manifest:** Removed legacy `kind: "skill"` field from `openclaw.plugin.json` (invalid in plugin manifests)
+- **package.json:** Added `openclaw.extensions` block and `peerDependencies` on OpenClaw >=2026.3.22
+- **ClawHub:** Now published as a native OpenClaw plugin on ClawHub (in addition to npm)
+
 ## [1.2.3] - 2026-03-12
 
 ### Added

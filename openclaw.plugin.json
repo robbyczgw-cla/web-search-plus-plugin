@@ -1,8 +1,7 @@
 {
   "id": "web-search-plus-plugin",
-  "kind": "skill",
   "name": "Web Search Plus",
-  "version": "1.2.3",
+  "version": "1.4.0",
   "description": "Multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity, You.com, SearXNG) with intelligent auto-routing",
   "configSchema": {
     "type": "object",
@@ -21,6 +20,7 @@
   "uiHints": {
     "serperApiKey": { "label": "Serper API Key", "placeholder": "sk-...", "sensitive": true },
     "tavilyApiKey": { "label": "Tavily API Key", "placeholder": "tvly-...", "sensitive": true },
+    "queritApiKey": { "label": "Querit API Key", "placeholder": "querit-sk-...", "sensitive": true },
     "queritApiKey": { "label": "Querit API Key", "placeholder": "querit-sk-...", "sensitive": true },
     "exaApiKey": { "label": "Exa API Key", "placeholder": "exa-...", "sensitive": true },
     "perplexityApiKey": { "label": "Perplexity API Key", "placeholder": "pplx-...", "sensitive": true },
