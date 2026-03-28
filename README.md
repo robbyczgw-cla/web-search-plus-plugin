@@ -2,17 +2,22 @@
 
 Multi-provider web search plugin for OpenClaw.
 
+## Install
+
+```bash
+openclaw plugins install clawhub:web-search-plus-plugin
+```
+
 It registers a `web_search_plus` tool that can query multiple providers and auto-route to the one that best fits the query.
 
 ## Why use this instead of OpenClaw's built-in `web_search`?
 
 OpenClaw's built-in `web_search` uses Brave Search.
 
-This plugin is useful if you want:
-- more than one backend
-- different search styles for different tasks
-- fallback between providers when one is unavailable
-- a self-hosted option via SearXNG
+You might want this plugin when:
+- Brave returns thin or no results for a query, but Serper/Google or You.com still finds relevant pages.
+- You want research-oriented output; Tavily can return structured results that are easier to summarize.
+- You want semantic discovery; Exa can find related content that plain keyword search may miss.
 
 Supported providers:
 - Serper (Google)
@@ -31,8 +36,6 @@ You need at least one configured provider:
 - an API key for any hosted provider, or
 - a SearXNG instance URL
 
-All provider settings are optional individually. Free tiers are available for several of them.
-
 ## Quick setup
 
 ```bash
@@ -44,15 +47,19 @@ Then load the plugin in OpenClaw and restart the gateway.
 
 ## Provider overview
 
-| Provider | Best for | Free tier |
-| --- | --- | --- |
-| Serper | Google-style general web, news, shopping, local results | Yes |
-| Tavily | Research-style results and summaries | Yes |
-| Exa | Semantic / neural discovery | Yes |
-| Querit | Multilingual and regional search | Yes |
-| Perplexity | Answer-style web results with citations | Limited / depends on plan |
-| You.com | General web + answer-oriented results | Limited |
-| SearXNG | Self-hosted metasearch | Yes, self-hosted |
+| Provider | Best for | Free tier | Rate limit (free) |
+| --- | --- | --- | --- |
+| Serper | Google-style general web, news, shopping, local results | Yes | 2,500/mo |
+| Tavily | Research-style results and summaries | Yes | 1,000/mo |
+| Exa | Semantic / neural discovery | Yes | 1,000/mo |
+| Querit | Multilingual and regional search | Yes | Varies |
+| Perplexity | Answer-style web results with citations | Limited / depends on plan | API credits required |
+| You.com | General web + answer-oriented results | Limited | 60 req/hr |
+| SearXNG | Self-hosted metasearch | Yes, self-hosted | Self-hosted, unlimited |
+
+## Auto-routing logic
+
+The plugin scores each query against the providers you have configured and picks the best match for that query type. If the first choice is unavailable or fails, it falls back to another configured provider instead of failing immediately.
 
 ## Notes
 
@@ -63,7 +70,6 @@ Then load the plugin in OpenClaw and restart the gateway.
 
 ## Environment variables
 
-Main options:
 - `SERPER_API_KEY`
 - `TAVILY_API_KEY`
 - `EXA_API_KEY`

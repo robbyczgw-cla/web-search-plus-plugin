@@ -3,6 +3,14 @@
 All notable changes to web-search-plus-plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [Semantic Versioning](https://semver.org/).
 
+## [2.0.2] - 2026-03-28
+
+### Documentation
+- Add a prominent install command near the top of `README.md`
+- Add a concrete comparison against the built-in Brave-based `web_search` tool
+- Add free-tier rate limits to the provider table
+- Document the auto-routing and fallback behavior more explicitly
+
 ## [2.0.1] - 2026-03-28
 
 ### Security
