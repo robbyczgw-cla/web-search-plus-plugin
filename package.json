@@ -5,7 +5,12 @@
   "type": "module",
   "main": "index.ts",
   "openclaw": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.22"
+    }
   },
   "files": [
     "index.ts",
@@ -14,7 +19,21 @@
     "README.md",
     "LICENSE"
   ],
-  "keywords": ["openclaw", "plugin", "search", "serper", "tavily", "querit", "exa", "exa-deep", "perplexity", "you", "searxng", "web-search", "auto-routing"],
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "search",
+    "serper",
+    "tavily",
+    "querit",
+    "exa",
+    "exa-deep",
+    "perplexity",
+    "you",
+    "searxng",
+    "web-search",
+    "auto-routing"
+  ],
   "peerDependencies": {
     "openclaw": ">=2026.3.22"
   },
