@@ -3,6 +3,16 @@
 All notable changes to web-search-plus-plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] - 2026-03-28
+
+### Security
+- Document plugin environment variables in `package.json` OpenClaw metadata, including the `SEARXNG_ALLOW_PRIVATE` SSRF warning
+- Stop loading a sibling `.env` file; only the plugin-local `.env` is read at runtime
+- Add an inline warning that `SEARXNG_ALLOW_PRIVATE` disables SearXNG SSRF protection for private/internal hosts
+
+### Documentation
+- Rewrite `README.md` to clearly explain what the plugin adds over OpenClaw's built-in Brave-based `web_search` tool
+
 ## [2.0.0] - 2026-03-23
 
 ### Changed

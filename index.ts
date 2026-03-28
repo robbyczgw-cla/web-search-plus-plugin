@@ -286,7 +286,7 @@ function loadEnvFile(envPath: string): Record<string, string> {
 }
 
 function getRuntimeEnv(pluginConfig: Record<string, string>): Record<string, string> {
-  const envFiles = [path.join(PLUGIN_DIR, ".env"), path.join(PLUGIN_DIR, "..", "web-search-plus", ".env")];
+  const envFiles = [path.join(PLUGIN_DIR, ".env")];
   const fileEnv = Object.assign({}, ...envFiles.map(loadEnvFile));
   const mapped: Record<string, string> = {};
   const configKeyMap: Record<string, string> = {
@@ -314,8 +314,8 @@ function getApiKey(provider: ProviderName, env: Record<string, string>): string 
     querit: env.QUERIT_API_KEY,
     exa: env.EXA_API_KEY,
     perplexity: env.KILOCODE_API_KEY || env.PERPLEXITY_API_KEY,
-    you: env.YOU_API_KEY,
-    searxng: env.SEARXNG_INSTANCE_URL,
+    you: env.YOU_API_KEY || env.YOUCOM_API_KEY,
+    searxng: env.SEARXNG_INSTANCE_URL || env.SEARXNG_URL,
   };
   return keyMap[provider];
 }
@@ -387,7 +387,9 @@ async function validateSearxngUrl(input: string, env: Record<string, string>): P
   const blockedHosts = new Set(["169.254.169.254", "metadata.google.internal", "metadata.internal"]);
   if (blockedHosts.has(u.hostname)) throw new ProviderConfigError("SearXNG URL blocked: metadata endpoint");
 
-  const allowPrivate = String(env.SEARXNG_ALLOW_PRIVATE || "").trim() === "1";
+  // WARNING: Setting SEARXNG_ALLOW_PRIVATE=true disables SSRF protection for SearXNG.
+  // Only enable on fully trusted private networks.
+  const allowPrivate = ["1", "true", "yes"].includes(String(env.SEARXNG_ALLOW_PRIVATE || "").trim().toLowerCase());
   if (!allowPrivate) {
     const records = await dns.lookup(u.hostname, { all: true, verbatim: true }).catch(() => [] as dns.LookupAddress[]);
     if (!records.length && net.isIP(u.hostname)) records.push({ address: u.hostname, family: net.isIP(u.hostname) as 4 | 6 });
