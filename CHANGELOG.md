@@ -3,6 +3,13 @@
 All notable changes to web-search-plus-plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [Semantic Versioning](https://semver.org/).
 
+## [2.0.3] - 2026-03-28
+
+### Changed
+- Standardize env var names: use `YOU_API_KEY` and `SEARXNG_INSTANCE_URL` consistently in all docs and metadata
+- Clean up `.env.template` to use empty values with no placeholders
+- Minor naming consistency fixes
+
 ## [2.0.2] - 2026-03-28
 
 ### Documentation
