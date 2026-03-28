@@ -3,6 +3,11 @@
 All notable changes to web-search-plus-plugin are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [Semantic Versioning](https://semver.org/).
 
+## [2.0.4] - 2026-03-28
+
+### Changed
+- Add `KILOCODE_API_KEY` to `.env.template` for consistency with manifest
+
 ## [2.0.3] - 2026-03-28
 
 ### Changed
