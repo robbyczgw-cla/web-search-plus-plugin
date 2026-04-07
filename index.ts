@@ -1,10 +1,27 @@
 import crypto from "crypto";
+import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import dns from "dns/promises";
 import net from "net";
-import { getPluginDir } from "./paths.ts";
-import { getRuntimeEnv } from "./env.ts";
-import { readJsonFile, writeJsonFile, readCachedJson } from "./storage.ts";
+
+function getPluginDir(): string {
+  // Resolve lazily so env access does not happen at module load.
+  // When OpenClaw transpiles plugins, import.meta.url may point to a temp dir.
+  // Check the known extension path first when HOME is available.
+  const homeDir = process.env.HOME;
+  if (homeDir) {
+    const knownPath = path.join(homeDir, ".openclaw", "extensions", "web-search-plus-plugin");
+    if (fs.existsSync(path.join(knownPath, "package.json"))) return knownPath;
+  }
+  try {
+    if (typeof __dirname !== "undefined") return __dirname;
+  } catch {}
+  try {
+    return path.dirname(fileURLToPath(import.meta.url));
+  } catch {}
+  return process.cwd();
+}
 
 type PluginPaths = {
   pluginDir: string;
@@ -137,8 +154,25 @@ function sanitizeOutput(input: any): any {
   return input;
 }
 
+function ensureDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readJsonFile(file: string, fallback: any): any {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonFile(file: string, value: any): void {
+  ensureDir(path.dirname(file));
+  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
 }
 
 function sha256(input: string): string {
@@ -156,21 +190,32 @@ function getCachePath(cacheKey: string): string {
 function cacheGet(query: string, provider: string, maxResults: number, ttl: number, params?: Json): any | null {
   const key = buildCacheKey(query, provider, maxResults, params);
   const file = getCachePath(key);
-  return readCachedJson(file, ttl);
+  try {
+    const cached = JSON.parse(fs.readFileSync(file, "utf8"));
+    const ts = Number(cached._cache_timestamp || 0);
+    if (!ts || Date.now() / 1000 - ts > ttl) {
+      try { fs.unlinkSync(file); } catch {}
+      return null;
+    }
+    return cached;
+  } catch {
+    try { fs.unlinkSync(file); } catch {}
+    return null;
+  }
 }
 
 function cachePut(query: string, provider: string, maxResults: number, result: any, params?: Json): void {
+  ensureDir(getPluginPaths().cacheDir);
   const key = buildCacheKey(query, provider, maxResults, params);
   const file = getCachePath(key);
-  const sanitizedResult = sanitizeOutput(result);
   const payload = {
-    ...sanitizedResult,
+    ...result,
     _cache_timestamp: Math.floor(Date.now() / 1000),
     _cache_key: key,
     _cache_query: query,
     _cache_provider: provider,
     _cache_max_results: maxResults,
-    _cache_params: sanitizeOutput(params || {}),
+    _cache_params: params || {},
   };
   writeJsonFile(file, payload);
 }
@@ -244,6 +289,43 @@ function deduplicateResultsAcrossProviders(resultsByProvider: Array<[string, Sea
   return { results: deduped, dedupCount };
 }
 
+function loadEnvFile(envPath: string): Record<string, string> {
+  if (!fs.existsSync(envPath)) return {};
+  const env: Record<string, string> = {};
+  for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const stripped = trimmed.startsWith("export ") ? trimmed.slice(7) : trimmed;
+    const idx = stripped.indexOf("=");
+    if (idx < 0) continue;
+    const key = stripped.slice(0, idx).trim();
+    const value = stripped.slice(idx + 1).trim().replace(/^['"]|['"]$/g, "");
+    if (key) env[key] = value;
+  }
+  return env;
+}
+
+function getRuntimeEnv(pluginConfig: Record<string, string>): Record<string, string> {
+  const envFiles = [path.join(getPluginPaths().pluginDir, ".env")];
+  const fileEnv = Object.assign({}, ...envFiles.map(loadEnvFile));
+  const mapped: Record<string, string> = {};
+  const configKeyMap: Record<string, string> = {
+    serperApiKey: "SERPER_API_KEY",
+    tavilyApiKey: "TAVILY_API_KEY",
+    queritApiKey: "QUERIT_API_KEY",
+    exaApiKey: "EXA_API_KEY",
+    perplexityApiKey: "PERPLEXITY_API_KEY",
+    kilocodeApiKey: "KILOCODE_API_KEY",
+    youApiKey: "YOU_API_KEY",
+    searxngInstanceUrl: "SEARXNG_INSTANCE_URL",
+    searxngAllowPrivate: "SEARXNG_ALLOW_PRIVATE",
+  };
+  for (const [cfgKey, envKey] of Object.entries(configKeyMap)) {
+    const val = pluginConfig?.[cfgKey];
+    if (val && typeof val === "string") mapped[envKey] = val;
+  }
+  return { ...fileEnv, ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => typeof v === "string") as any), ...mapped };
+}
 
 function getApiKey(provider: ProviderName, env: Record<string, string>): string | undefined {
   const keyMap: Record<ProviderName, string | undefined> = {
