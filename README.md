@@ -1,181 +1,85 @@
-# 🔍 web-search-plus-plugin
+# web-search-plus-plugin
 
-**Multi-provider web search as a native OpenClaw tool.**
+Multi-provider web search plugin for OpenClaw.
 
-A standalone OpenClaw plugin that registers `web_search_plus` as a first-class tool with intelligent auto-routing. No skill dependency needed — install, configure, and go.
-
-## ✨ Features
-
-- **Intelligent auto-routing** — analyzes query intent and picks the best provider automatically
-- **7 search providers** — use one or all, graceful fallback if any is down
-- **Local result caching** — saves API costs on repeated queries
-- **Interactive setup wizard** — guided configuration via `python3 scripts/setup.py`
-- **Native OpenClaw tool** — registers as `web_search_plus`, not a skill
-
-## 🔎 Supported Providers
-
-| Provider | Best for | Free tier |
-|----------|----------|-----------|
-| **Serper** (Google) | Facts, news, shopping, local businesses | 2,500 queries/month |
-| **Tavily** | Deep research, analysis, explanations | 1,000 queries/month |
-| **Querit** | Multi-lingual AI search with rich metadata and real-time info | 1,000 queries/month |
-| **Exa** (Neural) | Semantic discovery, finding similar content | 1,000 queries/month |
-| **Perplexity** | AI-synthesized answers with citations | Via API key |
-| **You.com** | Real-time RAG, LLM-ready snippets | Limited free tier |
-| **SearXNG** | Privacy-first, self-hosted, $0 cost | Free (self-hosted) |
-
-## 🧠 Auto-Routing Examples
-
-The plugin analyzes your query and picks the best provider:
-
-| Query | Routed to | Why |
-|-------|-----------|-----|
-| "iPhone 16 Pro price" | Serper | Shopping intent detected |
-| "how does TCP/IP work" | Tavily | Research/explanation intent |
-| "latest multilingual EV market updates" | Querit | Real-time AI search with metadata-rich results |
-| "companies like Stripe" | Exa | Discovery/semantic intent |
-| "what is quantum computing" | Perplexity | Direct answer intent |
-| "latest news AI regulation" | Serper | News intent |
-
-You can always override with `provider: "tavily"` (or any other) to force a specific provider.
-
-## 📦 Installation
-
-### Option 1: npm
+## Install
 
 ```bash
-npm install web-search-plus-plugin
+openclaw plugins install clawhub:web-search-plus-plugin
 ```
 
-### Option 2: Clone
+It registers a `web_search_plus` tool that can query multiple providers and auto-route to the one that best fits the query.
 
-```bash
-git clone https://github.com/robbyczgw-cla/web-search-plus-plugin.git
-```
+## Why use this instead of OpenClaw's built-in `web_search`?
 
-### Configure API Keys
+OpenClaw's built-in `web_search` uses Brave Search.
+
+You might want this plugin when:
+- Brave returns thin or no results for a query, but Serper/Google or You.com still finds relevant pages.
+- You want research-oriented output; Tavily can return structured results that are easier to summarize.
+- You want semantic discovery; Exa can find related content that plain keyword search may miss.
+
+Supported providers:
+- Serper (Google)
+- Tavily
+- Exa
+- Querit
+- Perplexity
+- You.com
+- SearXNG
+
+## What you need
+
+You do not need every provider.
+
+You need at least one configured provider:
+- an API key for any hosted provider, or
+- a SearXNG instance URL
+
+## Quick setup
 
 ```bash
 cp .env.template .env
-# Edit .env and add your API keys (at least one required)
+# add at least one API key or SearXNG URL
 ```
 
-### Add to OpenClaw Config
+Then load the plugin in OpenClaw and restart the gateway.
 
-```json
-{
-  "plugins": {
-    "load": {
-      "paths": [
-        "./node_modules/web-search-plus-plugin"
-      ]
-    },
-    "entries": {
-      "web-search-plus-plugin": {
-        "enabled": true
-      }
-    }
-  }
-}
-```
+## Provider overview
 
-Restart your gateway after adding the plugin.
+| Provider | Best for | Free tier | Rate limit (free) |
+| --- | --- | --- | --- |
+| Serper | Google-style general web, news, shopping, local results | Yes | 2,500/mo |
+| Tavily | Research-style results and summaries | Yes | 1,000/mo |
+| Exa | Semantic / neural discovery | Yes | 1,000/mo |
+| Querit | Multilingual and regional search | Yes | Varies |
+| Perplexity | Answer-style web results with citations | Limited / depends on plan | API credits required |
+| You.com | General web + answer-oriented results | Limited | 60 req/hr |
+| SearXNG | Self-hosted metasearch | Yes, self-hosted | Self-hosted, unlimited |
 
-## 🔑 Environment Variables
+## Auto-routing logic
 
-Copy `.env.template` to `.env` and add at least one API key:
+The plugin scores each query against the providers you have configured and picks the best match for that query type. If the first choice is unavailable or fails, it falls back to another configured provider instead of failing immediately.
 
-| Variable | Provider | Sign up |
-|----------|----------|---------|
-| `SERPER_API_KEY` | Serper (Google) | [console.serper.dev](https://console.serper.dev) |
-| `TAVILY_API_KEY` | Tavily | [tavily.com](https://tavily.com) |
-| `QUERIT_API_KEY` | Querit | [querit.ai](https://querit.ai) |
-| `EXA_API_KEY` | Exa | [exa.ai](https://exa.ai) |
-| `PERPLEXITY_API_KEY` | Perplexity | [perplexity.ai](https://docs.perplexity.ai) |
-| `KILOCODE_API_KEY` | Perplexity via Kilo | [kilocode.ai](https://kilocode.ai) |
-| `YOU_API_KEY` | You.com | [you.com/api](https://you.com/api) |
-| `SEARXNG_URL` | SearXNG (self-hosted) | [docs.searxng.org](https://docs.searxng.org) |
+## Notes
 
-## 🤖 Enable for an Agent
+- Auto-routing chooses among configured providers only.
+- If a provider is missing credentials, it is skipped.
+- SearXNG includes SSRF protection by default.
+- `SEARXNG_ALLOW_PRIVATE=true` disables that protection and should only be used on trusted private networks.
 
-Allow the tool in your agent config:
+## Environment variables
 
-```json
-{
-  "agents": {
-    "list": [
-      {
-        "name": "my-agent",
-        "tools": {
-          "allow": ["web_search_plus"]
-        }
-      }
-    ]
-  }
-}
-```
+- `SERPER_API_KEY`
+- `TAVILY_API_KEY`
+- `EXA_API_KEY`
+- `QUERIT_API_KEY`
+- `PERPLEXITY_API_KEY`
+- `KILOCODE_API_KEY`
+- `YOU_API_KEY`
+- `SEARXNG_INSTANCE_URL`
+- `SEARXNG_ALLOW_PRIVATE`
 
-## 🛠️ Tool Parameters
+## Repository
 
-The registered `web_search_plus` tool accepts:
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `query` | string | ✅ | Search query |
-| `provider` | string | ❌ | Force a provider: `serper`, `tavily`, `querit`, `exa`, `perplexity`, `you`, `searxng`, or `auto` (default) |
-| `count` | number | ❌ | Number of results (default: 5) |
-
-## 🧪 Test Directly
-
-You can test the search script standalone:
-
-```bash
-# Auto-route
-python3 scripts/search.py -q "your query here"
-
-# Force a specific provider
-python3 scripts/search.py -q "your query" -p tavily
-
-# More results
-python3 scripts/search.py -q "your query" --max-results 10
-```
-
-## ❓ FAQ
-
-### Do I need all 7 providers?
-No. The plugin works with just one API key. Configure whichever providers you have — the auto-router will use what's available and skip what's not.
-
-### What's the difference between this plugin and the `web-search-plus` skill?
-The **plugin** registers a native tool that any agent can use directly. The **skill** provides a SKILL.md with instructions for the agent. Both use the same search backend. Use the plugin for cleaner integration — it's the recommended approach.
-
-### Do I need Python?
-Yes, Python 3 is required. The search logic runs as a Python script. Most Linux servers and macOS have Python 3 pre-installed.
-
-### How does auto-routing work?
-The router scores each provider based on query signals — keywords like "price" or "buy" boost Serper, deep explanation queries boost Tavily, multilingual or metadata-rich real-time search can favor Querit, semantic/discovery queries boost Exa, and direct questions boost Perplexity. The highest-scoring provider wins.
-
-### Does it cache results?
-Yes. Results are cached locally in a `.cache/` directory inside the plugin folder. Identical queries return cached results instantly and don't consume API credits. Cache is file-based and survives restarts.
-
-### Can I use Perplexity through Kilo Gateway?
-Yes. Set `KILOCODE_API_KEY` in your `.env` — the plugin routes Perplexity requests through the Kilo Gateway automatically. You can also use a direct `PERPLEXITY_API_KEY`.
-
-### What about SearXNG?
-SearXNG is a self-hosted meta search engine that aggregates 70+ sources. It's free but requires your own instance. The plugin validates the instance URL on setup and includes SSRF protection for security.
-
-### Does it work in sandboxed agents?
-Yes, as long as the tool is allowed in the agent's tool config. The plugin runs on the host alongside the gateway.
-
-## 📋 Requirements
-
-- **OpenClaw** gateway (any recent version)
-- **Python 3** (3.8+)
-- At least **one API key** from a supported provider
-
-## 📄 License
-
-MIT
-
-## 👤 Maintainer
-
-**robbyczgw-cla** — [GitHub](https://github.com/robbyczgw-cla)
+GitHub: <https://github.com/robbyczgw-cla/web-search-plus-plugin>

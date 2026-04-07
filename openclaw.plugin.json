@@ -1,31 +1,78 @@
 {
   "id": "web-search-plus-plugin",
   "name": "Web Search Plus",
-  "version": "1.4.0",
+  "version": "2.0.18",
   "description": "Multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity, You.com, SearXNG) with intelligent auto-routing",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "serperApiKey": { "type": "string" },
-      "tavilyApiKey": { "type": "string" },
-      "queritApiKey": { "type": "string" },
-      "exaApiKey": { "type": "string" },
-      "perplexityApiKey": { "type": "string" },
-      "kilocodeApiKey": { "type": "string" },
-      "youApiKey": { "type": "string" },
-      "searxngInstanceUrl": { "type": "string" }
+      "serperApiKey": {
+        "type": "string"
+      },
+      "tavilyApiKey": {
+        "type": "string"
+      },
+      "queritApiKey": {
+        "type": "string"
+      },
+      "exaApiKey": {
+        "type": "string"
+      },
+      "perplexityApiKey": {
+        "type": "string"
+      },
+      "kilocodeApiKey": {
+        "type": "string"
+      },
+      "youApiKey": {
+        "type": "string"
+      },
+      "searxngInstanceUrl": {
+        "type": "string"
+      }
     }
   },
   "uiHints": {
-    "serperApiKey": { "label": "Serper API Key", "placeholder": "sk-...", "sensitive": true },
-    "tavilyApiKey": { "label": "Tavily API Key", "placeholder": "tvly-...", "sensitive": true },
-    "queritApiKey": { "label": "Querit API Key", "placeholder": "querit-sk-...", "sensitive": true },
-    "queritApiKey": { "label": "Querit API Key", "placeholder": "querit-sk-...", "sensitive": true },
-    "exaApiKey": { "label": "Exa API Key", "placeholder": "exa-...", "sensitive": true },
-    "perplexityApiKey": { "label": "Perplexity API Key", "placeholder": "pplx-...", "sensitive": true },
-    "kilocodeApiKey": { "label": "Kilo Gateway API Key", "placeholder": "...", "sensitive": true },
-    "youApiKey": { "label": "You.com API Key", "placeholder": "...", "sensitive": true },
-    "searxngInstanceUrl": { "label": "SearXNG Instance URL", "placeholder": "https://searx.example.com", "sensitive": false }
+    "serperApiKey": {
+      "label": "Serper API Key",
+      "placeholder": "sk-...",
+      "sensitive": true
+    },
+    "tavilyApiKey": {
+      "label": "Tavily API Key",
+      "placeholder": "tvly-...",
+      "sensitive": true
+    },
+    "queritApiKey": {
+      "label": "Querit API Key",
+      "placeholder": "querit-sk-...",
+      "sensitive": true
+    },
+    "exaApiKey": {
+      "label": "Exa API Key",
+      "placeholder": "exa-...",
+      "sensitive": true
+    },
+    "perplexityApiKey": {
+      "label": "Perplexity API Key",
+      "placeholder": "pplx-...",
+      "sensitive": true
+    },
+    "kilocodeApiKey": {
+      "label": "Kilo Gateway API Key",
+      "placeholder": "...",
+      "sensitive": true
+    },
+    "youApiKey": {
+      "label": "You.com API Key",
+      "placeholder": "...",
+      "sensitive": true
+    },
+    "searxngInstanceUrl": {
+      "label": "SearXNG Instance URL",
+      "placeholder": "https://searx.example.com",
+      "sensitive": false
+    }
   }
 }

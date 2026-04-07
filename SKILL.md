@@ -1,31 +1,47 @@
 ---
 name: web-search-plus-plugin
-description: OpenClaw native plugin for multi-provider web search with intelligent auto-routing across Serper/Google, Tavily, Querit, Exa, Perplexity, You.com, and SearXNG. Registers the `web_search_plus` tool with automatic provider selection based on query intent.
+version: 2.0.18
+description: OpenClaw plugin for multi-provider web search with intelligent auto-routing. Registers the `web_search_plus` tool — supports Serper, Tavily, Querit, Exa, Perplexity, You.com, and SearXNG.
 ---
 
 # Web Search Plus Plugin
 
-Native OpenClaw plugin that registers the `web_search_plus` tool with intelligent multi-provider routing.
+Registers `web_search_plus` as a native OpenClaw tool. Analyzes query intent and routes to the best configured provider automatically.
 
-## Install
+## Quick Start
 
 ```bash
 openclaw plugins install web-search-plus-plugin
 ```
 
+Add at least one API key via OpenClaw plugin config or environment variables, then allow the tool for your agent:
+
+```json
+{ "tools": { "allow": ["web_search_plus"] } }
+```
+
+## Runtime
+
+- Pure TypeScript — single file, zero external dependencies
+- All provider calls via native `fetch()`
+- File-based result caching with provider health tracking
+- Built-in SSRF protection for SearXNG
+
 ## Providers
 
-- **Serper** — Google-backed, fast, general search
-- **Tavily** — Research-focused, deep content extraction
-- **Querit** — Multilingual AI search, 20+ countries
-- **Exa** — Neural search with deep/deep-reasoning modes
-- **Perplexity** — AI-synthesized answers
-- **You.com** — RAG + real-time
-- **SearXNG** — Self-hosted privacy search
+| Provider | Strength |
+|----------|----------|
+| **Serper** | Google-backed general search, news, shopping |
+| **Tavily** | Research-focused, deep content extraction |
+| **Querit** | Multilingual AI search, 20+ countries |
+| **Exa** | Neural/semantic search with deep reasoning modes |
+| **Perplexity** | AI-synthesized answers with citations |
+| **You.com** | Real-time RAG snippets |
+| **SearXNG** | Self-hosted, privacy-first, free |
 
 ## Configuration
 
-Configure API keys in your OpenClaw plugin config or via environment variables:
+Via OpenClaw plugin config:
 
 ```json
 {
@@ -43,10 +59,4 @@ Configure API keys in your OpenClaw plugin config or via environment variables:
 }
 ```
 
-## Usage
-
-The `web_search_plus` tool is registered as optional. Enable it:
-
-```json
-{ "tools": { "allow": ["web_search_plus"] } }
-```
+Or via `.env` file in the plugin directory. At least one provider key is required.
