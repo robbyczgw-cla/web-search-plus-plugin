@@ -1,3 +1,8 @@
+## 2.0.21
+- Remove outdated "single-file" runtime wording from package docs and architecture notes.
+- Strengthen package metadata wording so registry summaries describe the plugin as requiring at least one configured provider API key or a SearXNG instance URL.
+- Leave runtime logic unchanged; this release is metadata and documentation only.
+
 ## 2.0.20
 - Standardize provider environment variable names on `YOU_API_KEY` and `SEARXNG_INSTANCE_URL` across code and package metadata.
 - Add `searxng` to `providerAuthEnvVars` so registry metadata reflects SearXNG configuration requirements.

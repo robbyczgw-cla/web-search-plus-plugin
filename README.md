@@ -2,6 +2,8 @@
 
 Multi-provider web search plugin for OpenClaw.
 
+Requires at least one configured provider API key or a `SEARXNG_INSTANCE_URL`.
+
 ## Install
 
 ```bash

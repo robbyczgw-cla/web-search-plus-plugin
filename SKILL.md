@@ -1,6 +1,6 @@
 ---
 name: web-search-plus-plugin
-version: 2.0.20
+version: 2.0.21
 description: OpenClaw plugin for multi-provider web search with intelligent auto-routing. Registers the `web_search_plus` tool — supports Serper, Tavily, Querit, Exa, Perplexity, You.com, and SearXNG.
 ---
 
@@ -22,7 +22,7 @@ Add at least one provider credential via OpenClaw plugin config or environment v
 
 ## Runtime
 
-- Pure TypeScript — single file, zero external dependencies
+- Pure TypeScript runtime with local helper modules and zero external runtime dependencies
 - All provider calls via native `fetch()`
 - File-based result caching with provider health tracking
 - Built-in SSRF protection for SearXNG

@@ -2,7 +2,7 @@
 
 ## Overview
 
-`web-search-plus-plugin` v2.0.0 is a **single-file pure TypeScript implementation**. The plugin registers `web_search_plus` directly in OpenClaw and performs provider routing, HTTP requests, retries, caching, cooldown tracking, deduplication, and SearXNG SSRF checks in-process.
+`web-search-plus-plugin` is a pure TypeScript implementation with a small local module split. The plugin registers `web_search_plus` directly in OpenClaw and performs provider routing, HTTP requests, retries, caching, cooldown tracking, deduplication, and SearXNG SSRF checks in-process.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -11,7 +11,7 @@
 │  Agent calls web_search_plus(query, provider, ...)          │
 │                           ↓                                  │
 │  ┌────────────────────────────────────────────────────────┐  │
-│  │                   index.ts (single file)              │  │
+│  │              index.ts + local helper modules          │  │
 │  │                                                        │  │
 │  │  Types → Config → HTTP Helper → Cache → Health        │  │
 │  │        → SSRF → QueryAnalyzer → Providers             │  │
@@ -26,11 +26,11 @@
 
 ## Core Design
 
-### Single-file architecture
+### Runtime module layout
 
-All runtime logic now lives in `index.ts`.
+The runtime entry lives in `index.ts`, with a few local helper modules for path resolution, env loading, and storage utilities.
 
-That file contains:
+Together they cover:
 - Type definitions for tool input/output and internal state
 - Environment/config loading
 - Shared HTTP request helper built on native `fetch()`
@@ -43,7 +43,7 @@ That file contains:
 - Cross-provider deduplication
 - OpenClaw plugin entry + tool registration
 
-One plugin entry, zero helper scripts, zero external runtime dependencies.
+One plugin runtime, a few local helper modules, zero external runtime dependencies.
 
 ## Runtime Layers
 

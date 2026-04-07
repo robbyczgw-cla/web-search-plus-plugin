@@ -1,7 +1,7 @@
 {
   "name": "web-search-plus-plugin",
-  "version": "2.0.20",
-  "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity, You.com, SearXNG) with intelligent auto-routing",
+  "version": "2.0.21",
+  "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider API key or SearXNG instance URL.",
   "type": "module",
   "main": "index.ts",
   "openclaw": {
@@ -12,15 +12,15 @@
       "pluginApi": ">=2026.3.22"
     },
     "env": {
-      "SERPER_API_KEY": "optional \u2014 Serper/Google search API key",
-      "TAVILY_API_KEY": "optional \u2014 Tavily research search API key",
-      "EXA_API_KEY": "optional \u2014 Exa neural search API key",
-      "QUERIT_API_KEY": "optional \u2014 Querit multilingual search API key",
-      "PERPLEXITY_API_KEY": "optional \u2014 Perplexity AI search API key",
-      "KILOCODE_API_KEY": "optional \u2014 Kilo.ai gateway API key",
-      "YOU_API_KEY": "optional \u2014 You.com search API key",
-      "SEARXNG_INSTANCE_URL": "optional \u2014 SearXNG self-hosted instance URL",
-      "SEARXNG_ALLOW_PRIVATE": "optional \u2014 set true to allow private IPs for SearXNG (disables SSRF protection)"
+      "SERPER_API_KEY": "one supported hosted-provider option for enabling search, Serper/Google API key",
+      "TAVILY_API_KEY": "one supported hosted-provider option for enabling search, Tavily research API key",
+      "EXA_API_KEY": "one supported hosted-provider option for enabling search, Exa neural search API key",
+      "QUERIT_API_KEY": "one supported hosted-provider option for enabling search, Querit multilingual search API key",
+      "PERPLEXITY_API_KEY": "one supported hosted-provider option for enabling search, Perplexity AI search API key",
+      "KILOCODE_API_KEY": "alternative hosted-provider option for enabling Perplexity-compatible search via Kilo.ai gateway",
+      "YOU_API_KEY": "one supported hosted-provider option for enabling search, You.com search API key",
+      "SEARXNG_INSTANCE_URL": "one supported self-hosted-provider option for enabling search, SearXNG instance URL",
+      "SEARXNG_ALLOW_PRIVATE": "optional, set true to allow private IPs for SearXNG and disable SSRF protection"
     },
     "build": {
       "openclawVersion": "2026.4.2"
