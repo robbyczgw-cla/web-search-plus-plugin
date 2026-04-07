@@ -71,6 +71,7 @@ Then load the plugin in OpenClaw and restart the gateway.
 
 The plugin scores each query against the providers you have configured and picks the best match for that query type. If the first choice is unavailable or fails, it falls back to another configured provider instead of failing immediately.
 
+
 ## Notes
 
 - Auto-routing chooses among configured providers only.
