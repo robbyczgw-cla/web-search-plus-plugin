@@ -1,0 +1,63 @@
+{
+  "name": "web-search-plus-plugin",
+  "version": "2.0.10",
+  "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity, You.com, SearXNG) with intelligent auto-routing",
+  "type": "module",
+  "main": "index.ts",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.22"
+    },
+    "env": {
+      "SERPER_API_KEY": "optional \u2014 Serper/Google search API key",
+      "TAVILY_API_KEY": "optional \u2014 Tavily research search API key",
+      "EXA_API_KEY": "optional \u2014 Exa neural search API key",
+      "QUERIT_API_KEY": "optional \u2014 Querit multilingual search API key",
+      "PERPLEXITY_API_KEY": "optional \u2014 Perplexity AI search API key",
+      "KILOCODE_API_KEY": "optional \u2014 Kilo.ai gateway API key",
+      "YOU_API_KEY": "optional \u2014 You.com search API key",
+      "SEARXNG_INSTANCE_URL": "optional \u2014 SearXNG self-hosted instance URL",
+      "SEARXNG_ALLOW_PRIVATE": "optional \u2014 set true to allow private IPs for SearXNG (disables SSRF protection)"
+    },
+    "build": {
+      "openclawVersion": "2026.4.2"
+    }
+  },
+  "files": [
+    "index.ts",
+    "paths.ts",
+    "storage.ts",
+    "env.ts",
+    "openclaw.plugin.json",
+    ".env.template",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "search",
+    "serper",
+    "tavily",
+    "querit",
+    "exa",
+    "exa-deep",
+    "perplexity",
+    "you",
+    "searxng",
+    "web-search",
+    "auto-routing"
+  ],
+  "peerDependencies": {
+    "openclaw": ">=2026.3.22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/robbyczgw-cla/web-search-plus-plugin"
+  },
+  "author": "robbyczgw-cla",
+  "license": "MIT"
+}

@@ -1,0 +1,5 @@
+.cache/
+.env
+*.ts.map
+node_modules/
+.git/
