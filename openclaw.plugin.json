@@ -102,6 +102,35 @@
       "searxngInstanceUrl": {
         "type": "string",
         "description": "Base URL for a SearXNG instance. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      "llmRouting": {
+        "type": "boolean",
+        "description": "Enable hybrid LLM routing for ambiguous auto-routing cases. Disabled by default.",
+        "default": false
+      },
+      "llmRoutingProvider": {
+        "type": "string",
+        "enum": [
+          "kilo",
+          "local"
+        ],
+        "description": "LLM routing backend. Use kilo for the hosted Kilo gateway or local for an OpenAI-compatible local server.",
+        "default": "kilo"
+      },
+      "llmRoutingModel": {
+        "type": "string",
+        "description": "Model used for LLM routing classification.",
+        "default": "google/gemini-2.0-flash"
+      },
+      "llmRoutingBaseUrl": {
+        "type": "string",
+        "description": "Base URL for the LLM routing backend. Local mode defaults to http://localhost:11434/v1.",
+        "default": "http://localhost:11434/v1"
+      },
+      "llmRoutingApiKey": {
+        "type": "string",
+        "description": "Optional API key for the LLM routing backend. Leave empty for local servers that do not require auth.",
+        "default": ""
       }
     }
   },
@@ -147,6 +176,33 @@
       "placeholder": "https://searx.example.com",
       "description": "Self-hosted metasearch instance URL. Counts as a configured provider even without an API key.",
       "sensitive": false
+    },
+    "llmRouting": {
+      "label": "Enable LLM Routing",
+      "description": "Use regex first, then ask an LLM only when auto-routing confidence is low.",
+      "sensitive": false
+    },
+    "llmRoutingProvider": {
+      "label": "LLM Routing Provider",
+      "description": "kilo uses the hosted Kilo gateway. local uses an OpenAI-compatible local server such as Ollama or LM Studio.",
+      "sensitive": false
+    },
+    "llmRoutingModel": {
+      "label": "LLM Routing Model",
+      "placeholder": "google/gemini-2.0-flash",
+      "sensitive": false
+    },
+    "llmRoutingBaseUrl": {
+      "label": "LLM Routing Base URL",
+      "placeholder": "http://localhost:11434/v1",
+      "description": "Used for local mode or custom OpenAI-compatible endpoints.",
+      "sensitive": false
+    },
+    "llmRoutingApiKey": {
+      "label": "LLM Routing API Key",
+      "placeholder": "",
+      "description": "Optional. Leave blank for local servers that do not require authentication.",
+      "sensitive": true
     }
   }
 }

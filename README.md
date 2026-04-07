@@ -71,6 +71,49 @@ Then load the plugin in OpenClaw and restart the gateway.
 
 The plugin scores each query against the providers you have configured and picks the best match for that query type. If the first choice is unavailable or fails, it falls back to another configured provider instead of failing immediately.
 
+### Hybrid LLM routing
+
+Regex routing always runs first.
+
+If auto-routing confidence is at least `0.7`, the regex result is used directly.
+If confidence is lower and `llmRouting` is enabled, the plugin asks a lightweight LLM classifier for a second opinion.
+If that LLM call times out, fails, or returns an invalid provider, the plugin falls back to the regex result.
+
+The routing payload now includes:
+- `routing_mode`: `"regex"` or `"llm"`
+- `from_cache`: whether the LLM routing decision came from the in-memory LRU cache
+- `llm_model`: the classifier model used when LLM routing runs
+
+LLM routing uses:
+- 3 second timeout
+- in-memory LRU cache, max 500 entries
+- 1 hour TTL per cached decision
+- opt-in config, off by default
+
+### LLM routing configuration
+
+Plugin config options:
+- `llmRouting` - enable the hybrid regex + LLM flow
+- `llmRoutingProvider` - `kilo` or `local`, default `kilo`
+- `llmRoutingModel` - model name, default `google/gemini-2.0-flash`
+- `llmRoutingBaseUrl` - base URL for the routing backend, default `http://localhost:11434/v1` for local mode
+- `llmRoutingApiKey` - optional auth token for the routing backend, can be empty for local mode
+
+Backend modes:
+- `kilo`: uses the Kilo gateway. By default it reuses the existing `kilocodeApiKey` / `KILOCODE_API_KEY`.
+- `local`: uses any OpenAI-compatible local endpoint, such as Ollama or LM Studio.
+
+Example local setup:
+
+```json
+{
+  "llmRouting": true,
+  "llmRoutingProvider": "local",
+  "llmRoutingModel": "llama3.1",
+  "llmRoutingBaseUrl": "http://localhost:11434/v1",
+  "llmRoutingApiKey": ""
+}
+```
 
 ## Notes
 

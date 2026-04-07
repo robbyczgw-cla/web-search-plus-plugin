@@ -29,6 +29,7 @@ const DEFAULT_CACHE_TTL = 3600;
 const RETRY_BACKOFF_MS = [1000, 3000, 9000];
 const COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const llmAnalyzers = new Map<string, LLMQueryAnalyzer>();
 
 const PARAMETERS_SCHEMA = {
   type: "object",
@@ -61,6 +62,32 @@ const PARAMETERS_SCHEMA = {
       items: { type: "string" },
       description: "Exclude results from these domains (Tavily, Exa, Querit where supported).",
     },
+    llmRouting: {
+      type: "boolean",
+      description: "Use LLM routing for ambiguous auto-routing cases. Disabled by default.",
+      default: false,
+    },
+    llmRoutingProvider: {
+      type: "string",
+      enum: ["kilo", "local"],
+      description: "LLM routing backend. Use kilo for the hosted Kilo gateway or local for an OpenAI-compatible local server.",
+      default: "kilo",
+    },
+    llmRoutingModel: {
+      type: "string",
+      description: "Model used for LLM routing classification when llmRouting is enabled.",
+      default: "google/gemini-2.0-flash",
+    },
+    llmRoutingBaseUrl: {
+      type: "string",
+      description: "Base URL for the LLM routing backend. Local mode defaults to http://localhost:11434/v1.",
+      default: "http://localhost:11434/v1",
+    },
+    llmRoutingApiKey: {
+      type: "string",
+      description: "Optional API key for the LLM routing backend. Leave empty for local servers that do not require auth.",
+      default: "",
+    },
   },
 };
 
@@ -74,7 +101,28 @@ type ToolParams = {
   time_range?: "day" | "week" | "month" | "year";
   include_domains?: string[];
   exclude_domains?: string[];
+  llmRouting?: boolean;
+  llmRoutingProvider?: "kilo" | "local";
+  llmRoutingModel?: string;
+  llmRoutingBaseUrl?: string;
+  llmRoutingApiKey?: string;
 };
+
+type RoutingDecision = {
+  provider: ProviderName;
+  confidence: number;
+  confidence_level?: "low" | "medium" | "high";
+  reason: string;
+  exa_depth?: "normal" | "deep" | "deep-reasoning";
+  scores?: Record<string, number>;
+  top_signals?: Array<{ matched: string; weight: number }>;
+  analysis_summary?: Json;
+  routing_mode?: "regex" | "llm";
+  from_cache?: boolean;
+  llm_model?: string | null;
+};
+
+type LLMRoutingProvider = "kilo" | "local";
 
 type SearchResult = {
   title: string;
@@ -309,6 +357,106 @@ async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Prom
   } finally {
     clearTimeout(timer);
   }
+}
+
+class LLMQueryAnalyzer {
+  private cache = new Map<string, { result: RoutingDecision; ts: number }>();
+
+  constructor(
+    private baseUrl: string,
+    private model: string,
+    private apiKey?: string,
+  ) {}
+
+  analyzeFromCache(query: string): RoutingDecision | null {
+    const key = this.getCacheKey(query);
+    const cached = this.cache.get(key);
+    if (!cached) return null;
+    if (Date.now() - cached.ts > DEFAULT_CACHE_TTL * 1000) {
+      this.cache.delete(key);
+      return null;
+    }
+    this.cache.delete(key);
+    this.cache.set(key, cached);
+    return { ...cached.result, from_cache: true };
+  }
+
+  async analyze(query: string, availableProviders: ProviderName[]): Promise<RoutingDecision | null> {
+    const cached = this.analyzeFromCache(query);
+    if (cached) return cached;
+
+    const prompt = [
+      "Pick the best web search provider for this query.",
+      `Query: ${JSON.stringify(query)}`,
+      `Available providers: ${availableProviders.join(", ")}`,
+      "Strengths: serper=general/news/shopping/local; tavily=research/how-to; querit=research/recency; exa=similar/finding companies/sites/deep discovery; perplexity=current events/direct answers; you=summaries/multi-source context; searxng=privacy/self-hosted.",
+      'Return JSON only: {"provider":"name","confidence":0.0,"reason":"brief"}',
+    ].join("\n");
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
+
+    try {
+      const data = await httpJson(
+        this.buildChatCompletionsUrl(),
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model: this.model,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: 40,
+            temperature: 0,
+          }),
+        },
+        3000,
+      );
+      const raw = String(data?.choices?.[0]?.message?.content || "").trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
+      const parsed = JSON.parse(raw);
+      if (!availableProviders.includes(parsed?.provider)) return null;
+      const result: RoutingDecision = {
+        provider: parsed.provider,
+        confidence: Math.max(0, Math.min(1, Number(parsed?.confidence || 0))),
+        reason: typeof parsed?.reason === "string" && parsed.reason.trim() ? parsed.reason.trim().slice(0, 80) : "llm_classification",
+        routing_mode: "llm",
+        from_cache: false,
+        llm_model: this.model,
+      };
+      this.setCache(query, result);
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
+  private buildChatCompletionsUrl(): string {
+    return `${this.baseUrl.replace(/\/$/, "")}/chat/completions`;
+  }
+
+  private getCacheKey(query: string): string {
+    return sha256(query.trim().toLowerCase()).slice(0, 32);
+  }
+
+  private setCache(query: string, result: RoutingDecision): void {
+    const key = this.getCacheKey(query);
+    if (this.cache.has(key)) this.cache.delete(key);
+    this.cache.set(key, { result, ts: Date.now() });
+    while (this.cache.size > 500) {
+      const oldest = this.cache.keys().next().value;
+      if (!oldest) break;
+      this.cache.delete(oldest);
+    }
+  }
+}
+
+function getLLMQueryAnalyzer(baseUrl: string, model: string, apiKey?: string): LLMQueryAnalyzer {
+  const cacheKey = sha256(JSON.stringify({ baseUrl, model, apiKey: apiKey || "" })).slice(0, 32);
+  let analyzer = llmAnalyzers.get(cacheKey);
+  if (!analyzer) {
+    analyzer = new LLMQueryAnalyzer(baseUrl, model, apiKey);
+    llmAnalyzers.set(cacheKey, analyzer);
+  }
+  return analyzer;
 }
 
 async function validateSearxngUrl(input: string, env: Record<string, string>): Promise<string> {
@@ -553,7 +701,7 @@ class QueryAnalyzer {
       },
     };
   }
-  route(query: string, availableProviders: ProviderName[]) {
+  route(query: string, availableProviders: ProviderName[]): RoutingDecision {
     const analysis = this.analyze(query);
     const scores = analysis.provider_scores as Record<ProviderName, number>;
     const available = Object.fromEntries(availableProviders.map((p) => [p, scores[p] ?? 0])) as Record<ProviderName, number>;
@@ -752,6 +900,11 @@ export default function (api: any) {
           const timeRange = toTimeRange(params.time_range);
           const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : undefined;
           const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
+          const llmRoutingEnabled = params.llmRouting === true || String(pluginConfig.llmRouting || "").toLowerCase() === "true";
+          const llmRoutingProvider = ((params.llmRoutingProvider || pluginConfig.llmRoutingProvider || "kilo") === "local" ? "local" : "kilo") as LLMRoutingProvider;
+          const llmRoutingModel = String(params.llmRoutingModel || pluginConfig.llmRoutingModel || "google/gemini-2.0-flash");
+          const llmRoutingBaseUrl = String(params.llmRoutingBaseUrl || pluginConfig.llmRoutingBaseUrl || (llmRoutingProvider === "local" ? "http://localhost:11434/v1" : "https://api.kilo.ai/api/gateway"));
+          const llmRoutingApiKey = String(params.llmRoutingApiKey || pluginConfig.llmRoutingApiKey || (llmRoutingProvider === "kilo" ? runtimeEnv.KILOCODE_API_KEY || "" : ""));
 
           const allProviders: ProviderName[] = ["serper", "tavily", "querit", "exa", "perplexity", "you", "searxng"];
           const configuredProviders = allProviders.filter((p) => !!getApiKey(p, runtimeEnv));
@@ -760,9 +913,41 @@ export default function (api: any) {
           let provider: ProviderName;
           if (requestedProvider === "auto") {
             const analyzer = new QueryAnalyzer();
-            const routing = analyzer.route(query, configuredProviders);
+            let routing = analyzer.route(query, configuredProviders);
+            routing.routing_mode = "regex";
+            routing.from_cache = false;
+            routing.llm_model = null;
+            const llmConfigured = llmRoutingProvider === "local" ? !!llmRoutingBaseUrl : !!llmRoutingApiKey;
+            if (routing.confidence < 0.7 && llmRoutingEnabled && llmConfigured) {
+              const llmAnalyzer = getLLMQueryAnalyzer(llmRoutingBaseUrl, llmRoutingModel, llmRoutingApiKey || undefined);
+              const llmRouting = await llmAnalyzer.analyze(query, configuredProviders);
+              if (llmRouting) {
+                routing = {
+                  ...routing,
+                  provider: llmRouting.provider,
+                  confidence: llmRouting.confidence,
+                  confidence_level: llmRouting.confidence >= 0.7 ? "high" : llmRouting.confidence >= 0.4 ? "medium" : "low",
+                  reason: llmRouting.reason,
+                  routing_mode: "llm",
+                  from_cache: llmRouting.from_cache ?? false,
+                  llm_model: llmRouting.llm_model || llmRoutingModel,
+                };
+              }
+            }
             provider = routing.provider;
-            routingInfo = { auto_routed: true, provider, confidence: routing.confidence, confidence_level: routing.confidence_level, reason: routing.reason, top_signals: routing.top_signals, scores: routing.scores, exa_depth: routing.exa_depth };
+            routingInfo = {
+              auto_routed: true,
+              provider,
+              confidence: routing.confidence,
+              confidence_level: routing.confidence_level,
+              reason: routing.reason,
+              top_signals: routing.top_signals,
+              scores: routing.scores,
+              exa_depth: routing.exa_depth,
+              routing_mode: routing.routing_mode || "regex",
+              from_cache: routing.from_cache ?? false,
+              llm_model: routing.llm_model || null,
+            };
           } else {
             provider = requestedProvider;
             routingInfo = { auto_routed: false, provider };
