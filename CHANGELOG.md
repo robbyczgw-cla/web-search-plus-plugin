@@ -1,3 +1,6 @@
+## 2.0.14
+- Remove the `anyOf` config schema branch that caused false validation failures on valid single-provider configs.
+
 ## 2.0.13
 - Remove the accidental LLM routing feature and restore regex-only provider routing.
 - Restrict runtime environment reads to the plugin's explicit provider env vars instead of copying all `process.env` values.
