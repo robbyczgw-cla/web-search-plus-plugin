@@ -1,12 +1,46 @@
 {
   "id": "web-search-plus-plugin",
   "name": "Web Search Plus",
-  "version": "2.0.10",
+  "version": "2.0.12",
   "description": "Multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity via direct API or Kilo gateway, You.com, SearXNG) with intelligent auto-routing. Configure at least one provider credential or a SearXNG instance URL before use.",
+  "providerAuthEnvVars": {
+    "serper": ["SERPER_API_KEY"],
+    "tavily": ["TAVILY_API_KEY"],
+    "querit": ["QUERIT_API_KEY"],
+    "exa": ["EXA_API_KEY"],
+    "perplexity": ["PERPLEXITY_API_KEY", "KILOCODE_API_KEY"],
+    "you": ["YOU_API_KEY"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "minProperties": 1,
+    "anyOf": [
+      {
+        "required": ["serperApiKey"]
+      },
+      {
+        "required": ["tavilyApiKey"]
+      },
+      {
+        "required": ["queritApiKey"]
+      },
+      {
+        "required": ["exaApiKey"]
+      },
+      {
+        "required": ["perplexityApiKey"]
+      },
+      {
+        "required": ["kilocodeApiKey"]
+      },
+      {
+        "required": ["youApiKey"]
+      },
+      {
+        "required": ["searxngInstanceUrl"]
+      }
+    ],
     "properties": {
       "serperApiKey": {
         "type": "string",
@@ -39,6 +73,29 @@
       "searxngInstanceUrl": {
         "type": "string",
         "description": "Base URL for a SearXNG instance. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      "routingMode": {
+        "type": "string",
+        "enum": ["regex", "llm"],
+        "default": "regex",
+        "description": "Query routing strategy. \"regex\" (default) uses built-in pattern matching. \"llm\" uses an LLM call for smarter routing with automatic fallback to regex on failure."
+      },
+      "llmRoutingApiKey": {
+        "type": "string",
+        "description": "API key for the LLM routing call (routingMode=llm). If omitted, the plugin will try to reuse kilocodeApiKey or perplexityApiKey."
+      },
+      "llmRoutingBaseUrl": {
+        "type": "string",
+        "description": "OpenAI-compatible base URL for LLM routing (routingMode=llm). Defaults to https://api.kilo.ai/api/gateway if a Kilo key is available, otherwise https://api.openai.com/v1."
+      },
+      "llmRoutingModel": {
+        "type": "string",
+        "description": "Model name for LLM routing calls. Defaults to \"openai/gpt-4o-mini\". Use a small, fast model to keep latency low."
+      },
+      "llmRoutingTimeoutMs": {
+        "type": "number",
+        "default": 5000,
+        "description": "Timeout in milliseconds for LLM routing calls. Defaults to 5000ms. On timeout, routing falls back to regex automatically."
       }
     }
   },

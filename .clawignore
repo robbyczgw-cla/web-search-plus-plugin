@@ -1,5 +1,6 @@
 .cache/
+.cache/**
 .env
-*.ts.map
 node_modules/
+*.ts.map
 .git/
