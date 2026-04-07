@@ -162,14 +162,15 @@ function cacheGet(query: string, provider: string, maxResults: number, ttl: numb
 function cachePut(query: string, provider: string, maxResults: number, result: any, params?: Json): void {
   const key = buildCacheKey(query, provider, maxResults, params);
   const file = getCachePath(key);
+  const sanitizedResult = sanitizeOutput(result);
   const payload = {
-    ...result,
+    ...sanitizedResult,
     _cache_timestamp: Math.floor(Date.now() / 1000),
     _cache_key: key,
     _cache_query: query,
     _cache_provider: provider,
     _cache_max_results: maxResults,
-    _cache_params: params || {},
+    _cache_params: sanitizeOutput(params || {}),
   };
   writeJsonFile(file, payload);
 }

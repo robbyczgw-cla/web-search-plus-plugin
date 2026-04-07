@@ -1,3 +1,6 @@
+## 2.0.15
+- Sanitize cached provider results before writing them to disk so sensitive tokens or URLs are not persisted in `.cache/`.
+
 ## 2.0.14
 - Remove the `anyOf` config schema branch that caused false validation failures on valid single-provider configs.
 

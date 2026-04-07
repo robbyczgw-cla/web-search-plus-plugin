@@ -1,6 +1,6 @@
 {
   "name": "web-search-plus-plugin",
-  "version": "2.0.14",
+  "version": "2.0.15",
   "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity, You.com, SearXNG) with intelligent auto-routing",
   "type": "module",
   "main": "index.ts",
