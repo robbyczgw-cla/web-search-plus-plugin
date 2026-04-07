@@ -1,6 +1,6 @@
 {
   "name": "web-search-plus-plugin",
-  "version": "2.0.18",
+  "version": "2.0.19",
   "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity, You.com, SearXNG) with intelligent auto-routing",
   "type": "module",
   "main": "index.ts",
@@ -23,11 +23,14 @@
       "SEARXNG_ALLOW_PRIVATE": "optional \u2014 set true to allow private IPs for SearXNG (disables SSRF protection)"
     },
     "build": {
-      "openclawVersion": ">=2026.3.22"
+      "openclawVersion": "2026.4.2"
     }
   },
   "files": [
     "index.ts",
+    "paths.ts",
+    "storage.ts",
+    "env.ts",
     "openclaw.plugin.json",
     ".env.template",
     "README.md",

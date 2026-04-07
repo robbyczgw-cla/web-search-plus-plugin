@@ -1,35 +1,64 @@
 {
   "id": "web-search-plus-plugin",
   "name": "Web Search Plus",
-  "version": "2.0.18",
-  "description": "Multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity, You.com, SearXNG) with intelligent auto-routing",
+  "version": "2.0.19",
+  "description": "Multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity via direct API or Kilo gateway, You.com, SearXNG) with intelligent auto-routing. Configure at least one provider credential or a SearXNG instance URL before use.",
+  "providerAuthEnvVars": {
+    "serper": [
+      "SERPER_API_KEY"
+    ],
+    "tavily": [
+      "TAVILY_API_KEY"
+    ],
+    "querit": [
+      "QUERIT_API_KEY"
+    ],
+    "exa": [
+      "EXA_API_KEY"
+    ],
+    "perplexity": [
+      "PERPLEXITY_API_KEY",
+      "KILOCODE_API_KEY"
+    ],
+    "you": [
+      "YOU_API_KEY"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
       "serperApiKey": {
-        "type": "string"
+        "type": "string",
+        "description": "Serper API key for Google-style web search. Optional individually, but at least one provider setting in this plugin must be configured."
       },
       "tavilyApiKey": {
-        "type": "string"
+        "type": "string",
+        "description": "Tavily API key for research-oriented search. Optional individually, but at least one provider setting in this plugin must be configured."
       },
       "queritApiKey": {
-        "type": "string"
+        "type": "string",
+        "description": "Querit API key for multilingual AI search. Optional individually, but at least one provider setting in this plugin must be configured."
       },
       "exaApiKey": {
-        "type": "string"
+        "type": "string",
+        "description": "Exa API key for neural, deep, and deep-reasoning search. Optional individually, but at least one provider setting in this plugin must be configured."
       },
       "perplexityApiKey": {
-        "type": "string"
+        "type": "string",
+        "description": "Perplexity API key for answer-style search. Optional individually, but at least one provider setting in this plugin must be configured."
       },
       "kilocodeApiKey": {
-        "type": "string"
+        "type": "string",
+        "description": "Kilo gateway API key for answer-style search via the Perplexity-compatible gateway route used by this plugin. Optional individually, but at least one provider setting in this plugin must be configured."
       },
       "youApiKey": {
-        "type": "string"
+        "type": "string",
+        "description": "You.com API key for general web and answer-oriented search. Optional individually, but at least one provider setting in this plugin must be configured."
       },
       "searxngInstanceUrl": {
-        "type": "string"
+        "type": "string",
+        "description": "Base URL for a SearXNG instance. Optional individually, but at least one provider setting in this plugin must be configured."
       }
     }
   },
@@ -62,6 +91,7 @@
     "kilocodeApiKey": {
       "label": "Kilo Gateway API Key",
       "placeholder": "...",
+      "description": "Alternative Perplexity-compatible gateway used by this plugin for answer-style web search via api.kilo.ai/api/gateway/chat/completions.",
       "sensitive": true
     },
     "youApiKey": {
@@ -72,6 +102,7 @@
     "searxngInstanceUrl": {
       "label": "SearXNG Instance URL",
       "placeholder": "https://searx.example.com",
+      "description": "Self-hosted metasearch instance URL. Counts as a configured provider even without an API key.",
       "sensitive": false
     }
   }

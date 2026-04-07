@@ -1,6 +1,6 @@
-.env
-*.env
 .cache/
+.cache/**
+.env
 node_modules/
-__pycache__/
-*.pyc
+*.ts.map
+.git/

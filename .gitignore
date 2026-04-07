@@ -1,5 +1,3 @@
-.cache/
-*.pyc
-__pycache__/
 .env
-config.json
+.cache/
+node_modules/
