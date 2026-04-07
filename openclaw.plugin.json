@@ -1,7 +1,7 @@
 {
   "id": "web-search-plus-plugin",
   "name": "Web Search Plus",
-  "version": "2.0.19",
+  "version": "2.0.20",
   "description": "Multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity via direct API or Kilo gateway, You.com, SearXNG) with intelligent auto-routing. Configure at least one provider credential or a SearXNG instance URL before use.",
   "providerAuthEnvVars": {
     "serper": [
@@ -22,6 +22,9 @@
     ],
     "you": [
       "YOU_API_KEY"
+    ],
+    "searxng": [
+      "SEARXNG_INSTANCE_URL"
     ]
   },
   "configSchema": {

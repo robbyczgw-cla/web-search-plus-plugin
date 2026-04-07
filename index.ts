@@ -252,8 +252,8 @@ function getApiKey(provider: ProviderName, env: Record<string, string>): string 
     querit: env.QUERIT_API_KEY,
     exa: env.EXA_API_KEY,
     perplexity: env.KILOCODE_API_KEY || env.PERPLEXITY_API_KEY,
-    you: env.YOU_API_KEY || env.YOUCOM_API_KEY,
-    searxng: env.SEARXNG_INSTANCE_URL || env.SEARXNG_URL,
+    you: env.YOU_API_KEY,
+    searxng: env.SEARXNG_INSTANCE_URL,
   };
   return keyMap[provider];
 }

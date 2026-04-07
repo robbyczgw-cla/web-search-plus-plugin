@@ -1,3 +1,8 @@
+## 2.0.20
+- Standardize provider environment variable names on `YOU_API_KEY` and `SEARXNG_INSTANCE_URL` across code and package metadata.
+- Add `searxng` to `providerAuthEnvVars` so registry metadata reflects SearXNG configuration requirements.
+- Clarify docs that at least one provider API key or `SEARXNG_INSTANCE_URL` must be configured before use.
+
 ## 2.0.19
 - Remove `minProperties: 1` from configSchema
 
