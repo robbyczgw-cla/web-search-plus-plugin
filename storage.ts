@@ -55,10 +55,10 @@ export function parseEnvFile(envPath: string): Record<string, string> {
   return env;
 }
 
-export function getStringProcessEnv(keys: string[]): Record<string, string> {
+export function getStringProcessEnv(keys: string[], sourceEnv: Record<string, string | undefined>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of keys) {
-    const value = process.env[key];
+    const value = sourceEnv[key];
     if (typeof value === "string") env[key] = value;
   }
   return env;

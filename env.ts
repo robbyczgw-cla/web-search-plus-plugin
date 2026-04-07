@@ -25,5 +25,5 @@ export function getRuntimeEnv(pluginConfig: Record<string, string>): Record<stri
     if (val && typeof val === "string") mapped[envKey] = val;
   }
 
-  return { ...fileEnv, ...getStringProcessEnv(allowedEnvKeys), ...mapped };
+  return { ...fileEnv, ...getStringProcessEnv(allowedEnvKeys, process.env as Record<string, string | undefined>), ...mapped };
 }
