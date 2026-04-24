@@ -1,8 +1,8 @@
 {
   "id": "web-search-plus-plugin",
   "name": "Web Search Plus",
-  "version": "2.0.21",
-  "description": "Multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity via direct API or Kilo gateway, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider credential or a SearXNG instance URL before use.",
+  "version": "2.1.0",
+  "description": "Multi-provider web search (Serper/Google, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider credential or a SearXNG instance URL before use.",
   "providerAuthEnvVars": {
     "serper": [
       "SERPER_API_KEY"
@@ -10,11 +10,17 @@
     "tavily": [
       "TAVILY_API_KEY"
     ],
+    "linkup": [
+      "LINKUP_API_KEY"
+    ],
     "querit": [
       "QUERIT_API_KEY"
     ],
     "exa": [
       "EXA_API_KEY"
+    ],
+    "firecrawl": [
+      "FIRECRAWL_API_KEY"
     ],
     "perplexity": [
       "PERPLEXITY_API_KEY",
@@ -39,6 +45,10 @@
         "type": "string",
         "description": "Tavily API key for research-oriented search. Optional individually, but at least one provider setting in this plugin must be configured."
       },
+      "linkupApiKey": {
+        "type": "string",
+        "description": "Linkup API key for source-grounded search with citations, references, and evidence-focused queries. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
       "queritApiKey": {
         "type": "string",
         "description": "Querit API key for multilingual AI search. Optional individually, but at least one provider setting in this plugin must be configured."
@@ -46,6 +56,10 @@
       "exaApiKey": {
         "type": "string",
         "description": "Exa API key for neural, deep, and deep-reasoning search. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      "firecrawlApiKey": {
+        "type": "string",
+        "description": "Firecrawl API key for web search with optional page extraction metadata and Google-style recency/domain filtering. Optional individually, but at least one provider setting in this plugin must be configured."
       },
       "perplexityApiKey": {
         "type": "string",
@@ -76,6 +90,11 @@
       "placeholder": "tvly-...",
       "sensitive": true
     },
+    "linkupApiKey": {
+      "label": "Linkup API Key",
+      "placeholder": "...",
+      "sensitive": true
+    },
     "queritApiKey": {
       "label": "Querit API Key",
       "placeholder": "querit-sk-...",
@@ -84,6 +103,11 @@
     "exaApiKey": {
       "label": "Exa API Key",
       "placeholder": "exa-...",
+      "sensitive": true
+    },
+    "firecrawlApiKey": {
+      "label": "Firecrawl API Key",
+      "placeholder": "fc-...",
       "sensitive": true
     },
     "perplexityApiKey": {

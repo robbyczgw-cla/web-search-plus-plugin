@@ -1,7 +1,7 @@
 {
   "name": "web-search-plus-plugin",
-  "version": "2.0.21",
-  "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Tavily, Querit/Multilingual AI Search, Exa/Neural+Deep, Perplexity, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider API key or SearXNG instance URL.",
+  "version": "2.1.0",
+  "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider API key or SearXNG instance URL.",
   "type": "module",
   "main": "index.ts",
   "openclaw": {
@@ -14,8 +14,10 @@
     "env": {
       "SERPER_API_KEY": "one supported hosted-provider option for enabling search, Serper/Google API key",
       "TAVILY_API_KEY": "one supported hosted-provider option for enabling search, Tavily research API key",
+      "LINKUP_API_KEY": "one supported hosted-provider option for enabling source-grounded search, Linkup API key",
       "EXA_API_KEY": "one supported hosted-provider option for enabling search, Exa neural search API key",
       "QUERIT_API_KEY": "one supported hosted-provider option for enabling search, Querit multilingual search API key",
+      "FIRECRAWL_API_KEY": "one supported hosted-provider option for enabling search and extraction metadata, Firecrawl API key",
       "PERPLEXITY_API_KEY": "one supported hosted-provider option for enabling search, Perplexity AI search API key",
       "KILOCODE_API_KEY": "alternative hosted-provider option for enabling Perplexity-compatible search via Kilo.ai gateway",
       "YOU_API_KEY": "one supported hosted-provider option for enabling search, You.com search API key",
@@ -42,9 +44,11 @@
     "search",
     "serper",
     "tavily",
+    "linkup",
     "querit",
     "exa",
     "exa-deep",
+    "firecrawl",
     "perplexity",
     "you",
     "searxng",

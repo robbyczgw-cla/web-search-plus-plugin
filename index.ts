@@ -37,7 +37,7 @@ const PARAMETERS_SCHEMA = {
     query: { type: "string", description: "Search query" },
     provider: {
       type: "string",
-      enum: ["serper", "tavily", "querit", "exa", "perplexity", "you", "searxng", "auto"],
+      enum: ["serper", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng", "auto"],
       description: "Force a provider, or use auto routing (default: auto)",
     },
     count: { type: "number", description: "Number of results (default: 5)" },
@@ -48,30 +48,30 @@ const PARAMETERS_SCHEMA = {
     },
     time_range: {
       type: "string",
-      enum: ["day", "week", "month", "year"],
+      enum: ["hour", "day", "week", "month", "year"],
       description: "Recency filter where supported.",
     },
     include_domains: {
       type: "array",
       items: { type: "string" },
-      description: "Only include results from these domains (Tavily, Exa, Querit where supported).",
+      description: "Only include results from these domains (Tavily, Linkup, Querit, Exa, Firecrawl where supported).",
     },
     exclude_domains: {
       type: "array",
       items: { type: "string" },
-      description: "Exclude results from these domains (Tavily, Exa, Querit where supported).",
+      description: "Exclude results from these domains (Tavily, Linkup, Querit, Exa, Firecrawl where supported).",
     },
   },
 };
 
 type Json = Record<string, any>;
-type ProviderName = "serper" | "tavily" | "querit" | "exa" | "perplexity" | "you" | "searxng";
+type ProviderName = "serper" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "you" | "searxng";
 type ToolParams = {
   query: string;
   provider?: ProviderName | "auto";
   count?: number;
   depth?: "normal" | "deep" | "deep-reasoning";
-  time_range?: "day" | "week" | "month" | "year";
+  time_range?: "hour" | "day" | "week" | "month" | "year";
   include_domains?: string[];
   exclude_domains?: string[];
 };
@@ -251,6 +251,8 @@ function getApiKey(provider: ProviderName, env: Record<string, string>): string 
     tavily: env.TAVILY_API_KEY,
     querit: env.QUERIT_API_KEY,
     exa: env.EXA_API_KEY,
+    linkup: env.LINKUP_API_KEY,
+    firecrawl: env.FIRECRAWL_API_KEY,
     perplexity: env.KILOCODE_API_KEY || env.PERPLEXITY_API_KEY,
     you: env.YOU_API_KEY,
     searxng: env.SEARXNG_INSTANCE_URL,
@@ -268,7 +270,7 @@ function validateApiKey(provider: ProviderName, env: Record<string, string>): st
 }
 
 function toTimeRange(value?: string): string | undefined {
-  return value && ["day", "week", "month", "year"].includes(value) ? value : undefined;
+  return value && ["hour", "day", "week", "month", "year"].includes(value) ? value : undefined;
 }
 
 function titleFromUrl(url: string): string {
@@ -421,6 +423,14 @@ const PRIVACY_SIGNALS: Record<string, number> = {
   "\\bfree search\\b": 3.5, "\\bno api cost\\b": 4.0, "\\bself.?hosted search\\b": 5.0, "\\bzero cost\\b": 3.5,
   "\\bbudget\\b(?!\\s*(laptop|phone|option))\\b": 2.5, "\\bkostenlos(e)?\\s+suche\\b": 3.5, "\\bkeine api.?kosten\\b": 4.0,
 };
+const LINKUP_SOURCE_SIGNALS: Record<string, number> = {
+  "\\bcitations?\\b": 5.0, "\\bsources?\\b": 4.5, "\\bsource.?backed\\b": 5.0, "\\bwith sources\\b": 5.0,
+  "\\bwith references\\b": 5.0, "\\breferences?\\b": 4.5, "\\bevidence\\b": 4.5, "\\bcredible sources?\\b": 5.5,
+  "\\bprimary sources?\\b": 5.0, "\\bsupporting links?\\b": 4.5, "\\bverify (this|the)?\\b": 4.5,
+  "\\bfact.?check\\b": 5.0, "\\bground(ed|ing)?\\b": 4.5, "\\bground this\\b": 5.0, "\\bclaim\\b": 2.5,
+  "\\bfind (credible )?sources?\\b": 5.5, "\\bfind pages? that support\\b": 5.0,
+  "\\bwhere did this come from\\b": 5.0, "\\bsource material\\b": 4.0,
+};
 const EXA_DEEP_SIGNALS: Record<string, number> = {
   "\\bsynthesi[sz]e\\b": 5.0, "\\bdeep research\\b": 5.0, "\\bcomprehensive (analysis|report|overview|survey)\\b": 4.5,
   "\\bacross (multiple|many|several) (sources|documents|papers)\\b": 4.5, "\\baggregat(e|ing) (information|data|results)\\b": 4.0,
@@ -506,6 +516,7 @@ class QueryAnalyzer {
     const localNews = this.calculateSignalScore(query, LOCAL_NEWS_SIGNALS);
     const rag = this.calculateSignalScore(query, RAG_SIGNALS);
     const privacy = this.calculateSignalScore(query, PRIVACY_SIGNALS);
+    const linkupSource = this.calculateSignalScore(query, LINKUP_SOURCE_SIGNALS);
     const direct = this.calculateSignalScore(query, DIRECT_ANSWER_SIGNALS);
     const exaDeep = this.calculateSignalScore(query, EXA_DEEP_SIGNALS);
     const exaDeepReasoning = this.calculateSignalScore(query, EXA_DEEP_REASONING_SIGNALS);
@@ -532,13 +543,16 @@ class QueryAnalyzer {
       complexity,
       recency_focused: recency.is_recency_focused,
       recency_score: recency.score,
+      linkup_source_score: linkupSource.total,
       exa_deep_score: exaDeep.total,
       exa_deep_reasoning_score: exaDeepReasoning.total,
       provider_scores: {
         serper: shopping.total + localNews.total + recency.score * 0.35,
         tavily: research.total + (complexity.is_complex ? 0 : complexity.complexity_score) + recency.score * 0.2,
+        linkup: linkupSource.total + rag.total * 0.7 + research.total * 0.45 + recency.score * 0.35,
         querit: research.total * 0.65 + rag.total * 0.35 + recency.score * 0.45,
         exa: discovery.total + (/(\bsimilar|alternatives?|examples?)\b/i.test(query) ? 1 : 0) + exaDeep.total * 0.5 + exaDeepReasoning.total * 0.5,
+        firecrawl: discovery.total + research.total * 0.35 + recency.score * 0.25,
         perplexity: direct.total + localNews.total * 0.4 + recency.score * 0.55,
         you: rag.total + recency.score * 0.25,
         searxng: privacy.total,
@@ -546,8 +560,10 @@ class QueryAnalyzer {
       provider_matches: {
         serper: [...shopping.matches, ...localNews.matches],
         tavily: research.matches,
+        linkup: [...linkupSource.matches, ...rag.matches, ...research.matches],
         querit: research.matches,
         exa: [...discovery.matches, ...exaDeep.matches, ...exaDeepReasoning.matches],
+        firecrawl: [...discovery.matches, ...research.matches],
         perplexity: direct.matches,
         you: rag.matches,
         searxng: privacy.matches,
@@ -564,7 +580,7 @@ class QueryAnalyzer {
     }
     const maxScore = Math.max(...providers.map((p) => available[p]));
     const winners = providers.filter((p) => available[p] === maxScore);
-    const priority: ProviderName[] = ["tavily", "querit", "exa", "perplexity", "serper", "you", "searxng"];
+    const priority: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "serper", "you", "searxng"];
     const winner = priority.find((p) => winners.includes(p)) || winners[0];
     const secondBest = [...providers.map((p) => available[p])].sort((a, b) => b - a)[1] || 0;
     const margin = maxScore > 0 ? (maxScore - secondBest) / maxScore : 0;
@@ -612,6 +628,28 @@ async function searchTavily(query: string, apiKey: string, maxResults: number, i
   return { provider: "tavily", query, results, images: data.images || [], answer: data.answer || "" };
 }
 
+async function searchLinkup(query: string, apiKey: string, maxResults: number, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
+  const body: Json = { q: query, depth: "standard", outputType: "searchResults" };
+  if (includeDomains?.length) body.includeDomains = includeDomains.slice(0, 50);
+  if (excludeDomains?.length) body.excludeDomains = excludeDomains.slice(0, 50);
+  const data = await httpJson("https://api.linkup.so/v1/search", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (data.error) throw new ProviderRequestError(String(data.error));
+  const raw = data.results || data.sources || [];
+  const results = raw.slice(0, maxResults).map((item: any, i: number) => {
+    const url = item.url || "";
+    const result: SearchResult = {
+      title: item.name || item.title || titleFromUrl(url),
+      url,
+      snippet: item.content || item.snippet || item.description || "",
+      score: Number((1 - i * 0.05).toFixed(3)),
+    };
+    if (item.type != null) result.type = item.type;
+    if (item.favicon != null) result.favicon = item.favicon;
+    return result;
+  });
+  return { provider: "linkup", query, results, images: data.images || [], answer: data.answer || "", metadata: { depth: body.depth, output_type: body.outputType } };
+}
+
 async function searchQuerit(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
   const timeMap: Record<string, string> = { day: "d1", week: "w1", month: "m1", year: "y1" };
   const filters: Json = { languages: { include: ["en"] }, geo: { countries: { include: ["US"] } } };
@@ -656,6 +694,45 @@ async function searchExa(query: string, apiKey: string, maxResults: number, exaD
 
   const results = (data.results || []).slice(0, maxResults).map((item: any) => ({ title: item.title || "", url: item.url || "", snippet: item.text ? String(item.text).slice(0, 800) : Array.isArray(item.highlights) ? item.highlights.slice(0, 2).join(" ... ") : "", score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author }));
   return { provider: "exa", query, results, images: [], answer: results[0]?.snippet || "" };
+}
+
+function mapFirecrawlTimeRange(timeRange?: string): string | undefined {
+  const tbsMap: Record<string, string> = { hour: "qdr:h", day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" };
+  return timeRange ? tbsMap[timeRange] || timeRange : undefined;
+}
+
+async function searchFirecrawl(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
+  const body: Json = { query, limit: maxResults, sources: ["web"], timeout: 30000, ignoreInvalidURLs: false, country: "US" };
+  const tbs = mapFirecrawlTimeRange(timeRange);
+  if (tbs) body.tbs = tbs;
+  if (includeDomains?.length) body.query += ` ${includeDomains.map((domain) => `site:${domain}`).join(" ")}`;
+  if (excludeDomains?.length) body.query += ` ${excludeDomains.map((domain) => `-site:${domain}`).join(" ")}`;
+  const data = await httpJson("https://api.firecrawl.dev/v2/search", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) }, 30000);
+  if (data.success === false) throw new ProviderRequestError(data.error || data.warning || "Firecrawl request failed");
+
+  const responseData = data.data || {};
+  const rawWeb = responseData.web || [];
+  const results = rawWeb.slice(0, maxResults).map((item: any, i: number) => {
+    const url = item.url || "";
+    const result: SearchResult = {
+      title: item.title || titleFromUrl(url),
+      url,
+      snippet: item.description || item.snippet || "",
+      score: Number((1 - i * 0.05).toFixed(3)),
+    };
+    if (item.position != null) result.position = item.position;
+    if (item.category != null) result.category = item.category;
+    if (item.markdown) {
+      result.raw_content = item.markdown;
+      if (!result.snippet) result.snippet = String(item.markdown).slice(0, 500);
+    }
+    const metadata = item.metadata || {};
+    if (metadata.statusCode != null) result.status_code = metadata.statusCode;
+    if (metadata.error) result.error = metadata.error;
+    return result;
+  });
+  const images = (responseData.images || []).map((image: any) => image.imageUrl).filter(Boolean);
+  return { provider: "firecrawl", query, results, images, answer: results[0]?.snippet || "", warning: data.warning, credits_used: data.creditsUsed, metadata: { id: data.id, sources: body.sources, tbs } };
 }
 
 async function searchPerplexity(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
@@ -738,7 +815,7 @@ export default function (api: any) {
     {
       name: "web_search_plus",
       description:
-        "Search the web with intelligent multi-provider routing across Serper, Tavily, Querit, Exa, Perplexity, You.com, and SearXNG. Auto-selects the best provider, caches results, retries transient failures, and falls back across providers.",
+        "Search the web with intelligent multi-provider routing across Serper, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity, You.com, and SearXNG. Auto-selects the best provider, caches results, retries transient failures, and falls back across providers.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id: string, params: ToolParams) {
         try {
@@ -754,7 +831,7 @@ export default function (api: any) {
           const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : undefined;
           const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
 
-          const allProviders: ProviderName[] = ["serper", "tavily", "querit", "exa", "perplexity", "you", "searxng"];
+          const allProviders: ProviderName[] = ["serper", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng"];
           const configuredProviders = allProviders.filter((p) => !!getApiKey(p, runtimeEnv));
 
           let routingInfo: Json;
@@ -769,7 +846,7 @@ export default function (api: any) {
             routingInfo = { auto_routed: false, provider };
           }
 
-          const priority: ProviderName[] = ["tavily", "querit", "exa", "perplexity", "serper", "you", "searxng"];
+          const priority: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "serper", "you", "searxng"];
           const providersToTry: ProviderName[] = [provider, ...priority.filter((p) => p !== provider && configuredProviders.includes(p))];
           const eligibleProviders: ProviderName[] = [];
           const cooldownSkips: Json[] = [];
@@ -804,11 +881,13 @@ export default function (api: any) {
             const key = validateApiKey(p, runtimeEnv);
             if (p === "serper") return searchSerper(query, key, count, timeRange);
             if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
+            if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
             if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
             if (p === "exa") {
               const exaDepth = (params.depth || routingInfo.exa_depth || "normal") as "normal" | "deep" | "deep-reasoning";
               return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
             }
+            if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
             if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
             if (p === "you") return searchYou(query, key, count, timeRange);
             return searchSearxng(query, key, count, timeRange, runtimeEnv);

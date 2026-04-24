@@ -5,8 +5,10 @@ import { parseEnvFile, getStringProcessEnv } from "./storage.ts";
 const CONFIG_KEY_MAP: Record<string, string> = {
   serperApiKey: "SERPER_API_KEY",
   tavilyApiKey: "TAVILY_API_KEY",
+  linkupApiKey: "LINKUP_API_KEY",
   queritApiKey: "QUERIT_API_KEY",
   exaApiKey: "EXA_API_KEY",
+  firecrawlApiKey: "FIRECRAWL_API_KEY",
   perplexityApiKey: "PERPLEXITY_API_KEY",
   kilocodeApiKey: "KILOCODE_API_KEY",
   youApiKey: "YOU_API_KEY",
