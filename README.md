@@ -29,6 +29,9 @@ Supported providers:
 - Perplexity
 - You.com
 - SearXNG
+- Linkup
+- Firecrawl
+- Brave
 
 ## What you need
 
@@ -92,6 +95,9 @@ The plugin scores each query against the providers you have configured and picks
 - `YOU_API_KEY`
 - `SEARXNG_INSTANCE_URL`
 - `SEARXNG_ALLOW_PRIVATE`
+- `LINKUP_API_KEY`
+- `FIRECRAWL_API_KEY`
+- `BRAVE_API_KEY`
 
 ## Cache behavior
 
@@ -107,4 +113,4 @@ GitHub: <https://github.com/robbyczgw-cla/web-search-plus-plugin>
 
 ## Acknowledgments
 
-Thanks to [@Wysie](https://github.com/Wysie) for contributing the original Brave Search, Linkup, and Firecrawl provider integrations in the sister project [hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus), which were then ported into this OpenClaw plugin in v2.1.0.
+Thanks to [@Wysie](https://github.com/Wysie) for contributing the original Brave Search, Linkup, and Firecrawl provider integrations in the sister project [hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus), which were then ported into this OpenClaw plugin in v2.1.0, plus the web_extract_plus companion tool.
