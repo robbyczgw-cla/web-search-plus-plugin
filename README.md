@@ -19,13 +19,17 @@ OpenClaw's built-in `web_search` uses Brave Search.
 You might want this plugin when:
 - Brave returns thin or no results for a query, but Serper/Google or You.com still finds relevant pages.
 - You want research-oriented output; Tavily can return structured results that are easier to summarize.
+- You want source-grounded results; Linkup is useful for citation, reference, and evidence-focused queries.
 - You want semantic discovery; Exa can find related content that plain keyword search may miss.
+- You want search plus extraction metadata; Firecrawl can return web results with page scrape metadata.
 
 Supported providers:
 - Serper (Google)
 - Tavily
+- Linkup
 - Exa
 - Querit
+- Firecrawl
 - Perplexity
 - You.com
 - SearXNG
@@ -41,8 +45,10 @@ You need at least one configured provider:
 Supported "at least one" options:
 - `SERPER_API_KEY`
 - `TAVILY_API_KEY`
+- `LINKUP_API_KEY`
 - `EXA_API_KEY`
 - `QUERIT_API_KEY`
+- `FIRECRAWL_API_KEY`
 - `PERPLEXITY_API_KEY`
 - `KILOCODE_API_KEY`
 - `YOU_API_KEY`
@@ -63,8 +69,10 @@ Then load the plugin in OpenClaw and restart the gateway.
 | --- | --- | --- | --- |
 | Serper | Google-style general web, news, shopping, local results | Yes | 2,500/mo |
 | Tavily | Research-style results and summaries | Yes | 1,000/mo |
+| Linkup | Source-grounded search for citations, references, and evidence | Depends on plan | API credits required |
 | Exa | Semantic / neural discovery | Yes | 1,000/mo |
 | Querit | Multilingual and regional search | Yes | Varies |
+| Firecrawl | Web search with optional page extraction metadata | Depends on plan | API credits required |
 | Perplexity | Answer-style web results with citations | Limited / depends on plan | API credits required |
 | You.com | General web + answer-oriented results | Limited | 60 req/hr |
 | SearXNG | Self-hosted metasearch | Yes, self-hosted | Self-hosted, unlimited |
@@ -85,8 +93,10 @@ The plugin scores each query against the providers you have configured and picks
 
 - `SERPER_API_KEY`
 - `TAVILY_API_KEY`
+- `LINKUP_API_KEY`
 - `EXA_API_KEY`
 - `QUERIT_API_KEY`
+- `FIRECRAWL_API_KEY`
 - `PERPLEXITY_API_KEY`
 - `KILOCODE_API_KEY` — alternative Perplexity-compatible search gateway via `https://api.kilo.ai/api/gateway/chat/completions`
 - `YOU_API_KEY`
