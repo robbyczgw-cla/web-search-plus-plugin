@@ -1,3 +1,7 @@
+## 2.1.1
+- README: add Linkup, Firecrawl, Brave to provider list and env vars.
+- Wysie attribution updated with web_extract_plus companion tool.
+
 ## 2.1.0
 - Add Linkup provider support with Bearer-authenticated `https://api.linkup.so/v1/search`, source-grounded result parsing, domain filters, and auto-routing for citation/reference/evidence queries.
 - Add Firecrawl provider support with Bearer-authenticated `https://api.firecrawl.dev/v2/search`, recency `tbs` mapping, domain query filters, images, warnings, and credit metadata.
