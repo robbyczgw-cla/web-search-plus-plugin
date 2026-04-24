@@ -31,7 +31,6 @@ Supported providers:
 - SearXNG
 - Linkup
 - Firecrawl
-- Brave
 
 ## What you need
 
@@ -97,7 +96,6 @@ The plugin scores each query against the providers you have configured and picks
 - `SEARXNG_ALLOW_PRIVATE`
 - `LINKUP_API_KEY`
 - `FIRECRAWL_API_KEY`
-- `BRAVE_API_KEY`
 
 ## Cache behavior
 
