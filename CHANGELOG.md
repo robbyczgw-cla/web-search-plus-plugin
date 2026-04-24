@@ -3,6 +3,7 @@
 - Add Firecrawl provider support with Bearer-authenticated `https://api.firecrawl.dev/v2/search`, recency `tbs` mapping, domain query filters, images, warnings, and credit metadata.
 - Add `LINKUP_API_KEY` and `FIRECRAWL_API_KEY` to provider auth metadata, runtime env mapping, and OpenClaw config UI hints.
 - Update auto-router priority to `tavily -> linkup -> querit -> exa -> firecrawl -> perplexity -> serper -> you -> searxng`.
+- Based on work by [@Wysie](https://github.com/Wysie) in [hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus).
 
 ## 2.0.21
 - Remove outdated "single-file" runtime wording from package docs and architecture notes.
