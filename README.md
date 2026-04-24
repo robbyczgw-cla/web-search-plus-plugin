@@ -7,7 +7,7 @@ Requires at least one configured provider API key or a `SEARXNG_INSTANCE_URL`.
 ## Install
 
 ```bash
-openclaw plugins install clawhub:web-search-plus-plugin
+openclaw plugins install clawhub:web-search-plus-plugin-v2
 ```
 
 It registers a `web_search_plus` tool that can query multiple providers and auto-route to the one that best fits the query.
