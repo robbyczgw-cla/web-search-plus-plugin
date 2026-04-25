@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.8] - 2026-04-25
+
+### Fixed
+- Reduce ClawHub artifact file metadata to runtime files and manifests only to match OpenClaw 2026.4.24 archive validation.
+
 ## [2.2.7] - 2026-04-25
 
 ### Fixed
