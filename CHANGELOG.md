@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.5] - 2026-04-25
+
+### Fixed
+- Remove dot-ignore files from the ClawHub staging artifact to satisfy OpenClaw 2026.4.24 archive/files integrity checks; publish safety now comes from the release script excludes and forbidden-file tripwire.
+
 ## [2.2.4] - 2026-04-25
 
 ### Fixed
