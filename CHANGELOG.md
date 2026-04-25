@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.3] - 2026-04-25
+
+### Fixed
+- Metadata-only OpenClaw 2026.4.24 compatibility release.
+- Mirror provider API-key environment variables into `setup.providers[].envVars` to satisfy the new provider metadata path while retaining `providerAuthEnvVars` for older OpenClaw versions.
+
 ## [2.2.2] - 2026-04-25
 
 ### Fixed
