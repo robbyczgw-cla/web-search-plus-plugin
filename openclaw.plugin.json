@@ -1,38 +1,8 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "2.2.8",
+  "version": "2.2.9",
   "description": "Multi-provider web search (Serper/Google, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider credential or a SearXNG instance URL before use.",
-  "providerAuthEnvVars": {
-    "serper": [
-      "SERPER_API_KEY"
-    ],
-    "tavily": [
-      "TAVILY_API_KEY"
-    ],
-    "linkup": [
-      "LINKUP_API_KEY"
-    ],
-    "querit": [
-      "QUERIT_API_KEY"
-    ],
-    "exa": [
-      "EXA_API_KEY"
-    ],
-    "firecrawl": [
-      "FIRECRAWL_API_KEY"
-    ],
-    "perplexity": [
-      "PERPLEXITY_API_KEY",
-      "KILOCODE_API_KEY"
-    ],
-    "you": [
-      "YOU_API_KEY"
-    ],
-    "searxng": [
-      "SEARXNG_INSTANCE_URL"
-    ]
-  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

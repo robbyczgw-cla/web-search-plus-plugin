@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.9] - 2026-04-25
+
+### Fixed
+- Remove deprecated `providerAuthEnvVars` compatibility metadata now that provider env vars are declared under `setup.providers[].envVars`, silencing OpenClaw 2026.4.24 config warnings.
+
 ## [2.2.8] - 2026-04-25
 
 ### Fixed
