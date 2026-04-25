@@ -1,3 +1,14 @@
+# Changelog
+
+## [2.2.1] - 2026-04-25
+
+### Fixed
+- ClawHub packaging/provenance hygiene release; no runtime behavior changes.
+- Sync source repo metadata/docs with the tested v2.2.0 installed plugin.
+- Preserve GitHub repo `robbyczgw-cla/web-search-plus-plugin` while publishing ClawHub slug `web-search-plus-plugin-v2`.
+- Tighten SearXNG private-network warning wording.
+- Ensure package metadata includes `web_extract_plus` runtime files.
+
 ## [v2.2.0] — 2026-04-25
 ### ✨ Added
 - `web_extract_plus` companion tool — 5 extract providers (Firecrawl/Linkup/Tavily/Exa/You) with unified result shape, per-URL error handling, automatic fallback. Backport of hermes-web-search-plus v1.6.0.

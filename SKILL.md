@@ -1,12 +1,12 @@
 ---
 name: web-search-plus-plugin-v2
-version: 2.1.4
+version: 2.2.1
 description: OpenClaw plugin for multi-provider web search with intelligent auto-routing. Registers the `web_search_plus` tool — supports Serper, Tavily, Querit, Exa, Perplexity, You.com, and SearXNG.
 ---
 
 # Web Search Plus Plugin
 
-Registers `web_search_plus` as a native OpenClaw tool. Analyzes query intent and routes to the best configured provider automatically.
+Registers `web_search_plus` and `web_extract_plus` as native OpenClaw tools. Analyzes query intent and routes to the best configured provider automatically.
 
 ## Quick Start
 
@@ -17,7 +17,7 @@ openclaw plugins install web-search-plus-plugin-v2
 Add at least one provider credential via OpenClaw plugin config or environment variables, then allow the tool for your agent:
 
 ```json
-{ "tools": { "allow": ["web_search_plus"] } }
+{ "tools": { "allow": ["web_search_plus", "web_extract_plus"] } }
 ```
 
 ## Runtime
