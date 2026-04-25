@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.6] - 2026-04-25
+
+### Fixed
+- Remove dotfile templates from the ClawHub artifact metadata because OpenClaw/ClawHub strips dotfiles from package archives during install validation.
+
 ## [2.2.5] - 2026-04-25
 
 ### Fixed
