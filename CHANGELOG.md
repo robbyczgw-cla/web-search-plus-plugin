@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.4] - 2026-04-25
+
+### Fixed
+- Align package `files[]` metadata with the ClawHub archive contents so OpenClaw 2026.4.24 integrity checks can install the plugin without a `.clawignore` mismatch.
+
 ## [2.2.3] - 2026-04-25
 
 ### Fixed

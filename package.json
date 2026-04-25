@@ -1,6 +1,6 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "2.2.3",
+  "version": "2.2.4",
   "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider API key or SearXNG instance URL.",
   "type": "module",
   "main": "index.ts",
@@ -39,8 +39,13 @@
     "env.ts",
     "openclaw.plugin.json",
     ".env.template",
+    ".clawignore",
     "README.md",
-    "LICENSE"
+    "CHANGELOG.md",
+    "SKILL.md",
+    "LICENSE",
+    "docs",
+    "test"
   ],
   "keywords": [
     "openclaw",
