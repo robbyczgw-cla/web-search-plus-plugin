@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.7] - 2026-04-25
+
+### Fixed
+- Publish runtime-only ClawHub artifact matching OpenClaw 2026.4.24 installer archive validation. Source docs/tests remain in GitHub; ClawHub package contains only runtime files, manifest, README, LICENSE, and package metadata.
+
 ## [2.2.6] - 2026-04-25
 
 ### Fixed
