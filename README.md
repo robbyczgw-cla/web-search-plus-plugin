@@ -10,7 +10,7 @@ Requires at least one configured provider API key or a `SEARXNG_INSTANCE_URL`.
 openclaw plugins install clawhub:web-search-plus-plugin-v2
 ```
 
-It registers a `web_search_plus` tool that can query multiple providers and auto-route to the one that best fits the query.
+It registers a `web_search_plus` tool for search and a `web_extract_plus` companion tool for URL extraction.
 
 ## Why use this instead of OpenClaw's built-in `web_search`?
 
@@ -71,6 +71,34 @@ Then load the plugin in OpenClaw and restart the gateway.
 | You.com | General web + answer-oriented results | Limited | 60 req/hr |
 | SearXNG | Self-hosted metasearch | Yes, self-hosted | Self-hosted, unlimited |
 
+## web_extract_plus
+
+Extract content from specific URLs using provider-specific extraction backends.
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `urls` | string[] | **required** | URLs to extract |
+| `provider` | string | `"auto"` | Force: `firecrawl`, `linkup`, `tavily`, `exa`, `you` |
+| `format` | string | `"markdown"` | `markdown` or `html` |
+| `include_images` | boolean | `false` | Include image metadata when supported |
+| `include_raw_html` | boolean | `false` | Include raw HTML when supported |
+| `render_js` | boolean | `false` | Render JavaScript before extraction when supported |
+
+Auto extraction currently tries Firecrawl, then Linkup, Tavily, Exa, and You.com when keys are available.
+
+Examples:
+
+```python
+web_extract_plus(urls=["https://example.com"], provider="firecrawl")
+# → Extract clean markdown from a URL
+
+web_extract_plus(urls=["https://docs.linkup.so"], provider="linkup", render_js=False)
+# → Linkup fetch endpoint
+
+web_extract_plus(urls=["https://example.com", "https://example.org"], provider="auto", include_images=True)
+# → Automatic fallback across extraction-capable providers
+```
+
 ## Auto-routing logic
 
 The plugin scores each query against the providers you have configured and picks the best match for that query type. If the first choice is unavailable or fails, it falls back to another configured provider instead of failing immediately.
@@ -111,4 +139,4 @@ GitHub: <https://github.com/robbyczgw-cla/web-search-plus-plugin>
 
 ## Acknowledgments
 
-Thanks to [@Wysie](https://github.com/Wysie) for contributing the original Linkup and Firecrawl provider integrations in the sister project [hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus), which were then ported into this OpenClaw plugin in v2.1.0.
+Thanks to [@Wysie](https://github.com/Wysie) for contributing the original Linkup, Firecrawl, and `web_extract_plus` design in the sister project [hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus), which was backported into this OpenClaw plugin.

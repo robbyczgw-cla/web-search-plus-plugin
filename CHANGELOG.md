@@ -1,3 +1,12 @@
+## [v2.2.0] — 2026-04-25
+### ✨ Added
+- `web_extract_plus` companion tool — 5 extract providers (Firecrawl/Linkup/Tavily/Exa/You) with unified result shape, per-URL error handling, automatic fallback. Backport of hermes-web-search-plus v1.6.0.
+- Image extraction support via `include_images=true` (Firecrawl markdown-parse + ogImage)
+### 🔧 Improved
+- `web_extract_plus.checkFn` requires extraction-capable provider (separate from search check)
+### 🙏 Contributors
+Original Python design: @Wysie
+
 ## 2.1.1
 - README: add Linkup, Firecrawl, Brave to provider list and env vars.
 - Wysie attribution updated with web_extract_plus companion tool.

@@ -5,6 +5,7 @@ import net from "net";
 import { getPluginDir } from "./paths.ts";
 import { getRuntimeEnv } from "./env.ts";
 import { readJsonFile, writeJsonFile, readCachedJson } from "./storage.ts";
+import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
 
 type PluginPaths = {
   pluginDir: string;
@@ -810,7 +811,7 @@ async function executeWithRetry(fn: () => Promise<SearchResponse>): Promise<Sear
   throw lastError;
 }
 
-export default function (api: any) {
+export function register(api: any) {
   api.registerTool(
     {
       name: "web_search_plus",
@@ -942,4 +943,38 @@ export default function (api: any) {
     },
     { optional: true },
   );
+
+  api.registerTool(
+    {
+      name: "web_extract_plus",
+      description:
+        "Extract URL content with automatic fallback across Firecrawl, Linkup, Tavily, Exa, and You.com, with per-URL errors and unified output.",
+      parameters: EXTRACT_PARAMETERS_SCHEMA,
+      checkFn() {
+        const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
+        return hasAnyExtractProviderCredential(getRuntimeEnv(pluginConfig));
+      },
+      async execute(_id: string, params: any) {
+        try {
+          const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
+          const runtimeEnv = getRuntimeEnv(pluginConfig);
+          const result = await extractPlus(
+            Array.isArray(params?.urls) ? params.urls : typeof params?.urls === "string" ? [params.urls] : [],
+            params?.provider || "auto",
+            params?.format === "html" ? "html" : "markdown",
+            Boolean(params?.include_images),
+            Boolean(params?.include_raw_html),
+            Boolean(params?.render_js),
+            runtimeEnv,
+          );
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
+        } catch (error: any) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };
+        }
+      },
+    },
+    { optional: true },
+  );
 }
+
+export default register;
