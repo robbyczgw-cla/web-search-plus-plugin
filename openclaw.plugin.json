@@ -1,7 +1,7 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "Multi-provider web search (Serper/Google, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider credential or a SearXNG instance URL before use.",
   "providerAuthEnvVars": {
     "serper": [
@@ -132,5 +132,6 @@
       "description": "Self-hosted metasearch instance URL. Counts as a configured provider even without an API key.",
       "sensitive": false
     }
-  }
+  },
+  "displayName": "Web Search Plus Plugin V2"
 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.2] - 2026-04-25
+
+### Fixed
+- Metadata-only ClawHub release to restore the display name to `Web Search Plus Plugin V2`.
+- Publish script now passes explicit package name/display name and stages under a stable slug path so temp directory names cannot leak into ClawHub metadata.
+
 ## [2.2.1] - 2026-04-25
 
 ### Fixed
