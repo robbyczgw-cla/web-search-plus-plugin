@@ -103,7 +103,6 @@
       "sensitive": false
     }
   },
-  "displayName": "Web Search Plus Plugin V2",
   "setup": {
     "providers": [
       {
