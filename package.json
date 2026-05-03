@@ -1,7 +1,7 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "2.2.9",
-  "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider API key or SearXNG instance URL.",
+  "version": "2.3.0",
+  "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Brave, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider API key or SearXNG instance URL.",
   "type": "module",
   "main": "index.ts",
   "scripts": {
@@ -16,6 +16,10 @@
     },
     "env": {
       "SERPER_API_KEY": "one supported hosted-provider option for enabling search, Serper/Google API key",
+      "BRAVE_API_KEY": "one supported hosted-provider option for enabling search, Brave Search API key",
+      "BRAVE_COUNTRY": "optional Brave Search country code override used by the Brave provider",
+      "BRAVE_SEARCH_LANG": "optional Brave Search language override used by the Brave provider",
+      "BRAVE_SAFESEARCH": "optional Brave Search safesearch default used by the Brave provider (strict|moderate|off)",
       "TAVILY_API_KEY": "one supported hosted-provider option for enabling search, Tavily research API key",
       "LINKUP_API_KEY": "one supported hosted-provider option for enabling source-grounded search, Linkup API key",
       "EXA_API_KEY": "one supported hosted-provider option for enabling search, Exa neural search API key",
@@ -44,6 +48,7 @@
     "plugin",
     "search",
     "serper",
+    "brave",
     "tavily",
     "linkup",
     "querit",

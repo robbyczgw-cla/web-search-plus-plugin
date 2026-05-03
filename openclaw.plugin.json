@@ -1,8 +1,8 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "2.2.9",
-  "description": "Multi-provider web search (Serper/Google, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider credential or a SearXNG instance URL before use.",
+  "version": "2.3.0",
+  "description": "Multi-provider web search (Serper/Google, Brave, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider credential or a SearXNG instance URL before use.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -10,6 +10,22 @@
       "serperApiKey": {
         "type": "string",
         "description": "Serper API key for Google-style web search. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      "braveApiKey": {
+        "type": "string",
+        "description": "Brave Search API key for general web, current, and shopping-style search. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      "braveCountry": {
+        "type": "string",
+        "description": "Optional Brave country code override (for example `US` or `DE`)."
+      },
+      "braveSearchLang": {
+        "type": "string",
+        "description": "Optional Brave search language override (for example `en` or `de`)."
+      },
+      "braveSafesearch": {
+        "type": "string",
+        "description": "Optional Brave safesearch default: `strict`, `moderate`, or `off`."
       },
       "tavilyApiKey": {
         "type": "string",
@@ -54,6 +70,26 @@
       "label": "Serper API Key",
       "placeholder": "sk-...",
       "sensitive": true
+    },
+    "braveApiKey": {
+      "label": "Brave API Key",
+      "placeholder": "BSA...",
+      "sensitive": true
+    },
+    "braveCountry": {
+      "label": "Brave Country",
+      "placeholder": "US",
+      "sensitive": false
+    },
+    "braveSearchLang": {
+      "label": "Brave Search Language",
+      "placeholder": "en",
+      "sensitive": false
+    },
+    "braveSafesearch": {
+      "label": "Brave Safesearch",
+      "placeholder": "moderate",
+      "sensitive": false
     },
     "tavilyApiKey": {
       "label": "Tavily API Key",
@@ -110,6 +146,12 @@
         "id": "serper",
         "envVars": [
           "SERPER_API_KEY"
+        ]
+      },
+      {
+        "id": "brave",
+        "envVars": [
+          "BRAVE_API_KEY"
         ]
       },
       {

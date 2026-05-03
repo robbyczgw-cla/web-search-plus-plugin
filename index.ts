@@ -38,7 +38,7 @@ const PARAMETERS_SCHEMA = {
     query: { type: "string", description: "Search query" },
     provider: {
       type: "string",
-      enum: ["serper", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng", "auto"],
+      enum: ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng", "auto"],
       description: "Force a provider, or use auto routing (default: auto)",
     },
     count: { type: "number", description: "Number of results (default: 5)" },
@@ -66,7 +66,7 @@ const PARAMETERS_SCHEMA = {
 };
 
 type Json = Record<string, any>;
-type ProviderName = "serper" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "you" | "searxng";
+type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "you" | "searxng";
 type ToolParams = {
   query: string;
   provider?: ProviderName | "auto";
@@ -146,8 +146,20 @@ function sha256(input: string): string {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
-function buildCacheKey(query: string, provider: string, maxResults: number, params?: Json): string {
-  return sha256(JSON.stringify({ query, provider, maxResults, ...(params || {}) }, Object.keys({ query, provider, maxResults, ...(params || {}) }).sort())).slice(0, 32);
+function normalizeJsonForCache(value: any): any {
+  if (Array.isArray(value)) return value.map((item) => normalizeJsonForCache(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, item]) => [key, normalizeJsonForCache(item)]),
+    );
+  }
+  return value;
+}
+
+export function buildCacheKey(query: string, provider: string, maxResults: number, params?: Json): string {
+  return sha256(JSON.stringify(normalizeJsonForCache({ query, provider, maxResults, params: params || null }))).slice(0, 32);
 }
 
 function getCachePath(cacheKey: string): string {
@@ -226,7 +238,7 @@ function normalizeResultUrl(url: string): string {
   }
 }
 
-function deduplicateResultsAcrossProviders(resultsByProvider: Array<[string, SearchResponse]>, maxResults: number): { results: SearchResult[]; dedupCount: number } {
+export function deduplicateResultsAcrossProviders(resultsByProvider: Array<[string, SearchResponse]>, maxResults: number): { results: SearchResult[]; dedupCount: number } {
   const deduped: SearchResult[] = [];
   const seen = new Set<string>();
   let dedupCount = 0;
@@ -245,10 +257,19 @@ function deduplicateResultsAcrossProviders(resultsByProvider: Array<[string, Sea
   return { results: deduped, dedupCount };
 }
 
+export function chooseTieWinner(query: string, winners: ProviderName[], priority: ProviderName[]): ProviderName {
+  const orderedWinners = priority.filter((provider) => winners.includes(provider));
+  const candidates = orderedWinners.length ? orderedWinners : [...winners].sort();
+  if (candidates.length <= 1) return candidates[0];
+  const digest = sha256(`${query}|${candidates.join("|")}`);
+  const idx = parseInt(digest.slice(0, 8), 16) % candidates.length;
+  return candidates[idx] as ProviderName;
+}
 
 function getApiKey(provider: ProviderName, env: Record<string, string>): string | undefined {
   const keyMap: Record<ProviderName, string | undefined> = {
     serper: env.SERPER_API_KEY,
+    brave: env.BRAVE_API_KEY,
     tavily: env.TAVILY_API_KEY,
     querit: env.QUERIT_API_KEY,
     exa: env.EXA_API_KEY,
@@ -272,6 +293,21 @@ function validateApiKey(provider: ProviderName, env: Record<string, string>): st
 
 function toTimeRange(value?: string): string | undefined {
   return value && ["hour", "day", "week", "month", "year"].includes(value) ? value : undefined;
+}
+
+function normalizeBraveCountry(value?: string): string {
+  const normalized = String(value || "US").trim();
+  return normalized ? normalized.toUpperCase() : "US";
+}
+
+function normalizeBraveLanguage(value?: string): string {
+  const normalized = String(value || "en").trim();
+  return normalized ? normalized.toLowerCase() : "en";
+}
+
+function normalizeBraveSafesearch(value?: string): "strict" | "moderate" | "off" {
+  const normalized = String(value || "moderate").trim().toLowerCase();
+  return normalized === "strict" || normalized === "off" ? normalized : "moderate";
 }
 
 function titleFromUrl(url: string): string {
@@ -462,7 +498,7 @@ const BRAND_PATTERNS = [
   "\\b(camera|lens|drone)\\b", "\\b(watch|smartwatch|fitbit|garmin)\\b", "\\b(router|modem|wifi)\\b", "\\b(keyboard|mouse|gaming)\\b",
 ];
 
-class QueryAnalyzer {
+export class QueryAnalyzer {
   calculateSignalScore(query: string, signals: Record<string, number>) {
     const q = query.toLowerCase();
     const matches: any[] = [];
@@ -549,6 +585,7 @@ class QueryAnalyzer {
       exa_deep_reasoning_score: exaDeepReasoning.total,
       provider_scores: {
         serper: shopping.total + localNews.total + recency.score * 0.35,
+        brave: shopping.total + localNews.total + recency.score * 0.35,
         tavily: research.total + (complexity.is_complex ? 0 : complexity.complexity_score) + recency.score * 0.2,
         linkup: linkupSource.total + rag.total * 0.7 + research.total * 0.45 + recency.score * 0.35,
         querit: research.total * 0.65 + rag.total * 0.35 + recency.score * 0.45,
@@ -560,6 +597,7 @@ class QueryAnalyzer {
       },
       provider_matches: {
         serper: [...shopping.matches, ...localNews.matches],
+        brave: [...shopping.matches, ...localNews.matches],
         tavily: research.matches,
         linkup: [...linkupSource.matches, ...rag.matches, ...research.matches],
         querit: research.matches,
@@ -581,8 +619,11 @@ class QueryAnalyzer {
     }
     const maxScore = Math.max(...providers.map((p) => available[p]));
     const winners = providers.filter((p) => available[p] === maxScore);
-    const priority: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "serper", "you", "searxng"];
-    const winner = priority.find((p) => winners.includes(p)) || winners[0];
+    const priority: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
+    const braveSerperCandidates = (["brave", "serper"] as ProviderName[]).filter((p) => providers.includes(p) && maxScore - (available[p] || 0) <= 0.5);
+    const winner = braveSerperCandidates.length > 0 && maxScore <= 6.5
+      ? chooseTieWinner(query, braveSerperCandidates, ["brave", "serper"])
+      : chooseTieWinner(query, winners, priority);
     const secondBest = [...providers.map((p) => available[p])].sort((a, b) => b - a)[1] || 0;
     const margin = maxScore > 0 ? (maxScore - secondBest) / maxScore : 0;
     const normalizedScore = Math.min(maxScore / 15, 1);
@@ -618,6 +659,43 @@ async function searchSerper(query: string, apiKey: string, maxResults: number, t
   const results = (data.organic || []).slice(0, maxResults).map((item: any, i: number) => ({ title: item.title || "", url: item.link || "", snippet: item.snippet || "", score: Number((1 - i * 0.1).toFixed(2)), date: item.date }));
   const answer = data?.answerBox?.answer || data?.answerBox?.snippet || data?.knowledgeGraph?.description || results[0]?.snippet || "";
   return { provider: "serper", query, results, images: [], answer, knowledge_graph: data.knowledgeGraph, related_searches: (data.relatedSearches || []).map((r: any) => r.query) };
+}
+
+export async function searchBrave(query: string, apiKey: string, maxResults: number, options?: { country?: string; search_lang?: string; safesearch?: string; time_range?: string }): Promise<SearchResponse> {
+  const freshnessMap: Record<string, string> = { hour: "pd", day: "pd", week: "pw", month: "pm", year: "py" };
+  const url = new URL("https://api.search.brave.com/res/v1/web/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("count", String(maxResults));
+  url.searchParams.set("country", normalizeBraveCountry(options?.country));
+  url.searchParams.set("search_lang", normalizeBraveLanguage(options?.search_lang));
+  url.searchParams.set("safesearch", normalizeBraveSafesearch(options?.safesearch));
+  url.searchParams.set("spellcheck", "1");
+  const timeRange = toTimeRange(options?.time_range);
+  if (timeRange && freshnessMap[timeRange]) url.searchParams.set("freshness", freshnessMap[timeRange]);
+
+  const data = await httpJson(url.toString(), {
+    method: "GET",
+    headers: {
+      "X-Subscription-Token": apiKey,
+      Accept: "application/json",
+      "Accept-Encoding": "gzip",
+    },
+  });
+
+  const webResults = (data?.web?.results || []).slice(0, maxResults);
+  const results = webResults.map((item: any, i: number) => {
+    const snippetParts = [item.description || item.snippet || "", ...((item.extra_snippets || []).slice(0, 2))].filter(Boolean);
+    return {
+      title: item.title || "",
+      url: item.url || "",
+      snippet: snippetParts.join(" ... "),
+      score: Number((1 - i * 0.1).toFixed(2)),
+      age: item.age,
+    };
+  });
+
+  const answer = data?.summary || data?.infobox?.description || results[0]?.snippet || "";
+  return { provider: "brave", query, results, images: [], answer, mixed: data?.mixed };
 }
 
 async function searchTavily(query: string, apiKey: string, maxResults: number, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
@@ -816,7 +894,7 @@ export function register(api: any) {
     {
       name: "web_search_plus",
       description:
-        "Search the web with intelligent multi-provider routing across Serper, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity, You.com, and SearXNG. Auto-selects the best provider, caches results, retries transient failures, and falls back across providers.",
+        "Search the web with intelligent multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity, You.com, and SearXNG. Auto-selects the best provider, caches results, retries transient failures, and falls back across providers.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id: string, params: ToolParams) {
         try {
@@ -832,8 +910,13 @@ export function register(api: any) {
           const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : undefined;
           const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
 
-          const allProviders: ProviderName[] = ["serper", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng"];
+          const allProviders: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng"];
           const configuredProviders = allProviders.filter((p) => !!getApiKey(p, runtimeEnv));
+          const braveOptions = {
+            country: runtimeEnv.BRAVE_COUNTRY,
+            search_lang: runtimeEnv.BRAVE_SEARCH_LANG,
+            safesearch: runtimeEnv.BRAVE_SAFESEARCH,
+          };
 
           let routingInfo: Json;
           let provider: ProviderName;
@@ -847,7 +930,7 @@ export function register(api: any) {
             routingInfo = { auto_routed: false, provider };
           }
 
-          const priority: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "serper", "you", "searxng"];
+          const priority: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
           const providersToTry: ProviderName[] = [provider, ...priority.filter((p) => p !== provider && configuredProviders.includes(p))];
           const eligibleProviders: ProviderName[] = [];
           const cooldownSkips: Json[] = [];
@@ -863,6 +946,9 @@ export function register(api: any) {
             include_domains: includeDomains ? [...includeDomains].sort() : null,
             exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
             exa_depth: params.depth || routingInfo.exa_depth || "normal",
+            brave_country: normalizeBraveCountry(braveOptions.country),
+            brave_search_lang: normalizeBraveLanguage(braveOptions.search_lang),
+            brave_safesearch: normalizeBraveSafesearch(braveOptions.safesearch),
           };
 
           const cached = cacheGet(query, provider, count, DEFAULT_CACHE_TTL, cacheContext);
@@ -881,6 +967,7 @@ export function register(api: any) {
           const runProvider = async (p: ProviderName): Promise<SearchResponse> => {
             const key = validateApiKey(p, runtimeEnv);
             if (p === "serper") return searchSerper(query, key, count, timeRange);
+            if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
             if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
             if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
             if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);

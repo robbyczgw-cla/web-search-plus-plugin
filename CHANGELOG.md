@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.0] - 2026-05-03
+
+### Added
+- Add Brave Search as a first-class `web_search_plus` provider with API key/config metadata, request adapter, normalized results, and fallback support.
+- Add deterministic Brave/Serper tie-breaking for generic current/web queries while preserving stronger research, Linkup, Exa, and Firecrawl routing.
+- Add focused search-path tests covering QueryAnalyzer routing, tie-breaking, cache-key stability, deduplication, provider fallback, and Brave execution.
+
+### Fixed
+- Stabilize cache keys by recursively sorting nested parameter objects before hashing.
+
 ## [2.2.9] - 2026-04-25
 
 ### Fixed

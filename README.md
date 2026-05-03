@@ -23,6 +23,7 @@ You might want this plugin when:
 
 Supported providers:
 - Serper (Google)
+- Brave
 - Tavily
 - Exa
 - Querit
@@ -42,6 +43,7 @@ You need at least one configured provider:
 
 Supported "at least one" options:
 - `SERPER_API_KEY`
+- `BRAVE_API_KEY`
 - `TAVILY_API_KEY`
 - `EXA_API_KEY`
 - `QUERIT_API_KEY`
@@ -64,6 +66,7 @@ Then load the plugin in OpenClaw and restart the gateway.
 | Provider | Best for | Free tier | Rate limit (free) |
 | --- | --- | --- | --- |
 | Serper | Google-style general web, news, shopping, local results | Yes | 2,500/mo |
+| Brave | General/current web, shopping, local/weather-ish queries | Yes | Varies |
 | Tavily | Research-style results and summaries | Yes | 1,000/mo |
 | Exa | Semantic / neural discovery | Yes | 1,000/mo |
 | Querit | Multilingual and regional search | Yes | Varies |
@@ -114,6 +117,10 @@ The plugin scores each query against the providers you have configured and picks
 ## Environment variables
 
 - `SERPER_API_KEY`
+- `BRAVE_API_KEY`
+- `BRAVE_COUNTRY`
+- `BRAVE_SEARCH_LANG`
+- `BRAVE_SAFESEARCH`
 - `TAVILY_API_KEY`
 - `EXA_API_KEY`
 - `QUERIT_API_KEY`
