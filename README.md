@@ -69,38 +69,38 @@ Extraction-capable providers for `web_extract_plus`:
 
 You do **not** need every provider.
 
-Configure at least one of these:
+Configure at least one provider in the OpenClaw plugin config UI or `plugins.entries.web-search-plus-plugin-v2.config`, for example:
 
-- `SERPER_API_KEY`
-- `BRAVE_API_KEY`
-- `TAVILY_API_KEY`
-- `LINKUP_API_KEY`
-- `QUERIT_API_KEY`
-- `EXA_API_KEY`
-- `FIRECRAWL_API_KEY`
-- `PERPLEXITY_API_KEY`
-- `KILOCODE_API_KEY`
-- `YOU_API_KEY`
-- `SEARXNG_INSTANCE_URL`
+- `serperApiKey`
+- `braveApiKey`
+- `tavilyApiKey`
+- `linkupApiKey`
+- `queritApiKey`
+- `exaApiKey`
+- `firecrawlApiKey`
+- `perplexityApiKey`
+- `kilocodeApiKey`
+- `youApiKey`
+- `searxngInstanceUrl`
 
-Optional Brave settings:
+Optional Brave config fields:
 
-- `BRAVE_COUNTRY` — country code, for example `US` or `DE`
-- `BRAVE_SEARCH_LANG` — search language, for example `en` or `de`
-- `BRAVE_SAFESEARCH` — `strict`, `moderate`, or `off`
+- `braveCountry` — country code, for example `US` or `DE`
+- `braveSearchLang` — search language, for example `en` or `de`
+- `braveSafesearch` — `strict`, `moderate`, or `off`
 
-Optional SearXNG setting:
+Optional SearXNG config field:
 
-- `SEARXNG_ALLOW_PRIVATE=true` — disables SSRF/private-network protection. Use only with fully trusted private SearXNG/network setups.
+- `searxngAllowPrivate=true` — disables SSRF/private-network protection. Use only with fully trusted private SearXNG/network setups.
 
 ## Quick setup
 
 ```bash
-cp .env.template .env
-# add at least one provider key or SEARXNG_INSTANCE_URL
+openclaw plugins install clawhub:web-search-plus-plugin-v2
+# then add at least one provider key or searxngInstanceUrl in plugin config
 ```
 
-Then install or update the plugin and restart OpenClaw if your setup does not hot-reload plugins.
+Provider credentials intentionally flow through explicit OpenClaw plugin config fields, not direct runtime `.env`/`process.env` reads. Restart OpenClaw if your setup does not hot-reload plugin config changes.
 
 ## Auto-routing logic
 

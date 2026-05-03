@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.5] - 2026-05-03
+
+### Documentation
+- Updated README setup instructions to match the ClawPack security cleanup: provider credentials are configured through OpenClaw plugin config fields instead of direct .env runtime reads.
+
 ## [2.3.4] - 2026-05-03
 
 ### Security
