@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.6] - 2026-05-03
+
+### Security
+- Restored explicit package credential metadata for all supported provider keys and SearXNG settings so ClawHub review can show transparent credential requirements. Runtime still relies on explicit OpenClaw plugin config and does not directly read process.env/.env credentials.
+
 ## [2.3.5] - 2026-05-03
 
 ### Documentation
