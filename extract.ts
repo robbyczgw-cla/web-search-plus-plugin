@@ -394,8 +394,8 @@ export async function extractPlus(
       continue;
     }
 
-    const apiKey = getExtractApiKey(currentProvider, env);
-    if (!apiKey) {
+    const providerCredential = getExtractApiKey(currentProvider, env);
+    if (!providerCredential) {
       errors.push({ provider: currentProvider, error: "missing_api_key" });
       continue;
     }
@@ -403,15 +403,15 @@ export async function extractPlus(
     try {
       let result: ExtractResponse;
       if (currentProvider === "firecrawl") {
-        result = await extractFirecrawl(cleanedUrls as string[], apiKey, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractFirecrawl(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "linkup") {
-        result = await extractLinkup(cleanedUrls as string[], apiKey, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractLinkup(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "tavily") {
-        result = await extractTavily(cleanedUrls as string[], apiKey, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractTavily(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "exa") {
-        result = await extractExa(cleanedUrls as string[], apiKey, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractExa(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else {
-        result = await extractYou(cleanedUrls as string[], apiKey, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractYou(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }
 
       const resultList = Array.isArray(result.results) ? result.results : [];

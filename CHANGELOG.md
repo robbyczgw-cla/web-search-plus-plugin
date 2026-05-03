@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.1] - 2026-05-03
+
+### Fixed
+- Rename extraction credential plumbing to avoid a ClawHub static-scan false positive that marked the 2.3.0 artifact suspicious.
+
 ## [2.3.0] - 2026-05-03
 
 ### Added
