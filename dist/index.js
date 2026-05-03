@@ -1,20 +1,15 @@
 // index.ts
 import crypto from "crypto";
-import path3 from "path";
+import path2 from "path";
 import dns from "dns/promises";
 import net from "net";
 
 // paths.ts
-import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 function getPluginDir() {
   try {
-    const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-    if (fs.existsSync(path.join(moduleDir, "package.json"))) return moduleDir;
-    const parentDir = path.dirname(moduleDir);
-    if (fs.existsSync(path.join(parentDir, "package.json"))) return parentDir;
-    return moduleDir;
+    return path.dirname(fileURLToPath(import.meta.url));
   } catch {
   }
   return process.cwd();
@@ -48,41 +43,33 @@ function getRuntimeEnv(pluginConfig) {
 }
 
 // storage.ts
-import fs2 from "fs";
-import path2 from "path";
-function ensureDir(dir) {
-  fs2.mkdirSync(dir, { recursive: true });
+var memoryStore = /* @__PURE__ */ new Map();
+function cloneJson(value) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
 }
 function readJsonFile(file, fallback) {
-  try {
-    return JSON.parse(fs2.readFileSync(file, "utf8"));
-  } catch {
-    return fallback;
-  }
+  if (!memoryStore.has(file)) return fallback;
+  return cloneJson(memoryStore.get(file));
 }
 function writeJsonFile(file, value) {
-  ensureDir(path2.dirname(file));
-  fs2.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+  memoryStore.set(file, cloneJson(value));
 }
 function deleteFileIfExists(file) {
-  try {
-    fs2.unlinkSync(file);
-  } catch {
-  }
+  memoryStore.delete(file);
 }
 function readCachedJson(file, ttlSeconds) {
-  try {
-    const cached = JSON.parse(fs2.readFileSync(file, "utf8"));
-    const ts = Number(cached._cache_timestamp || 0);
-    if (!ts || Date.now() / 1e3 - ts > ttlSeconds) {
-      deleteFileIfExists(file);
-      return null;
-    }
-    return cached;
-  } catch {
+  const cached = readJsonFile(file, null);
+  if (!cached) return null;
+  const ts = Number(cached._cache_timestamp || 0);
+  if (!ts || Date.now() / 1e3 - ts > ttlSeconds) {
     deleteFileIfExists(file);
     return null;
   }
+  return cached;
 }
 
 // extract.ts
@@ -406,8 +393,8 @@ function getPluginPaths() {
   const pluginDir = getPluginDir();
   pluginPathsCache = {
     pluginDir,
-    cacheDir: path3.join(pluginDir, ".cache"),
-    providerHealthFile: path3.join(pluginDir, ".cache", "provider_health.json")
+    cacheDir: path2.join(pluginDir, ".cache"),
+    providerHealthFile: path2.join(pluginDir, ".cache", "provider_health.json")
   };
   return pluginPathsCache;
 }
@@ -508,7 +495,7 @@ function buildCacheKey(query, provider, maxResults, params) {
   return sha256(JSON.stringify(normalizeJsonForCache({ query, provider, maxResults, params: params || null }))).slice(0, 32);
 }
 function getCachePath(cacheKey) {
-  return path3.join(getPluginPaths().cacheDir, `${cacheKey}.json`);
+  return path2.join(getPluginPaths().cacheDir, `${cacheKey}.json`);
 }
 function cacheGet(query, provider, maxResults, ttl, params) {
   const key = buildCacheKey(query, provider, maxResults, params);

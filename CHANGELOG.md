@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.8] - 2026-05-03
+
+### Security
+- Removed filesystem-backed cache/provider-health reads from the bundled ClawPack runtime. Cache and provider health are now in-memory only, avoiding the static-scan file-read plus network-send heuristic while preserving search/extraction behavior.
+
 ## [2.3.7] - 2026-05-03
 
 ### Packaging
