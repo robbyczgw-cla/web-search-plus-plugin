@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.2] - 2026-05-03
+
+### Changed
+- Refresh plugin README and environment template to document v2.3.x behavior, Brave, Linkup, Firecrawl, extraction providers, fallback routing, package contents, and the planned future ClawPack migration.
+
 ## [2.3.1] - 2026-05-03
 
 ### Fixed
