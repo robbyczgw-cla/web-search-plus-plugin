@@ -2,7 +2,7 @@
 
 Native OpenClaw plugin for multi-provider web search and URL extraction.
 
-Current version: **2.3.9**
+Current version: **2.3.10**
 
 It registers two OpenClaw tools:
 

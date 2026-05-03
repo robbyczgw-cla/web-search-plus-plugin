@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.10] - 2026-05-03
+
+### Packaging
+- Republished from the tagged GitHub source so ClawHub review can reconcile package metadata with the source/runtime files referenced by the npm-pack artifact.
+
 ## [2.3.9] - 2026-05-03
 
 ### Documentation
