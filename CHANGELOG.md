@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.3.7] - 2026-05-03
+
+### Packaging
+- Republished with ClawHub CLI 0.12.2 so the registry receives the npm-pack/ClawPack artifact instead of the legacy ZIP fallback produced by older CLI releases.
+
 ## [2.3.6] - 2026-05-03
 
 ### Security
