@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.3.3] - 2026-05-03
+
+### Changed
+- Removed unsupported top-level OpenClaw manifest displayName field flagged by plugin-inspector.
+- Added built runtime artifact and package runtimeExtensions so ClawHub/OpenClaw can install the plugin as a ClawPack instead of legacy ZIP/source-only package.
+
 ## [2.3.2] - 2026-05-03
 
 ### Changed

@@ -1,11 +1,12 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Brave, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider API key or SearXNG instance URL.",
   "type": "module",
   "main": "index.ts",
   "scripts": {
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js"
   },
   "openclaw": {
     "extensions": [
@@ -32,8 +33,12 @@
       "SEARXNG_ALLOW_PRIVATE": "optional danger flag; true disables SSRF/private-network protection for SearXNG and should only be used on fully trusted private networks"
     },
     "build": {
-      "openclawVersion": "2026.4.2"
-    }
+      "openclawVersion": "2026.4.23",
+      "pluginSdkVersion": "2026.4.23"
+    },
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ]
   },
   "files": [
     "index.ts",
@@ -41,7 +46,8 @@
     "paths.ts",
     "storage.ts",
     "env.ts",
-    "openclaw.plugin.json"
+    "openclaw.plugin.json",
+    "dist/index.js"
   ],
   "keywords": [
     "openclaw",
@@ -69,5 +75,8 @@
     "url": "https://github.com/robbyczgw-cla/web-search-plus-plugin"
   },
   "author": "robbyczgw-cla",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
 }
