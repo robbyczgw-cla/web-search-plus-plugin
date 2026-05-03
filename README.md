@@ -2,7 +2,7 @@
 
 Native OpenClaw plugin for multi-provider web search and URL extraction.
 
-Current version: **2.3.1**
+Current version: **2.3.9**
 
 It registers two OpenClaw tools:
 
@@ -45,17 +45,17 @@ Use this plugin when you want:
 
 Search providers:
 
-- Serper — Google-style general web, news, shopping, local results. Env: `SERPER_API_KEY`
-- Brave — general/current web, shopping-ish and broad fallback queries. Env: `BRAVE_API_KEY`
-- Tavily — research-style results and summaries. Env: `TAVILY_API_KEY`
-- Linkup — source-grounded/citation-focused search. Env: `LINKUP_API_KEY`
-- Querit — multilingual and regional AI search. Env: `QUERIT_API_KEY`
-- Exa — semantic, neural, similar-page, and discovery search. Env: `EXA_API_KEY`
-- Firecrawl — web discovery with scrape-ready metadata. Env: `FIRECRAWL_API_KEY`
-- Perplexity — answer-style web results. Env: `PERPLEXITY_API_KEY`
-- Kilo gateway — Perplexity-compatible answer-style route. Env: `KILOCODE_API_KEY`
-- You.com — general web and answer-oriented results. Env: `YOU_API_KEY`
-- SearXNG — self-hosted metasearch. Env: `SEARXNG_INSTANCE_URL`
+- Serper — Google-style general web, news, shopping, local results. Config: `serperApiKey` / metadata env: `SERPER_API_KEY`
+- Brave — general/current web, shopping-ish and broad fallback queries. Config: `braveApiKey` / metadata env: `BRAVE_API_KEY`
+- Tavily — research-style results and summaries. Config: `tavilyApiKey` / metadata env: `TAVILY_API_KEY`
+- Linkup — source-grounded/citation-focused search. Config: `linkupApiKey` / metadata env: `LINKUP_API_KEY`
+- Querit — multilingual and regional AI search. Config: `queritApiKey` / metadata env: `QUERIT_API_KEY`
+- Exa — semantic, neural, similar-page, and discovery search. Config: `exaApiKey` / metadata env: `EXA_API_KEY`
+- Firecrawl — web discovery with scrape-ready metadata. Config: `firecrawlApiKey` / metadata env: `FIRECRAWL_API_KEY`
+- Perplexity — answer-style web results. Config: `perplexityApiKey` / metadata env: `PERPLEXITY_API_KEY`
+- Kilo gateway — Perplexity-compatible answer-style route. Config: `kilocodeApiKey` / metadata env: `KILOCODE_API_KEY`
+- You.com — general web and answer-oriented results. Config: `youApiKey` / metadata env: `YOU_API_KEY`
+- SearXNG — self-hosted metasearch. Config: `searxngInstanceUrl` / metadata env: `SEARXNG_INSTANCE_URL`
 
 Extraction-capable providers for `web_extract_plus`:
 
@@ -171,20 +171,20 @@ web_extract_plus(urls=["https://example.com", "https://example.org"], provider="
 
 ## Cache and provider health
 
-The plugin writes runtime state only inside its own `.cache/` directory:
+The ClawPack runtime uses in-memory cache and provider-health state only:
 
-- hashed search result payloads, including timestamp, query, provider, search params, and returned results
-- `provider_health.json`, with provider failure/cooldown state and sanitized last-error text for fallback routing
-
-No API keys are written to cache by the plugin logic.
+- no filesystem cache files
+- no filesystem provider-health file
+- cache and cooldown state reset when the plugin process restarts
+- no API keys are persisted by the plugin runtime
 
 ## Security notes
 
 - Missing provider credentials are skipped.
 - SearXNG URLs are protected against SSRF/private-network access by default.
-- `SEARXNG_ALLOW_PRIVATE=true` disables that protection and should only be used for trusted private deployments.
+- `searxngAllowPrivate=true` disables that protection and should only be used for trusted private deployments.
 - Search queries and extracted URLs are sent to whichever configured provider the router selects.
-- ClawHub currently reports the artifact as **Legacy ZIP**. That is expected for this release line; a future ClawPack migration is planned.
+- ClawHub latest release is published as a **ClawPack / npm-pack `.tgz`** artifact.
 
 ## Packaging notes
 
@@ -197,10 +197,11 @@ The npm package intentionally ships runtime files only:
 - `env.ts`
 - `openclaw.plugin.json`
 - `package.json`
+- `package-lock.json`
 - `README.md`
 - `LICENSE`
 
-Tests and local cache/env files are not included in the package artifact.
+Tests, local env templates, docs, and cache/state files are not included in the npm-pack artifact.
 
 ## Verification
 
@@ -211,7 +212,7 @@ npm test -- --test-reporter=spec
 # 26/26 passing
 
 npm pack --dry-run
-# runtime files only
+# npm-pack ClawPack runtime files only
 ```
 
 ## Acknowledgments

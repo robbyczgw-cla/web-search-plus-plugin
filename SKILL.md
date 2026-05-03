@@ -1,20 +1,20 @@
 ---
 name: web-search-plus-plugin-v2
-version: 2.3.2
-description: OpenClaw plugin for multi-provider web search with intelligent auto-routing. Registers the `web_search_plus` tool — supports Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity, You.com, and SearXNG.
+version: 2.3.9
+description: OpenClaw plugin for multi-provider web search and URL extraction with intelligent auto-routing. Registers `web_search_plus` and `web_extract_plus`; supports Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity/Kilo, You.com, and SearXNG.
 ---
 
 # Web Search Plus Plugin
 
-Registers `web_search_plus` and `web_extract_plus` as native OpenClaw tools. Analyzes query intent and routes to the best configured provider automatically.
+Native OpenClaw plugin that registers `web_search_plus` and `web_extract_plus`. It analyzes query intent and routes to the best configured provider automatically.
 
 ## Quick Start
 
 ```bash
-openclaw plugins install web-search-plus-plugin-v2
+openclaw plugins install clawhub:web-search-plus-plugin-v2
 ```
 
-Add at least one provider credential via OpenClaw plugin config or environment variables, then allow the tool for your agent:
+Configure at least one provider through OpenClaw plugin config, then allow the tools for your agent if your setup uses tool allowlists:
 
 ```json
 { "tools": { "allow": ["web_search_plus", "web_extract_plus"] } }
@@ -22,29 +22,29 @@ Add at least one provider credential via OpenClaw plugin config or environment v
 
 ## Runtime
 
-- Pure TypeScript runtime with local helper modules and zero external runtime dependencies
-- All provider calls via native `fetch()`
-- File-based result caching with provider health tracking
+- ClawPack / npm-pack artifact with built JavaScript runtime
+- Zero external runtime dependencies
+- Provider calls use native `fetch()`
+- In-memory result cache and provider health tracking only
 - Built-in SSRF protection for SearXNG
 
 ## Providers
 
-| Provider | Strength |
-|----------|----------|
-| **Serper** | Google-backed general search, news, shopping |
-| **Brave** | General/current web search with deterministic routing parity vs Serper |
-| **Tavily** | Research-focused, deep content extraction |
-| **Linkup** | Source-grounded search with citations and fact-check signals |
-| **Querit** | Multilingual AI search, 20+ countries |
-| **Firecrawl** | Web search with optional extraction-ready content |
-| **Exa** | Neural/semantic search with deep reasoning modes |
-| **Perplexity** | AI-synthesized answers with citations |
-| **You.com** | Real-time RAG snippets |
-| **SearXNG** | Self-hosted, privacy-first, free |
+- Serper — Google-backed general search, news, shopping
+- Brave — general/current web search with deterministic routing parity vs Serper
+- Tavily — research-focused search and extraction
+- Linkup — source-grounded search with citations and fact-check signals
+- Querit — multilingual AI search
+- Firecrawl — web search with optional extraction-ready content
+- Exa — neural/semantic search with deep reasoning modes
+- Perplexity — AI-synthesized answers with citations
+- Kilo gateway — Perplexity-compatible answer route
+- You.com — real-time RAG snippets
+- SearXNG — self-hosted, privacy-first metasearch
 
 ## Configuration
 
-Via OpenClaw plugin config:
+Use OpenClaw plugin config fields. Example:
 
 ```json
 {
@@ -53,6 +53,7 @@ Via OpenClaw plugin config:
       "web-search-plus-plugin-v2": {
         "config": {
           "serperApiKey": "...",
+          "braveApiKey": "...",
           "tavilyApiKey": "...",
           "exaApiKey": "..."
         }
@@ -62,4 +63,6 @@ Via OpenClaw plugin config:
 }
 ```
 
-Or via `.env` file in the plugin directory. At least one provider must be configured: any hosted provider API key, or `SEARXNG_INSTANCE_URL` for SearXNG.
+Supported config fields include `serperApiKey`, `braveApiKey`, `tavilyApiKey`, `linkupApiKey`, `queritApiKey`, `exaApiKey`, `firecrawlApiKey`, `perplexityApiKey`, `kilocodeApiKey`, `youApiKey`, and `searxngInstanceUrl`.
+
+Package metadata declares the matching provider env names for ClawHub transparency, but the bundled runtime does not directly read `.env` or `process.env` credentials.

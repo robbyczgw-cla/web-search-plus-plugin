@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.3.9] - 2026-05-03
+
+### Documentation
+- Synchronized README, SKILL.md, and architecture docs with the current ClawHub release: v2.3.9, ClawPack/npm-pack artifact, explicit OpenClaw plugin config, and in-memory runtime cache/provider health.
+- Removed stale Legacy ZIP, .env runtime, and filesystem cache documentation from current docs.
+
 ## [2.3.8] - 2026-05-03
 
 ### Security

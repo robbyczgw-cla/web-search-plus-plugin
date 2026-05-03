@@ -28,13 +28,13 @@
 
 ### Runtime module layout
 
-The runtime entry lives in `index.ts`, with a few local helper modules for path resolution, env loading, and storage utilities.
+The runtime entry lives in `index.ts`, with a few local helper modules for path resolution, configuration mapping, and in-memory storage utilities.
 
 Together they cover:
 - Type definitions for tool input/output and internal state
 - Environment/config loading
 - Shared HTTP request helper built on native `fetch()`
-- File-based cache helpers
+- In-memory cache helpers
 - Provider health and cooldown state management
 - SearXNG SSRF validation using `dns/promises` and `net`
 - Query analysis and auto-routing heuristics
@@ -60,16 +60,9 @@ Examples:
 
 ### 2. Config
 
-The plugin resolves its runtime directory, loads `.env` manually, and merges configuration from:
+The ClawPack runtime reads provider credentials from explicit OpenClaw plugin config fields only. Package metadata still declares the matching provider env names for ClawHub transparency, but the bundled runtime does not directly read `.env` or `process.env` credentials.
 
-1. process environment
-2. OpenClaw plugin config
-3. local `.env`
-
-This lets users configure keys either through OpenClaw UI/config or directly via `.env` for local development.
-
-Notable implementation detail:
-- `PLUGIN_DIR` resolution handles OpenClaw-transpiled plugin installs, so the plugin can still find `.env`, `.cache`, and package-local files reliably.
+This keeps credential access explicit and avoids mixing plugin runtime behavior with host-wide environment state.
 
 ### 3. HTTP Helper
 
@@ -87,20 +80,18 @@ No `child_process`, no external interpreters.
 
 ### 4. Cache
 
-The cache is file-based and stored in `.cache/` under the plugin directory.
+The ClawPack runtime cache is in-memory only.
 
 Characteristics:
 - cache key is derived from query + provider + result count + relevant search parameters
-- entries are JSON files on disk
-- cache survives gateway restarts
 - cache metadata tracks timestamp, params, provider, and query context
 - default TTL is currently one hour
-
-
+- cache resets when the plugin process restarts
+- no filesystem cache files are written by the bundled runtime
 
 ### 5. Provider Health / Cooldown
 
-Provider health state is stored in `.cache/provider_health.json`.
+Provider health state is in-memory only.
 
 Behavior:
 - repeated failures increase a provider's failure count
@@ -216,7 +207,7 @@ The registered tool currently supports:
 7. If provider still fails, fallback chain tries the next healthy provider
 8. Provider response is normalized to shared result schema
 9. Results are deduplicated if multiple providers contributed
-10. Final result is cached and returned to OpenClaw
+10. Final result is cached in memory and returned to OpenClaw
 ```
 
 ## File Structure
@@ -226,8 +217,6 @@ web-search-plus-plugin/
 ├── index.ts                 # Entire runtime: tool registration + search engine
 ├── openclaw.plugin.json     # Plugin metadata
 ├── package.json             # npm package config
-├── .env.template            # API key template
-├── .env                     # Local keys (gitignored)
 ├── .gitignore
 ├── LICENSE                  # MIT
 ├── README.md                # User documentation
@@ -235,7 +224,7 @@ web-search-plus-plugin/
 ├── SKILL.md                 # Plugin summary / usage notes
 ├── docs/
 │   └── ARCHITECTURE.md      # This file
-└── .cache/                  # Search cache + provider health state (gitignored)
+└── dist/index.js            # Built ClawPack runtime
 ```
 
 ## Security Model
@@ -243,7 +232,7 @@ web-search-plus-plugin/
 - **No `child_process` or `spawn`** — no external interpreter execution
 - **No Python runtime** — fewer moving parts and no subprocess boundary
 - **Native `fetch()` with `AbortController` timeout** — requests cannot hang indefinitely
-- **API keys stay local** in `.env` or OpenClaw plugin config
+- **API keys stay explicit** in OpenClaw plugin config
 - **Input validation** on all tool parameters
 - **Sanitized errors** to avoid leaking credentials/tokens
 - **SSRF protection** for SearXNG before outbound requests
