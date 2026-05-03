@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.3.4] - 2026-05-03
+
+### Security
+- Removed direct environment/.env credential loading from the bundled runtime artifact. Provider credentials now flow through OpenClaw plugin config fields only, which keeps secret access explicit and avoids ClawHub exfiltration heuristics on built output.
+- Removed package-level environment metadata from the ClawPack manifest; configuration remains documented in openclaw.plugin.json configSchema/setup.
+
 ## [2.3.3] - 2026-05-03
 
 ### Changed

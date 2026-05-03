@@ -1,6 +1,6 @@
 // index.ts
 import crypto from "crypto";
-import path4 from "path";
+import path3 from "path";
 import dns from "dns/promises";
 import net from "net";
 
@@ -9,24 +9,43 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 function getPluginDir() {
-  const homeDir = process.env.HOME;
-  if (homeDir) {
-    const knownPath = path.join(homeDir, ".openclaw", "extensions", "web-search-plus-plugin");
-    if (fs.existsSync(path.join(knownPath, "package.json"))) return knownPath;
-  }
   try {
-    if (typeof __dirname !== "undefined") return __dirname;
-  } catch {
-  }
-  try {
-    return path.dirname(fileURLToPath(import.meta.url));
+    const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+    if (fs.existsSync(path.join(moduleDir, "package.json"))) return moduleDir;
+    const parentDir = path.dirname(moduleDir);
+    if (fs.existsSync(path.join(parentDir, "package.json"))) return parentDir;
+    return moduleDir;
   } catch {
   }
   return process.cwd();
 }
 
 // env.ts
-import path3 from "path";
+var CONFIG_KEY_MAP = {
+  serperApiKey: "SERPER_API_KEY",
+  braveApiKey: "BRAVE_API_KEY",
+  braveCountry: "BRAVE_COUNTRY",
+  braveSearchLang: "BRAVE_SEARCH_LANG",
+  braveSafesearch: "BRAVE_SAFESEARCH",
+  tavilyApiKey: "TAVILY_API_KEY",
+  linkupApiKey: "LINKUP_API_KEY",
+  queritApiKey: "QUERIT_API_KEY",
+  exaApiKey: "EXA_API_KEY",
+  firecrawlApiKey: "FIRECRAWL_API_KEY",
+  perplexityApiKey: "PERPLEXITY_API_KEY",
+  kilocodeApiKey: "KILOCODE_API_KEY",
+  youApiKey: "YOU_API_KEY",
+  searxngInstanceUrl: "SEARXNG_INSTANCE_URL",
+  searxngAllowPrivate: "SEARXNG_ALLOW_PRIVATE"
+};
+function getRuntimeEnv(pluginConfig) {
+  const mapped = {};
+  for (const [cfgKey, envKey] of Object.entries(CONFIG_KEY_MAP)) {
+    const val = pluginConfig?.[cfgKey];
+    if (val && typeof val === "string") mapped[envKey] = val;
+  }
+  return mapped;
+}
 
 // storage.ts
 import fs2 from "fs";
@@ -64,59 +83,6 @@ function readCachedJson(file, ttlSeconds) {
     deleteFileIfExists(file);
     return null;
   }
-}
-function parseEnvFile(envPath) {
-  if (!fs2.existsSync(envPath)) return {};
-  const env = {};
-  for (const line of fs2.readFileSync(envPath, "utf8").split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const stripped = trimmed.startsWith("export ") ? trimmed.slice(7) : trimmed;
-    const idx = stripped.indexOf("=");
-    if (idx < 0) continue;
-    const key = stripped.slice(0, idx).trim();
-    const value = stripped.slice(idx + 1).trim().replace(/^['"]|['"]$/g, "");
-    if (key) env[key] = value;
-  }
-  return env;
-}
-function getStringProcessEnv(keys) {
-  const env = {};
-  for (const key of keys) {
-    const value = process.env[key];
-    if (typeof value === "string") env[key] = value;
-  }
-  return env;
-}
-
-// env.ts
-var CONFIG_KEY_MAP = {
-  serperApiKey: "SERPER_API_KEY",
-  braveApiKey: "BRAVE_API_KEY",
-  braveCountry: "BRAVE_COUNTRY",
-  braveSearchLang: "BRAVE_SEARCH_LANG",
-  braveSafesearch: "BRAVE_SAFESEARCH",
-  tavilyApiKey: "TAVILY_API_KEY",
-  linkupApiKey: "LINKUP_API_KEY",
-  queritApiKey: "QUERIT_API_KEY",
-  exaApiKey: "EXA_API_KEY",
-  firecrawlApiKey: "FIRECRAWL_API_KEY",
-  perplexityApiKey: "PERPLEXITY_API_KEY",
-  kilocodeApiKey: "KILOCODE_API_KEY",
-  youApiKey: "YOU_API_KEY",
-  searxngInstanceUrl: "SEARXNG_INSTANCE_URL",
-  searxngAllowPrivate: "SEARXNG_ALLOW_PRIVATE"
-};
-function getRuntimeEnv(pluginConfig) {
-  const envFiles = [path3.join(getPluginDir(), ".env")];
-  const fileEnv = Object.assign({}, ...envFiles.map(parseEnvFile));
-  const mapped = {};
-  const allowedEnvKeys = [...new Set(Object.values(CONFIG_KEY_MAP))];
-  for (const [cfgKey, envKey] of Object.entries(CONFIG_KEY_MAP)) {
-    const val = pluginConfig?.[cfgKey];
-    if (val && typeof val === "string") mapped[envKey] = val;
-  }
-  return { ...fileEnv, ...getStringProcessEnv(allowedEnvKeys), ...mapped };
 }
 
 // extract.ts
@@ -440,8 +406,8 @@ function getPluginPaths() {
   const pluginDir = getPluginDir();
   pluginPathsCache = {
     pluginDir,
-    cacheDir: path4.join(pluginDir, ".cache"),
-    providerHealthFile: path4.join(pluginDir, ".cache", "provider_health.json")
+    cacheDir: path3.join(pluginDir, ".cache"),
+    providerHealthFile: path3.join(pluginDir, ".cache", "provider_health.json")
   };
   return pluginPathsCache;
 }
@@ -542,7 +508,7 @@ function buildCacheKey(query, provider, maxResults, params) {
   return sha256(JSON.stringify(normalizeJsonForCache({ query, provider, maxResults, params: params || null }))).slice(0, 32);
 }
 function getCachePath(cacheKey) {
-  return path4.join(getPluginPaths().cacheDir, `${cacheKey}.json`);
+  return path3.join(getPluginPaths().cacheDir, `${cacheKey}.json`);
 }
 function cacheGet(query, provider, maxResults, ttl, params) {
   const key = buildCacheKey(query, provider, maxResults, params);

@@ -1,6 +1,6 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "2.3.3",
+  "version": "2.3.4",
   "description": "OpenClaw plugin: multi-provider web search (Serper/Google, Brave, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider API key or SearXNG instance URL.",
   "type": "module",
   "main": "index.ts",
@@ -14,23 +14,6 @@
     ],
     "compat": {
       "pluginApi": ">=2026.3.22"
-    },
-    "env": {
-      "SERPER_API_KEY": "one supported hosted-provider option for enabling search, Serper/Google API key",
-      "BRAVE_API_KEY": "one supported hosted-provider option for enabling search, Brave Search API key",
-      "BRAVE_COUNTRY": "optional Brave Search country code override used by the Brave provider",
-      "BRAVE_SEARCH_LANG": "optional Brave Search language override used by the Brave provider",
-      "BRAVE_SAFESEARCH": "optional Brave Search safesearch default used by the Brave provider (strict|moderate|off)",
-      "TAVILY_API_KEY": "one supported hosted-provider option for enabling search, Tavily research API key",
-      "LINKUP_API_KEY": "one supported hosted-provider option for enabling source-grounded search, Linkup API key",
-      "EXA_API_KEY": "one supported hosted-provider option for enabling search, Exa neural search API key",
-      "QUERIT_API_KEY": "one supported hosted-provider option for enabling search, Querit multilingual search API key",
-      "FIRECRAWL_API_KEY": "one supported hosted-provider option for enabling search and extraction metadata, Firecrawl API key",
-      "PERPLEXITY_API_KEY": "one supported hosted-provider option for enabling search, Perplexity AI search API key",
-      "KILOCODE_API_KEY": "alternative hosted-provider option for enabling Perplexity-compatible search via Kilo.ai gateway",
-      "YOU_API_KEY": "one supported hosted-provider option for enabling search, You.com search API key",
-      "SEARXNG_INSTANCE_URL": "one supported self-hosted-provider option for enabling search, SearXNG instance URL",
-      "SEARXNG_ALLOW_PRIVATE": "optional danger flag; true disables SSRF/private-network protection for SearXNG and should only be used on fully trusted private networks"
     },
     "build": {
       "openclawVersion": "2026.4.23",
