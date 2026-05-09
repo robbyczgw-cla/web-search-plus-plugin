@@ -22,7 +22,7 @@ You only need **one** provider configured to start. The best starter stack is:
 openclaw plugins install clawhub:web-search-plus-plugin-v2
 ```
 
-ClawHub: <https://clawhub.ai/plugins/web-search-plus-plugin-v2>  
+ClawHub: <https://clawhub.ai/plugins/web-search-plus-plugin-v2>
 Source: <https://github.com/robbyczgw-cla/web-search-plus-plugin>
 
 ## What this gives you
