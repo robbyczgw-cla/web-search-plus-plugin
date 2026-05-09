@@ -1,4 +1,5 @@
-const memoryStore = new Map<string, any>();
+import fs from "node:fs";
+import path from "node:path";
 
 function cloneJson(value: any): any {
   try {
@@ -8,17 +9,31 @@ function cloneJson(value: any): any {
   }
 }
 
+function ensureParentDir(file: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+}
+
 export function readJsonFile(file: string, fallback: any): any {
-  if (!memoryStore.has(file)) return fallback;
-  return cloneJson(memoryStore.get(file));
+  try {
+    const text = fs.readFileSync(file, "utf8");
+    if (!text.trim()) return cloneJson(fallback);
+    return JSON.parse(text);
+  } catch {
+    return cloneJson(fallback);
+  }
 }
 
 export function writeJsonFile(file: string, value: any): void {
-  memoryStore.set(file, cloneJson(value));
+  ensureParentDir(file);
+  const tempFile = `${file}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tempFile, `${JSON.stringify(cloneJson(value), null, 2)}\n`, "utf8");
+  fs.renameSync(tempFile, file);
 }
 
 export function deleteFileIfExists(file: string): void {
-  memoryStore.delete(file);
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {}
 }
 
 export function readCachedJson(file: string, ttlSeconds: number): any | null {

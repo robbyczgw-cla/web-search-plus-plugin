@@ -1,6 +1,6 @@
 // index.ts
 import crypto from "crypto";
-import path2 from "path";
+import path4 from "path";
 import dns from "dns/promises";
 import net from "net";
 
@@ -146,8 +146,6 @@ function getPluginDir() {
 var CONFIG_KEY_MAP = {
   serperApiKey: "SERPER_API_KEY",
   braveApiKey: "BRAVE_API_KEY",
-  braveCountry: "BRAVE_COUNTRY",
-  braveSearchLang: "BRAVE_SEARCH_LANG",
   braveSafesearch: "BRAVE_SAFESEARCH",
   tavilyApiKey: "TAVILY_API_KEY",
   linkupApiKey: "LINKUP_API_KEY",
@@ -172,7 +170,8 @@ function getRuntimeEnv(pluginConfig) {
 }
 
 // storage.ts
-var memoryStore = /* @__PURE__ */ new Map();
+import fs from "node:fs";
+import path2 from "node:path";
 function cloneJson(value) {
   try {
     return JSON.parse(JSON.stringify(value));
@@ -180,15 +179,30 @@ function cloneJson(value) {
     return value;
   }
 }
+function ensureParentDir(file) {
+  fs.mkdirSync(path2.dirname(file), { recursive: true });
+}
 function readJsonFile(file, fallback) {
-  if (!memoryStore.has(file)) return fallback;
-  return cloneJson(memoryStore.get(file));
+  try {
+    const text = fs.readFileSync(file, "utf8");
+    if (!text.trim()) return cloneJson(fallback);
+    return JSON.parse(text);
+  } catch {
+    return cloneJson(fallback);
+  }
 }
 function writeJsonFile(file, value) {
-  memoryStore.set(file, cloneJson(value));
+  ensureParentDir(file);
+  const tempFile = `${file}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tempFile, `${JSON.stringify(cloneJson(value), null, 2)}
+`, "utf8");
+  fs.renameSync(tempFile, file);
 }
 function deleteFileIfExists(file) {
-  memoryStore.delete(file);
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+  }
 }
 function readCachedJson(file, ttlSeconds) {
   const cached = readJsonFile(file, null);
@@ -199,6 +213,143 @@ function readCachedJson(file, ttlSeconds) {
     return null;
   }
   return cached;
+}
+
+// routing-config.ts
+import fs2 from "node:fs";
+import path3 from "node:path";
+var DEFAULT_PROVIDER_PRIORITY = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
+var DEFAULT_ROUTING_PREFERENCES = {
+  version: 1,
+  auto_routing: true,
+  default_provider: null,
+  provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
+  fallback_provider: null,
+  disabled_providers: [],
+  confidence_threshold: 0.4
+};
+function cloneDefaults() {
+  return {
+    ...DEFAULT_ROUTING_PREFERENCES,
+    provider_priority: [...DEFAULT_ROUTING_PREFERENCES.provider_priority],
+    disabled_providers: [...DEFAULT_ROUTING_PREFERENCES.disabled_providers]
+  };
+}
+function timestamp() {
+  return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+}
+function normalizeProviderName(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
+  if (normalized === "kilo-perplexity") return "perplexity";
+  if (DEFAULT_PROVIDER_PRIORITY.includes(normalized)) return normalized;
+  throw new Error(`Unknown provider: ${String(value || "")}`);
+}
+function normalizeOptionalProvider(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized || ["null", "none", "default", "auto"].includes(normalized)) return null;
+  return normalizeProviderName(value);
+}
+function normalizeProviderList(values, allowEmpty = true) {
+  if (!Array.isArray(values)) {
+    if (allowEmpty) return [];
+    throw new Error("Provider list must be an array");
+  }
+  const unique = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const value of values) {
+    const provider = normalizeProviderName(value);
+    if (!seen.has(provider)) {
+      seen.add(provider);
+      unique.push(provider);
+    }
+  }
+  return unique;
+}
+function normalizePriority(values) {
+  const requested = normalizeProviderList(values, false);
+  const seen = new Set(requested);
+  const completed = [...requested];
+  for (const provider of DEFAULT_PROVIDER_PRIORITY) {
+    if (!seen.has(provider)) completed.push(provider);
+  }
+  return completed;
+}
+function normalizeThreshold(value) {
+  const threshold = Number(value);
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+    throw new Error(`Invalid confidence_threshold: ${String(value)}`);
+  }
+  return Number(threshold.toFixed(3));
+}
+function atomicWriteJson(file, value) {
+  fs2.mkdirSync(path3.dirname(file), { recursive: true });
+  const tempFile = `${file}.tmp-${process.pid}-${Date.now()}`;
+  fs2.writeFileSync(tempFile, `${JSON.stringify(value, null, 2)}
+`, "utf8");
+  fs2.renameSync(tempFile, file);
+}
+function quarantineFile(file) {
+  if (!fs2.existsSync(file)) return null;
+  const brokenPath = `${file}.broken-${timestamp()}`;
+  fs2.mkdirSync(path3.dirname(file), { recursive: true });
+  fs2.renameSync(file, brokenPath);
+  return brokenPath;
+}
+function resolveRoutingConfigPath(pluginConfig = {}) {
+  const override = pluginConfig?.routingConfigPath || process.env.WSP_ROUTING_CONFIG_PATH;
+  return path3.resolve(String(override || path3.join(getPluginDir(), "config", "routing-preferences.json")));
+}
+function validateRoutingPreferences(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Routing config must be a JSON object");
+  }
+  const input = raw;
+  const config = cloneDefaults();
+  config.auto_routing = input.auto_routing == null ? config.auto_routing : Boolean(input.auto_routing);
+  config.default_provider = input.default_provider == null ? config.default_provider : normalizeOptionalProvider(input.default_provider);
+  config.provider_priority = input.provider_priority == null ? config.provider_priority : normalizePriority(input.provider_priority);
+  config.fallback_provider = input.fallback_provider == null ? config.fallback_provider : normalizeOptionalProvider(input.fallback_provider);
+  config.disabled_providers = input.disabled_providers == null ? config.disabled_providers : normalizeProviderList(input.disabled_providers);
+  config.confidence_threshold = input.confidence_threshold == null ? config.confidence_threshold : normalizeThreshold(input.confidence_threshold);
+  return config;
+}
+function loadRoutingPreferences(pluginConfig = {}) {
+  const file = resolveRoutingConfigPath(pluginConfig);
+  if (!fs2.existsSync(file)) {
+    return { config: cloneDefaults(), path: file, source: "default" };
+  }
+  try {
+    const text = fs2.readFileSync(file, "utf8");
+    const parsed = text.trim() ? JSON.parse(text) : {};
+    return { config: validateRoutingPreferences(parsed), path: file, source: "file" };
+  } catch (error2) {
+    const brokenPath = quarantineFile(file);
+    return {
+      config: cloneDefaults(),
+      path: file,
+      source: "default",
+      warning: `Routing config reset to defaults after validation failure: ${String(error2?.message || error2)}`,
+      quarantine_path: brokenPath || void 0
+    };
+  }
+}
+function saveRoutingPreferences(pluginConfig = {}, config) {
+  const file = resolveRoutingConfigPath(pluginConfig);
+  const validated = validateRoutingPreferences(config);
+  atomicWriteJson(file, validated);
+  return { config: validated, path: file, source: "file" };
+}
+function resetRoutingPreferences(pluginConfig = {}) {
+  const file = resolveRoutingConfigPath(pluginConfig);
+  let backupPath;
+  if (fs2.existsSync(file)) {
+    backupPath = `${file}.backup-${timestamp()}`;
+    fs2.mkdirSync(path3.dirname(file), { recursive: true });
+    fs2.copyFileSync(file, backupPath);
+  }
+  const result = saveRoutingPreferences(pluginConfig, cloneDefaults());
+  return { ...result, backup_path: backupPath };
 }
 
 // extract.ts
@@ -522,8 +673,8 @@ function getPluginPaths() {
   const pluginDir = getPluginDir();
   pluginPathsCache = {
     pluginDir,
-    cacheDir: path2.join(pluginDir, ".cache"),
-    providerHealthFile: path2.join(pluginDir, ".cache", "provider_health.json")
+    cacheDir: path4.join(pluginDir, ".cache"),
+    providerHealthFile: path4.join(pluginDir, ".cache", "provider_health.json")
   };
   return pluginPathsCache;
 }
@@ -531,6 +682,7 @@ var DEFAULT_CACHE_TTL = 3600;
 var RETRY_BACKOFF_MS = [1e3, 3e3, 9e3];
 var COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 var TRANSIENT_HTTP_CODES = /* @__PURE__ */ new Set([408, 425, 429, 500, 502, 503, 504]);
+var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng", "kilo-perplexity", "kilo_perplexity", "auto"];
 var PARAMETERS_SCHEMA = {
   type: "object",
   required: ["query"],
@@ -538,7 +690,7 @@ var PARAMETERS_SCHEMA = {
     query: { type: "string", description: "Search query" },
     provider: {
       type: "string",
-      enum: ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng", "auto"],
+      enum: SEARCH_PROVIDER_ENUM,
       description: "Force a provider, or use auto routing (default: auto)"
     },
     count: { type: "number", description: "Number of results (default: 5)" },
@@ -594,16 +746,6 @@ var ANSWER_PARAMETERS_SCHEMA = {
       default: "answer",
       description: "Return a markdown answer, short brief, sources-only list, or structured JSON."
     },
-    language: {
-      type: "string",
-      default: "auto",
-      description: "Optional language hint such as en, de, fr, or auto."
-    },
-    country: {
-      type: "string",
-      default: "auto",
-      description: "Optional country hint such as US, AT, DE, or auto."
-    },
     max_extracts: {
       type: "number",
       minimum: 0,
@@ -612,8 +754,29 @@ var ANSWER_PARAMETERS_SCHEMA = {
     }
   }
 };
+var ROUTING_CONFIG_ACTIONS = [
+  "show",
+  "set_default_provider",
+  "set_auto_routing",
+  "set_provider_priority",
+  "set_fallback_provider",
+  "disable_provider",
+  "enable_provider",
+  "set_confidence_threshold",
+  "reset"
+];
+var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
+  type: "object",
+  required: ["action"],
+  properties: {
+    action: { type: "string", enum: ROUTING_CONFIG_ACTIONS },
+    provider: { type: "string", enum: [...SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto"), "none", "null"] },
+    enabled: { type: "boolean", description: "Used by set_auto_routing. True enables auto routing, false switches provider:auto to strict default_provider mode." },
+    providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Priority order. Missing providers are appended in default order." },
+    confidence_threshold: { type: "number", minimum: 0, maximum: 1 }
+  }
+};
 var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng"];
-var SEARCH_PROVIDER_PRIORITY = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
 var ProviderConfigError = class extends Error {
 };
 var ProviderRequestError = class extends Error {
@@ -674,7 +837,7 @@ function buildCacheKey(query, provider, maxResults, params) {
   return sha256(JSON.stringify(normalizeJsonForCache({ query, provider, maxResults, params: params || null }))).slice(0, 32);
 }
 function getCachePath(cacheKey) {
-  return path2.join(getPluginPaths().cacheDir, `${cacheKey}.json`);
+  return path4.join(getPluginPaths().cacheDir, `${cacheKey}.json`);
 }
 function cacheGet(query, provider, maxResults, ttl, params) {
   const key = buildCacheKey(query, provider, maxResults, params);
@@ -766,6 +929,73 @@ function chooseTieWinner(query, winners, priority) {
   const idx = parseInt(digest.slice(0, 8), 16) % candidates.length;
   return candidates[idx];
 }
+function normalizeRequestedProvider(value) {
+  if (!value || value === "auto") return "auto";
+  return normalizeProviderName(value);
+}
+function orderProvidersByPreference(providers, routingConfig) {
+  const requestedOrder = routingConfig.provider_priority?.length ? routingConfig.provider_priority : DEFAULT_PROVIDER_PRIORITY;
+  const seen = /* @__PURE__ */ new Set();
+  const ordered = [];
+  for (const provider of requestedOrder) {
+    if (providers.includes(provider) && !seen.has(provider)) {
+      seen.add(provider);
+      ordered.push(provider);
+    }
+  }
+  for (const provider of providers) {
+    if (!seen.has(provider)) ordered.push(provider);
+  }
+  return ordered;
+}
+function isProviderUsable(provider, availableProviders, disabledProviders) {
+  return !!provider && availableProviders.includes(provider) && !disabledProviders.includes(provider);
+}
+function pickStrictDefaultProvider(availableProviders, routingConfig) {
+  return isProviderUsable(routingConfig.default_provider, availableProviders, routingConfig.disabled_providers) ? routingConfig.default_provider : null;
+}
+function selectAutoProvider(query, availableProviders, routingConfig) {
+  const orderedProviders = orderProvidersByPreference(availableProviders, routingConfig);
+  const analyzer = new QueryAnalyzer();
+  const analysis = analyzer.route(query, orderedProviders);
+  let provider = analysis.provider;
+  let reason = analysis.reason;
+  if (analysis.confidence < routingConfig.confidence_threshold) {
+    const lowConfidenceProvider = pickStrictDefaultProvider(availableProviders, routingConfig) || orderedProviders[0];
+    if (lowConfidenceProvider && lowConfidenceProvider !== provider) {
+      provider = lowConfidenceProvider;
+      reason = pickStrictDefaultProvider(availableProviders, routingConfig) ? "below_confidence_threshold_default_provider" : "below_confidence_threshold_priority_provider";
+    }
+  }
+  return {
+    provider,
+    routing: {
+      requested_provider: "auto",
+      auto_routed: true,
+      provider,
+      confidence_level: analysis.confidence >= routingConfig.confidence_threshold ? analysis.confidence_level : "low",
+      reason,
+      confidence_threshold: routingConfig.confidence_threshold,
+      exa_depth: analysis.exa_depth
+    }
+  };
+}
+function buildAutoFallbackOrder(primary, availableProviders, routingConfig) {
+  const ordered = orderProvidersByPreference(availableProviders, routingConfig);
+  const unique = [primary];
+  const seen = new Set(unique);
+  if (isProviderUsable(routingConfig.fallback_provider, availableProviders, routingConfig.disabled_providers) && !seen.has(routingConfig.fallback_provider)) {
+    unique.push(routingConfig.fallback_provider);
+    seen.add(routingConfig.fallback_provider);
+  }
+  for (const provider of ordered) {
+    if (!seen.has(provider)) {
+      unique.push(provider);
+      seen.add(provider);
+    }
+  }
+  return unique;
+}
 function getApiKey(provider, env) {
   const keyMap = {
     serper: env.SERPER_API_KEY,
@@ -847,47 +1077,6 @@ function normalizeAnswerFreshness(query, requested = "none") {
   if (weekTerms.some((term) => q.includes(term)) || /\b20[2-9][0-9]\b/.test(q)) return { requested: value, applied: "week", reason: "query looked time-sensitive" };
   if (monthTerms.some((term) => q.includes(term))) return { requested: value, applied: "month", reason: "query looked time-sensitive" };
   return { requested: value, applied: "none", reason: "no freshness signals detected" };
-}
-function detectAnswerLocale(query, language = "auto", country = "auto") {
-  const q = query.toLowerCase();
-  let detectedLanguage = language === "auto" ? "" : String(language).toLowerCase();
-  let detectedCountry = country === "auto" ? "" : String(country).toUpperCase();
-  let confidence = detectedLanguage ? "explicit" : "low";
-  if (!detectedLanguage) {
-    const languageSignals = [
-      ["fr", ["meilleur", "meilleurs", "pas cher", "comparaison", "avis", "france"]],
-      ["es", ["precio", "barato", "comparaci\xF3n", "alternativas", "espa\xF1a", "m\xE9xico"]],
-      ["it", ["prezzo", "migliori", "confronto", "italia"]],
-      ["pt", ["pre\xE7o", "melhores", "compara\xE7\xE3o", "brasil", "portugal"]],
-      ["de", ["preis", "g\xFCnstig", "vergleich", "\xF6sterreich", "deutschland", "schweiz"]]
-    ];
-    for (const [code, terms] of languageSignals) {
-      if (terms.some((term) => q.includes(term))) {
-        detectedLanguage = code;
-        confidence = "medium";
-        break;
-      }
-    }
-  }
-  if (!detectedLanguage) detectedLanguage = "en";
-  if (!detectedCountry) {
-    const countrySignals = [
-      ["AT", ["\xF6sterreich", "austria", "graz", "wien", "vienna"]],
-      ["DE", ["deutschland", "germany", "berlin", "m\xFCnchen"]],
-      ["FR", ["france", "paris"]],
-      ["ES", ["espa\xF1a", "spain", "madrid"]],
-      ["IT", ["italia", "italy"]],
-      ["US", ["united states", "usa", "new york", "california"]]
-    ];
-    for (const [code, terms] of countrySignals) {
-      if (terms.some((term) => q.includes(term))) {
-        detectedCountry = code;
-        break;
-      }
-    }
-  }
-  if (!detectedCountry) detectedCountry = "US";
-  return { language: detectedLanguage, country: detectedCountry, language_confidence: confidence };
 }
 function preferredAnswerExtractProvider(env) {
   if ((env.LINKUP_API_KEY || "").trim()) return "linkup";
@@ -1480,7 +1669,7 @@ var QueryAnalyzer = class {
     }
     const maxScore = Math.max(...providers.map((p) => available[p]));
     const winners = providers.filter((p) => available[p] === maxScore);
-    const priority = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
+    const priority = [...DEFAULT_PROVIDER_PRIORITY];
     const braveSerperCandidates = ["brave", "serper"].filter((p) => providers.includes(p) && maxScore - (available[p] || 0) <= 0.5);
     const winner = braveSerperCandidates.length > 0 && maxScore <= 6.5 ? chooseTieWinner(query, braveSerperCandidates, ["brave", "serper"]) : chooseTieWinner(query, winners, priority);
     const secondBest = [...providers.map((p) => available[p])].sort((a, b) => b - a)[1] || 0;
@@ -1727,49 +1916,79 @@ async function executeWithRetry(fn) {
   }
   throw lastError;
 }
-async function executeSearch(runtimeEnv, params) {
+async function executeSearch(runtimeEnv, params, pluginConfig = {}) {
   try {
     const query = String(params.query || "").trim();
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
     const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
-    const requestedProvider = params.provider || "auto";
+    const requestedProvider = normalizeRequestedProvider(params.provider);
     const timeRange = toTimeRange(params.time_range);
     const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : void 0;
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : void 0;
+    const routingConfigResult = loadRoutingPreferences(pluginConfig);
+    const routingConfig = routingConfigResult.config;
     const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeEnv));
+    const enabledProviders = configuredProviders.filter((provider2) => !routingConfig.disabled_providers.includes(provider2));
     const braveOptions = {
-      country: runtimeEnv.BRAVE_COUNTRY,
-      search_lang: runtimeEnv.BRAVE_SEARCH_LANG,
       safesearch: runtimeEnv.BRAVE_SAFESEARCH
     };
-    let routingInfo;
+    if (!configuredProviders.length) {
+      return { ok: false, payload: { error: "Search failed: no search providers are configured" } };
+    }
+    if (!enabledProviders.length) {
+      return { ok: false, payload: { error: "Search failed: all configured providers are disabled in routing preferences" } };
+    }
+    let routingInfo = { requested_provider: requestedProvider };
     let provider;
+    let strictProviderMode = false;
+    let exaDepthHint = "normal";
     if (requestedProvider === "auto") {
-      const analyzer = new QueryAnalyzer();
-      const routing = analyzer.route(query, configuredProviders);
-      provider = routing.provider;
-      routingInfo = { auto_routed: true, provider, confidence: routing.confidence, confidence_level: routing.confidence_level, reason: routing.reason, top_signals: routing.top_signals, scores: routing.scores, exa_depth: routing.exa_depth };
+      if (!routingConfig.auto_routing) {
+        const strictDefault = pickStrictDefaultProvider(enabledProviders, routingConfig);
+        if (!strictDefault) {
+          return { ok: false, payload: { error: "Search failed: auto routing is disabled but default_provider is missing, disabled, or not configured" } };
+        }
+        provider = strictDefault;
+        strictProviderMode = true;
+        routingInfo = { requested_provider: "auto", auto_routed: false, provider, fixed_provider_mode: true, reason: "auto_routing_disabled" };
+      } else {
+        const selection = selectAutoProvider(query, enabledProviders, routingConfig);
+        provider = selection.provider;
+        routingInfo = selection.routing;
+        exaDepthHint = selection.routing.exa_depth || "normal";
+      }
     } else {
       provider = requestedProvider;
-      routingInfo = { auto_routed: false, provider };
+      strictProviderMode = true;
+      if (!configuredProviders.includes(provider)) {
+        return { ok: false, payload: { error: `Search failed: provider ${provider} is not configured` } };
+      }
+      if (routingConfig.disabled_providers.includes(provider)) {
+        return { ok: false, payload: { error: `Search failed: provider ${provider} is disabled in routing preferences` } };
+      }
+      routingInfo = { requested_provider: provider, auto_routed: false, provider, fixed_provider_mode: true, reason: "explicit_provider" };
     }
-    const providersToTry = [provider, ...SEARCH_PROVIDER_PRIORITY.filter((p) => p !== provider && configuredProviders.includes(p))];
+    if (provider === "exa" && params.depth) exaDepthHint = params.depth;
+    const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, enabledProviders, routingConfig);
     const eligibleProviders = [];
     const cooldownSkips = [];
-    for (const p of providersToTry) {
-      const cooldown = providerInCooldown(p);
-      if (cooldown.inCooldown) cooldownSkips.push({ provider: p, cooldown_remaining_seconds: cooldown.remaining });
-      else eligibleProviders.push(p);
+    if (strictProviderMode) {
+      eligibleProviders.push(provider);
+    } else {
+      for (const p of providersToTry) {
+        const cooldown = providerInCooldown(p);
+        if (cooldown.inCooldown) cooldownSkips.push({ provider: p, cooldown_remaining_seconds: cooldown.remaining });
+        else eligibleProviders.push(p);
+      }
+      if (!eligibleProviders.length) eligibleProviders.push(provider);
     }
-    if (!eligibleProviders.length) eligibleProviders.push(provider);
     const cacheContext = {
       time_range: timeRange,
       include_domains: includeDomains ? [...includeDomains].sort() : null,
       exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
-      exa_depth: params.depth || routingInfo.exa_depth || "normal",
-      brave_country: normalizeBraveCountry(braveOptions.country),
-      brave_search_lang: normalizeBraveLanguage(braveOptions.search_lang),
-      brave_safesearch: normalizeBraveSafesearch(braveOptions.safesearch)
+      exa_depth: params.depth || exaDepthHint || "normal",
+      brave_safesearch: normalizeBraveSafesearch(braveOptions.safesearch),
+      routing_preferences: routingConfig
     };
     const cached = cacheGet(query, provider, count, DEFAULT_CACHE_TTL, cacheContext);
     if (cached) {
@@ -1777,7 +1996,7 @@ async function executeSearch(runtimeEnv, params) {
       for (const key of Object.keys(result2)) if (key.startsWith("_cache_")) delete result2[key];
       result2.cached = true;
       result2.cache_age_seconds = Math.floor(Date.now() / 1e3 - Number(cached._cache_timestamp || 0));
-      result2.routing = { ...routingInfo, ...cooldownSkips.length ? { cooldown_skips: cooldownSkips } : {} };
+      result2.routing = { ...routingInfo, ...cooldownSkips.length ? { cooldown_skips: cooldownSkips } : {}, ...routingConfigResult.warning ? { config_warning: routingConfigResult.warning } : {} };
       return { ok: true, payload: sanitizeOutput(result2) };
     }
     const errors = [];
@@ -1790,7 +2009,7 @@ async function executeSearch(runtimeEnv, params) {
       if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
       if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
       if (p === "exa") {
-        const exaDepth = params.depth || routingInfo.exa_depth || "normal";
+        const exaDepth = params.depth || exaDepthHint || "normal";
         return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
       }
       if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
@@ -1803,15 +2022,16 @@ async function executeSearch(runtimeEnv, params) {
         const result2 = await executeWithRetry(() => runProvider(p));
         resetProviderHealth(p);
         successes.push([p, result2]);
-        if ((result2.results || []).length >= count || errors.length === 0) break;
+        if (strictProviderMode || (result2.results || []).length >= count || errors.length === 0) break;
       } catch (error2) {
         const message = sanitizeOutput(String(error2?.message || error2));
-        const cooldown = markProviderFailure(p, message);
-        errors.push({ provider: p, error: message, cooldown_seconds: cooldown.cooldown_seconds });
+        const cooldown = strictProviderMode ? { cooldown_seconds: 0 } : markProviderFailure(p, message);
+        errors.push({ provider: p, error: message, ...strictProviderMode ? {} : { cooldown_seconds: cooldown.cooldown_seconds } });
+        if (strictProviderMode) break;
       }
     }
     if (!successes.length) {
-      return { ok: false, payload: sanitizeOutput({ error: "All providers failed", provider, query, routing: routingInfo, provider_errors: errors, cooldown_skips: cooldownSkips }) };
+      return { ok: false, payload: sanitizeOutput({ error: "All providers failed", provider, query, routing: { ...routingInfo, ...cooldownSkips.length ? { cooldown_skips: cooldownSkips } : {}, ...routingConfigResult.warning ? { config_warning: routingConfigResult.warning } : {} }, provider_errors: errors }) };
     }
     let result;
     if (successes.length === 1) {
@@ -1824,10 +2044,11 @@ async function executeSearch(runtimeEnv, params) {
       result.metadata = { ...result.metadata || {}, dedup_count: deduped.dedupCount, providers_merged: successes.map(([p]) => p) };
     }
     const successfulProvider = successes[0][0];
-    if (successfulProvider !== provider) {
-      routingInfo = { ...routingInfo, fallback_used: true, original_provider: provider, provider: successfulProvider, fallback_errors: errors };
+    if (!strictProviderMode && successfulProvider !== provider) {
+      routingInfo = { ...routingInfo, fallback_used: true, original_provider: provider, provider: successfulProvider };
     }
     if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
+    if (routingConfigResult.warning) routingInfo.config_warning = routingConfigResult.warning;
     result.routing = routingInfo;
     result.cached = false;
     if (!result.metadata) result.metadata = {};
@@ -1839,7 +2060,7 @@ async function executeSearch(runtimeEnv, params) {
     return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` } };
   }
 }
-async function composeAnswerPayload(runtimeEnv, params) {
+async function composeAnswerPayload(runtimeEnv, params, pluginConfig = {}) {
   const query = String(params.query || "").trim();
   if (!query) return { beta: true, stage: "input", error: "query is required" };
   const mode = params.mode === "deep" ? "deep" : "quick";
@@ -1849,7 +2070,6 @@ async function composeAnswerPayload(runtimeEnv, params) {
   const extractCap = 5;
   const extractCount = Math.min(requestedExtracts, extractCap, sourceCount);
   const freshness = normalizeAnswerFreshness(query, params.freshness || "none");
-  const locale = detectAnswerLocale(query, params.language || "auto", params.country || "auto");
   const warnings = [];
   if (requestedExtracts > extractCap) warnings.push(`max_extracts capped at ${extractCap} to protect provider budget.`);
   const searchResult = await executeSearch(runtimeEnv, {
@@ -1858,7 +2078,7 @@ async function composeAnswerPayload(runtimeEnv, params) {
     count: sourceCount,
     depth: mode === "deep" ? "deep" : "normal",
     time_range: freshness.applied === "none" ? void 0 : freshness.applied
-  });
+  }, pluginConfig);
   if (!searchResult.ok) {
     const failure = searchResult.payload;
     return { beta: true, stage: "search", query, mode, output, freshness, warnings, ...failure };
@@ -1907,8 +2127,6 @@ async function composeAnswerPayload(runtimeEnv, params) {
     output,
     answer,
     freshness,
-    language: locale.language,
-    country: locale.country,
     confidence,
     confidence_reason: {
       sources: normalizedSources.length,
@@ -1940,6 +2158,77 @@ async function composeAnswerPayload(runtimeEnv, params) {
   if (output === "brief") return { text: formatAnswerBrief(payload) };
   return { text: answer };
 }
+function routingConfigStatus(loadResult) {
+  return sanitizeOutput({
+    config_path: loadResult.path,
+    source: loadResult.source,
+    warning: loadResult.warning,
+    quarantine_path: loadResult.quarantine_path,
+    config: loadResult.config
+  });
+}
+function updateRoutingPreferences(pluginConfig, mutator) {
+  const current = loadRoutingPreferences(pluginConfig).config;
+  const draft = {
+    ...current,
+    provider_priority: [...current.provider_priority],
+    disabled_providers: [...current.disabled_providers]
+  };
+  const next = mutator(draft) || draft;
+  return saveRoutingPreferences(pluginConfig, next);
+}
+function executeRoutingConfigAction(pluginConfig, params) {
+  const action = String(params?.action || "show");
+  if (action === "show") return routingConfigStatus(loadRoutingPreferences(pluginConfig));
+  if (action === "reset") return sanitizeOutput(resetRoutingPreferences(pluginConfig));
+  if (action === "set_default_provider") {
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      const provider = String(params?.provider || "").trim().toLowerCase();
+      config.default_provider = !provider || provider === "none" || provider === "null" ? null : normalizeProviderName(provider);
+    }));
+  }
+  if (action === "set_auto_routing") {
+    if (typeof params?.enabled !== "boolean") throw new Error("set_auto_routing requires enabled=true or false");
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.auto_routing = params.enabled;
+    }));
+  }
+  if (action === "set_provider_priority") {
+    if (!Array.isArray(params?.providers) || !params.providers.length) throw new Error("set_provider_priority requires a non-empty providers array");
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.provider_priority = [...new Set(params.providers.map((value) => normalizeProviderName(value)))];
+      for (const provider of DEFAULT_PROVIDER_PRIORITY) {
+        if (!config.provider_priority.includes(provider)) config.provider_priority.push(provider);
+      }
+    }));
+  }
+  if (action === "set_fallback_provider") {
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      const provider = String(params?.provider || "").trim().toLowerCase();
+      config.fallback_provider = !provider || provider === "none" || provider === "null" ? null : normalizeProviderName(provider);
+    }));
+  }
+  if (action === "disable_provider") {
+    const provider = normalizeProviderName(params?.provider);
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      if (!config.disabled_providers.includes(provider)) config.disabled_providers.push(provider);
+      config.default_provider = config.default_provider === provider ? null : config.default_provider;
+      config.fallback_provider = config.fallback_provider === provider ? null : config.fallback_provider;
+    }));
+  }
+  if (action === "enable_provider") {
+    const provider = normalizeProviderName(params?.provider);
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.disabled_providers = config.disabled_providers.filter((item) => item !== provider);
+    }));
+  }
+  if (action === "set_confidence_threshold") {
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.confidence_threshold = Number(params?.confidence_threshold);
+    }));
+  }
+  throw new Error(`Unsupported routing config action: ${action}`);
+}
 function register(api) {
   api.registerTool(
     {
@@ -1950,14 +2239,30 @@ function register(api) {
         try {
           const pluginConfig = api.pluginConfig ?? {};
           const runtimeEnv = getRuntimeEnv(pluginConfig);
-          const result = await executeSearch(runtimeEnv, params);
+          const result = await executeSearch(runtimeEnv, params, pluginConfig);
           if (!result.ok) {
             const failure = result.payload;
-            return { content: [{ type: "text", text: failure.error ? String(failure.error) : JSON.stringify(sanitizeOutput(failure)) }] };
+            return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(failure)) }] };
           }
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result.payload)) }] };
         } catch (error2) {
           return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` }] };
+        }
+      }
+    },
+    { optional: true }
+  );
+  api.registerTool(
+    {
+      name: "web_routing_config_plus",
+      description: "Show or update persistent routing preferences for web_search_plus. Keeps routing behavior in a JSON file separate from provider secrets.",
+      parameters: ROUTING_CONFIG_PARAMETERS_SCHEMA,
+      async execute(_id, params) {
+        try {
+          const pluginConfig = api.pluginConfig ?? {};
+          return { content: [{ type: "text", text: JSON.stringify(executeRoutingConfigAction(pluginConfig, params)) }] };
+        } catch (error2) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error2?.message || error2) })) }] };
         }
       }
     },
@@ -1977,7 +2282,7 @@ function register(api) {
         try {
           const pluginConfig = api.pluginConfig ?? {};
           const runtimeEnv = getRuntimeEnv(pluginConfig);
-          const payload = await composeAnswerPayload(runtimeEnv, params);
+          const payload = await composeAnswerPayload(runtimeEnv, params, pluginConfig);
           if (payload.error) return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
           if (typeof payload.text === "string") return { content: [{ type: "text", text: payload.text }] };
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };

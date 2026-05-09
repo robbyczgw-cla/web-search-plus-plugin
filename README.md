@@ -2,13 +2,14 @@
 
 Native OpenClaw plugin for one clean set of web tools.
 
-Current version: **2.4.0**
+Current version: **2.5.0**
 
 It registers:
 
 - `web_search_plus` — intelligent multi-provider web search
 - `web_extract_plus` — URL extraction across supported extract providers
 - `web_answer_plus` — **optional beta** written answer / cited synthesis tool
+- `web_routing_config_plus` — persistent routing preferences manager
 
 You only need **one** provider configured to start. The best starter stack is:
 
@@ -78,11 +79,10 @@ Use explicit OpenClaw plugin config fields. The runtime keeps the OpenClaw confi
 
 ### Extra fields
 
-- `braveCountry`
-- `braveSearchLang`
 - `braveSafesearch`
 - `searxngAllowPrivate`
 - `enableWebAnswer` — enables the optional beta `web_answer_plus`
+- `routingConfigPath` — optional override for the routing-preferences JSON file
 
 Example:
 
@@ -137,9 +137,39 @@ Important behavior:
 - if no extraction-capable provider is configured, it returns a **snippet-backed** answer with a warning instead of pretending it extracted pages
 - Linkup is the preferred extraction provider when available
 
+## Routing preferences
+
+`web_routing_config_plus` manages persistent behavior in JSON, separate from provider secrets.
+
+Default path:
+
+- `config/routing-preferences.json` inside the plugin directory
+- override with plugin config `routingConfigPath`
+- advanced override: `WSP_ROUTING_CONFIG_PATH`
+
+Supported actions:
+
+- `show`
+- `set_default_provider`
+- `set_auto_routing`
+- `set_provider_priority`
+- `set_fallback_provider`
+- `disable_provider`
+- `enable_provider`
+- `set_confidence_threshold`
+- `reset`
+
+Behavior notes:
+
+- if `auto_routing=false`, `provider:auto` becomes strict `default_provider`
+- explicit provider requests stay strict and do not silently fall back
+- normal auto mode can still use priority order, fallback provider, cooldowns, and retries
+- invalid or corrupt routing JSON is quarantined to `.broken-<timestamp>` and defaults are used
+- reset writes defaults and keeps a timestamped backup
+
 ## Auto-routing notes
 
-`web_search_plus` picks from the providers you actually configured and falls back if the first choice fails or is cooling down.
+`web_search_plus` picks from the providers you actually configured and falls back if the first auto-selected choice fails or is cooling down.
 
 Typical tendencies:
 
@@ -157,7 +187,7 @@ Typical tendencies:
 - SearXNG private-network protection stays on by default
 - `searxngAllowPrivate=true` disables that protection only for trusted setups
 - package artifact ships runtime files only
-- no secrets are persisted by the runtime
+- no secrets are persisted by the routing preferences file or runtime cache
 
 ## Verification
 

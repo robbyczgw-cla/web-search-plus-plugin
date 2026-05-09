@@ -28,13 +28,13 @@
 
 ### Runtime module layout
 
-The runtime entry lives in `index.ts`, with a few local helper modules for path resolution, configuration mapping, and in-memory storage utilities.
+The runtime entry lives in `index.ts`, with a few local helper modules for path resolution, configuration mapping, filesystem-backed storage helpers, and routing-preferences persistence.
 
 Together they cover:
 - Type definitions for tool input/output and internal state
 - Environment/config loading
 - Shared HTTP request helper built on native `fetch()`
-- In-memory cache helpers
+- Filesystem-backed cache helpers
 - Provider health and cooldown state management
 - SearXNG SSRF validation using `dns/promises` and `net`
 - Query analysis and auto-routing heuristics
@@ -80,18 +80,18 @@ No `child_process`, no external interpreters.
 
 ### 4. Cache
 
-The ClawPack runtime cache is in-memory only.
+The runtime cache is stored on disk under the plugin `.cache/` directory.
 
 Characteristics:
 - cache key is derived from query + provider + result count + relevant search parameters
 - cache metadata tracks timestamp, params, provider, and query context
 - default TTL is currently one hour
-- cache resets when the plugin process restarts
-- no filesystem cache files are written by the bundled runtime
+- cache entries expire lazily on read
+- writes are atomic JSON file replaces
 
 ### 5. Provider Health / Cooldown
 
-Provider health state is in-memory only.
+Provider health state is stored on disk alongside the cache.
 
 Behavior:
 - repeated failures increase a provider's failure count
@@ -127,13 +127,7 @@ Signals include:
 - query complexity heuristics
 - provider availability
 
-The router returns:
-- chosen provider
-- confidence score
-- confidence level
-- reason for the choice
-- top matched signals
-- Exa depth recommendation when relevant
+The router returns an internal provider choice, confidence estimate, and Exa depth hint when relevant. The default tool UX keeps those details trimmed down and applies persistent routing preferences on top.
 
 ### 8. Providers
 

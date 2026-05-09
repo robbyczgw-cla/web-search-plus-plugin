@@ -1,12 +1,13 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, and SearXNG.",
   "contracts": {
     "tools": [
       "web_search_plus",
       "web_extract_plus",
+      "web_routing_config_plus",
       "web_answer_plus"
     ]
   },
@@ -15,6 +16,9 @@
       "optional": true
     },
     "web_extract_plus": {
+      "optional": true
+    },
+    "web_routing_config_plus": {
       "optional": true
     },
     "web_answer_plus": {
@@ -35,14 +39,6 @@
       "braveApiKey": {
         "type": "string",
         "description": "Brave Search API key for general web, current, and shopping-style search. Optional individually, but at least one provider setting in this plugin must be configured."
-      },
-      "braveCountry": {
-        "type": "string",
-        "description": "Optional Brave country code override (for example `US` or `DE`)."
-      },
-      "braveSearchLang": {
-        "type": "string",
-        "description": "Optional Brave search language override (for example `en` or `de`)."
       },
       "braveSafesearch": {
         "type": "string",
@@ -91,6 +87,10 @@
       "enableWebAnswer": {
         "type": "boolean",
         "description": "Optional beta toggle for web_answer_plus. Leave off unless you want answer synthesis in addition to web_search_plus and web_extract_plus."
+      },
+      "routingConfigPath": {
+        "type": "string",
+        "description": "Optional override path for the persistent routing preferences JSON file used by web_routing_config_plus. Defaults to config/routing-preferences.json inside the plugin directory."
       }
     }
   },
@@ -104,16 +104,6 @@
       "label": "Brave API Key",
       "placeholder": "BSA...",
       "sensitive": true
-    },
-    "braveCountry": {
-      "label": "Brave Country",
-      "placeholder": "US",
-      "sensitive": false
-    },
-    "braveSearchLang": {
-      "label": "Brave Search Language",
-      "placeholder": "en",
-      "sensitive": false
     },
     "braveSafesearch": {
       "label": "Brave Safesearch",
@@ -175,6 +165,12 @@
     "enableWebAnswer": {
       "label": "Enable web_answer_plus (beta)",
       "description": "Turns on the optional beta answer-synthesis tool. Prefer web_search_plus for live/current info and raw source discovery.",
+      "sensitive": false
+    },
+    "routingConfigPath": {
+      "label": "Routing preferences JSON path",
+      "placeholder": "/path/to/routing-preferences.json",
+      "description": "Optional override for persistent routing behavior. Secrets remain in plugin config; behavior lives in this JSON file.",
       "sensitive": false
     }
   },

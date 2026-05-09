@@ -197,7 +197,7 @@ test("QueryAnalyzer auto routing deterministically picks brave or serper for gen
   assert.ok(["brave", "serper"].includes(first.provider));
 });
 
-test("registered web_search_plus falls back to next provider when primary fails", async () => {
+test("registered web_search_plus keeps explicit provider mode strict when the provider fails", async () => {
   clearPluginCache();
   await withMockedFetch(
     (url) => {
@@ -225,20 +225,17 @@ test("registered web_search_plus falls back to next provider when primary fails"
       });
       const payload = JSON.parse(response.content[0].text);
 
-      assert.equal(payload.provider, "serper");
-      assert.equal(payload.results[0].title, "Fallback result");
-      assert.equal(payload.routing.fallback_used, true);
-      assert.equal(payload.routing.original_provider, "firecrawl");
-      assert.equal(payload.routing.provider, "serper");
-      assert.equal(payload.routing.fallback_errors[0].provider, "firecrawl");
-      assert.ok(calls.length >= 2);
+      assert.equal(payload.error, "All providers failed");
+      assert.equal(payload.routing.provider, "firecrawl");
+      assert.equal(payload.routing.fixed_provider_mode, true);
+      assert.equal(calls.length, 1);
       assert.match(calls[0].url, /firecrawl/);
-      assert.ok(calls.some((call) => /serper/.test(call.url)));
+      assert.equal(calls.some((call) => /serper/.test(call.url)), false);
     },
   );
 });
 
-test("registered web_search_plus can fall back to Brave when primary fails", async () => {
+test("registered web_search_plus still falls back in auto mode using routing preferences", async () => {
   clearPluginCache();
   await withMockedFetch(
     (url) => {
@@ -253,15 +250,30 @@ test("registered web_search_plus can fall back to Brave when primary fails", asy
       throw new Error(`Unexpected URL: ${url}`);
     },
     async (calls) => {
+      const tempDir = fs.mkdtempSync(path.join(process.cwd(), "tmp-routing-"));
+      const routingConfigPath = path.join(tempDir, "routing-preferences.json");
       const registered = new Map<string, any>();
       register({
         registerTool(tool: any) { registered.set(tool.name, tool); },
-        pluginConfig: { firecrawlApiKey: "fc-test", braveApiKey: "brave-test" },
+        pluginConfig: { firecrawlApiKey: "fc-test", braveApiKey: "brave-test", routingConfigPath },
+      });
+
+      await registered.get("web_routing_config_plus").execute("cfg-1", {
+        action: "set_default_provider",
+        provider: "firecrawl",
+      });
+      await registered.get("web_routing_config_plus").execute("cfg-2", {
+        action: "set_confidence_threshold",
+        confidence_threshold: 1,
+      });
+      await registered.get("web_routing_config_plus").execute("cfg-3", {
+        action: "set_fallback_provider",
+        provider: "brave",
       });
 
       const response = await registered.get("web_search_plus").execute("tool-2", {
         query: "fallback to brave query",
-        provider: "firecrawl",
+        provider: "auto",
         count: 3,
       });
       const payload = JSON.parse(response.content[0].text);
