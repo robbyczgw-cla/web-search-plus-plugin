@@ -84,6 +84,10 @@
         "type": "string",
         "description": "Base URL for a SearXNG instance. Optional individually, but at least one provider setting in this plugin must be configured."
       },
+      "searxngAllowPrivate": {
+        "type": "boolean",
+        "description": "Optional danger flag. When true, disables SearXNG SSRF/private-network protection and should only be used on fully trusted private networks."
+      },
       "enableWebAnswer": {
         "type": "boolean",
         "description": "Optional beta toggle for web_answer_plus. Leave off unless you want answer synthesis in addition to web_search_plus and web_extract_plus."
@@ -161,6 +165,11 @@
       "label": "SearXNG Instance URL",
       "placeholder": "https://searx.example.com",
       "description": "Self-hosted metasearch instance URL. Counts as a configured provider even without an API key.",
+      "sensitive": false
+    },
+    "searxngAllowPrivate": {
+      "label": "Allow private-network SearXNG (danger)",
+      "description": "Disables SearXNG SSRF/private-network protection. Only enable on fully trusted private networks.",
       "sensitive": false
     },
     "enableWebAnswer": {
