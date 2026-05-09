@@ -1,6 +1,5 @@
 // index.ts
 import crypto from "crypto";
-import path4 from "path";
 import dns from "dns/promises";
 import net from "net";
 
@@ -131,17 +130,6 @@ function definePluginEntry({ id, name, description, kind, configSchema = emptyPl
   };
 }
 
-// paths.ts
-import path from "path";
-import { fileURLToPath } from "url";
-function getPluginDir() {
-  try {
-    return path.dirname(fileURLToPath(import.meta.url));
-  } catch {
-  }
-  return process.cwd();
-}
-
 // runtime-config.ts
 function maybeString(value) {
   if (typeof value !== "string") return void 0;
@@ -167,55 +155,7 @@ function getRuntimeConfig(pluginConfig) {
   };
 }
 
-// storage.ts
-import fs from "node:fs";
-import path2 from "node:path";
-function cloneJson(value) {
-  try {
-    return JSON.parse(JSON.stringify(value));
-  } catch {
-    return value;
-  }
-}
-function ensureParentDir(file) {
-  fs.mkdirSync(path2.dirname(file), { recursive: true });
-}
-function readJsonFile(file, fallback) {
-  try {
-    const text = fs.readFileSync(file, "utf8");
-    if (!text.trim()) return cloneJson(fallback);
-    return JSON.parse(text);
-  } catch {
-    return cloneJson(fallback);
-  }
-}
-function writeJsonFile(file, value) {
-  ensureParentDir(file);
-  const tempFile = `${file}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tempFile, `${JSON.stringify(cloneJson(value), null, 2)}
-`, "utf8");
-  fs.renameSync(tempFile, file);
-}
-function deleteFileIfExists(file) {
-  try {
-    fs.rmSync(file, { force: true });
-  } catch {
-  }
-}
-function readCachedJson(file, ttlSeconds) {
-  const cached = readJsonFile(file, null);
-  if (!cached) return null;
-  const ts = Number(cached._cache_timestamp || 0);
-  if (!ts || Date.now() / 1e3 - ts > ttlSeconds) {
-    deleteFileIfExists(file);
-    return null;
-  }
-  return cached;
-}
-
 // routing-config.ts
-import fs2 from "node:fs";
-import path3 from "node:path";
 var DEFAULT_PROVIDER_PRIORITY = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 1,
@@ -226,15 +166,16 @@ var DEFAULT_ROUTING_PREFERENCES = {
   disabled_providers: [],
   confidence_threshold: 0.4
 };
-function cloneDefaults() {
+var memoryRoutingPreferences = /* @__PURE__ */ new Map();
+function cloneConfig(config) {
   return {
-    ...DEFAULT_ROUTING_PREFERENCES,
-    provider_priority: [...DEFAULT_ROUTING_PREFERENCES.provider_priority],
-    disabled_providers: [...DEFAULT_ROUTING_PREFERENCES.disabled_providers]
+    ...config,
+    provider_priority: [...config.provider_priority],
+    disabled_providers: [...config.disabled_providers]
   };
 }
-function timestamp() {
-  return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+function cloneDefaults() {
+  return cloneConfig(DEFAULT_ROUTING_PREFERENCES);
 }
 function normalizeProviderName(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
@@ -280,23 +221,9 @@ function normalizeThreshold(value) {
   }
   return Number(threshold.toFixed(3));
 }
-function atomicWriteJson(file, value) {
-  fs2.mkdirSync(path3.dirname(file), { recursive: true });
-  const tempFile = `${file}.tmp-${process.pid}-${Date.now()}`;
-  fs2.writeFileSync(tempFile, `${JSON.stringify(value, null, 2)}
-`, "utf8");
-  fs2.renameSync(tempFile, file);
-}
-function quarantineFile(file) {
-  if (!fs2.existsSync(file)) return null;
-  const brokenPath = `${file}.broken-${timestamp()}`;
-  fs2.mkdirSync(path3.dirname(file), { recursive: true });
-  fs2.renameSync(file, brokenPath);
-  return brokenPath;
-}
 function resolveRoutingConfigPath(pluginConfig = {}) {
-  const override = typeof pluginConfig?.routingConfigPath === "string" ? pluginConfig.routingConfigPath.trim() : "";
-  return path3.resolve(override || path3.join(getPluginDir(), "config", "routing-preferences.json"));
+  const configuredName = typeof pluginConfig?.routingConfigPath === "string" && pluginConfig.routingConfigPath.trim() ? pluginConfig.routingConfigPath.trim() : "default";
+  return `memory:${configuredName}`;
 }
 function validateRoutingPreferences(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -313,41 +240,40 @@ function validateRoutingPreferences(raw) {
   return config;
 }
 function loadRoutingPreferences(pluginConfig = {}) {
-  const file = resolveRoutingConfigPath(pluginConfig);
-  if (!fs2.existsSync(file)) {
-    return { config: cloneDefaults(), path: file, source: "default" };
+  const path = resolveRoutingConfigPath(pluginConfig);
+  const existing = memoryRoutingPreferences.get(path);
+  if (existing) return { config: cloneConfig(existing), path, source: "memory" };
+  const configuredPreferences = pluginConfig?.routingPreferences;
+  if (configuredPreferences != null) {
+    try {
+      const validated = validateRoutingPreferences(configuredPreferences);
+      memoryRoutingPreferences.set(path, cloneConfig(validated));
+      return { config: cloneConfig(validated), path, source: "plugin_config" };
+    } catch (error2) {
+      return {
+        config: cloneDefaults(),
+        path,
+        source: "default",
+        warning: `Routing config reset to defaults after validation failure: ${String(error2?.message || error2)}`
+      };
+    }
   }
-  try {
-    const text = fs2.readFileSync(file, "utf8");
-    const parsed = text.trim() ? JSON.parse(text) : {};
-    return { config: validateRoutingPreferences(parsed), path: file, source: "file" };
-  } catch (error2) {
-    const brokenPath = quarantineFile(file);
-    return {
-      config: cloneDefaults(),
-      path: file,
-      source: "default",
-      warning: `Routing config reset to defaults after validation failure: ${String(error2?.message || error2)}`,
-      quarantine_path: brokenPath || void 0
-    };
-  }
+  return { config: cloneDefaults(), path, source: "default" };
 }
 function saveRoutingPreferences(pluginConfig = {}, config) {
-  const file = resolveRoutingConfigPath(pluginConfig);
+  const path = resolveRoutingConfigPath(pluginConfig);
   const validated = validateRoutingPreferences(config);
-  atomicWriteJson(file, validated);
-  return { config: validated, path: file, source: "file" };
+  memoryRoutingPreferences.set(path, cloneConfig(validated));
+  return { config: cloneConfig(validated), path, source: "memory" };
 }
 function resetRoutingPreferences(pluginConfig = {}) {
-  const file = resolveRoutingConfigPath(pluginConfig);
-  let backupPath;
-  if (fs2.existsSync(file)) {
-    backupPath = `${file}.backup-${timestamp()}`;
-    fs2.mkdirSync(path3.dirname(file), { recursive: true });
-    fs2.copyFileSync(file, backupPath);
+  const path = resolveRoutingConfigPath(pluginConfig);
+  memoryRoutingPreferences.delete(path);
+  const configuredPreferences = pluginConfig?.routingPreferences;
+  if (configuredPreferences != null) {
+    return loadRoutingPreferences(pluginConfig);
   }
-  const result = saveRoutingPreferences(pluginConfig, cloneDefaults());
-  return { ...result, backup_path: backupPath };
+  return { config: cloneDefaults(), path, source: "default" };
 }
 
 // extract.ts
@@ -665,17 +591,6 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
 }
 
 // index.ts
-var pluginPathsCache = null;
-function getPluginPaths() {
-  if (pluginPathsCache) return pluginPathsCache;
-  const pluginDir = getPluginDir();
-  pluginPathsCache = {
-    pluginDir,
-    cacheDir: path4.join(pluginDir, ".cache"),
-    providerHealthFile: path4.join(pluginDir, ".cache", "provider_health.json")
-  };
-  return pluginPathsCache;
-}
 var DEFAULT_CACHE_TTL = 3600;
 var RETRY_BACKOFF_MS = [1e3, 3e3, 9e3];
 var COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
@@ -834,19 +749,23 @@ function normalizeJsonForCache(value) {
 function buildCacheKey(query, provider, maxResults, params) {
   return sha256(JSON.stringify(normalizeJsonForCache({ query, provider, maxResults, params: params || null }))).slice(0, 32);
 }
-function getCachePath(cacheKey) {
-  return path4.join(getPluginPaths().cacheDir, `${cacheKey}.json`);
-}
+var memoryCache = /* @__PURE__ */ new Map();
+var providerHealthState = {};
 function cacheGet(query, provider, maxResults, ttl, params) {
   const key = buildCacheKey(query, provider, maxResults, params);
-  const file = getCachePath(key);
-  return readCachedJson(file, ttl);
+  const cached = memoryCache.get(key);
+  if (!cached) return null;
+  const ts = Number(cached._cache_timestamp || 0);
+  if (!ts || Date.now() / 1e3 - ts > ttl) {
+    memoryCache.delete(key);
+    return null;
+  }
+  return cached;
 }
 function cachePut(query, provider, maxResults, result, params) {
   const key = buildCacheKey(query, provider, maxResults, params);
-  const file = getCachePath(key);
   const sanitizedResult = sanitizeOutput(result);
-  const payload = {
+  memoryCache.set(key, {
     ...sanitizedResult,
     _cache_timestamp: Math.floor(Date.now() / 1e3),
     _cache_key: key,
@@ -854,14 +773,15 @@ function cachePut(query, provider, maxResults, result, params) {
     _cache_provider: provider,
     _cache_max_results: maxResults,
     _cache_params: sanitizeOutput(params || {})
-  };
-  writeJsonFile(file, payload);
+  });
 }
 function loadProviderHealth() {
-  return readJsonFile(getPluginPaths().providerHealthFile, {});
+  return providerHealthState;
 }
 function saveProviderHealth(state) {
-  writeJsonFile(getPluginPaths().providerHealthFile, state);
+  if (state === providerHealthState) return;
+  for (const key of Object.keys(providerHealthState)) delete providerHealthState[key];
+  Object.assign(providerHealthState, state);
 }
 function providerInCooldown(provider) {
   const state = loadProviderHealth();
@@ -890,6 +810,10 @@ function resetProviderHealth(provider) {
     delete state[provider];
     saveProviderHealth(state);
   }
+}
+function __resetRuntimeStateForTests() {
+  memoryCache.clear();
+  for (const key of Object.keys(providerHealthState)) delete providerHealthState[key];
 }
 function normalizeResultUrl(url) {
   try {
@@ -2330,6 +2254,7 @@ var index_default = definePluginEntry({
 });
 export {
   QueryAnalyzer,
+  __resetRuntimeStateForTests,
   buildCacheKey,
   chooseTieWinner,
   deduplicateResultsAcrossProviders,

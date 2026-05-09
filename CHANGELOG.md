@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.5.2] - 2026-05-09
+
+### Security
+- Remove runtime filesystem reads from the packaged plugin bundle so ClawHub no longer flags benign cache/config access as potential exfiltration.
+- Move search cache, provider health, and routing preference updates to process-local memory.
+
+### Changed
+- `web_routing_config_plus` now manages runtime routing preferences in memory; `routingConfigPath` acts as a namespace rather than a JSON file path.
+
 ## [2.5.1] - 2026-05-09
 
 ### Changed

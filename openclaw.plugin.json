@@ -1,7 +1,7 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "description": "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, and SearXNG.",
   "contracts": {
     "tools": [
@@ -90,7 +90,7 @@
       },
       "routingConfigPath": {
         "type": "string",
-        "description": "Optional override path for the persistent routing preferences JSON file used by web_routing_config_plus. Defaults to config/routing-preferences.json inside the plugin directory."
+        "description": "Optional namespace for in-memory routing preferences used by web_routing_config_plus. No filesystem reads are performed at runtime."
       }
     }
   },
@@ -170,7 +170,7 @@
     "routingConfigPath": {
       "label": "Routing preferences JSON path",
       "placeholder": "/path/to/routing-preferences.json",
-      "description": "Optional override for persistent routing behavior. Secrets remain in plugin config; behavior lives in this JSON file.",
+      "description": "Optional namespace for runtime routing behavior. Secrets remain in plugin config; behavior is kept in process memory to avoid runtime filesystem reads.",
       "sensitive": false
     }
   }

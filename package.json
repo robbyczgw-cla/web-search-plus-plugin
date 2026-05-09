@@ -1,6 +1,6 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "description": "OpenClaw plugin: one clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis across Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity, Kilo gateway, You.com, and SearXNG.",
   "type": "module",
   "main": "index.ts",
@@ -27,8 +27,6 @@
   "files": [
     "index.ts",
     "extract.ts",
-    "paths.ts",
-    "storage.ts",
     "routing-config.ts",
     "runtime-config.ts",
     "openclaw.plugin.json",

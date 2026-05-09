@@ -1,7 +1,7 @@
 ---
 name: web-search-plus-plugin-v2
 version: 2.5.0
-description: OpenClaw plugin for multi-provider web search, extraction, persistent routing preferences, and optional beta answer synthesis. Registers `web_search_plus`, `web_extract_plus`, `web_routing_config_plus`, and gated beta `web_answer_plus`.
+description: OpenClaw plugin for multi-provider web search, extraction, runtime routing preferences, and optional beta answer synthesis. Registers `web_search_plus`, `web_extract_plus`, `web_routing_config_plus`, and gated beta `web_answer_plus`.
 ---
 
 # Web Search Plus Plugin
@@ -46,7 +46,7 @@ Extra settings:
 - `braveSafesearch`
 - `searxngAllowPrivate`
 - `enableWebAnswer`
-- `routingConfigPath`
+- `routingConfigPath` (namespace only)
 
 ## Usage guidance
 

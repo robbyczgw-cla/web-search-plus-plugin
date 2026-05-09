@@ -1,7 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
-import { getPluginDir } from "./paths.ts";
-
 export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "you" | "searxng";
 
 export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
@@ -19,9 +15,10 @@ export type RoutingPreferences = {
 export type RoutingConfigLoadResult = {
   config: RoutingPreferences;
   path: string;
-  source: "default" | "file";
+  source: "default" | "plugin_config" | "memory";
   warning?: string;
   quarantine_path?: string;
+  backup_path?: string;
 };
 
 export const DEFAULT_ROUTING_PREFERENCES: RoutingPreferences = {
@@ -34,16 +31,18 @@ export const DEFAULT_ROUTING_PREFERENCES: RoutingPreferences = {
   confidence_threshold: 0.4,
 };
 
-function cloneDefaults(): RoutingPreferences {
+const memoryRoutingPreferences = new Map<string, RoutingPreferences>();
+
+function cloneConfig(config: RoutingPreferences): RoutingPreferences {
   return {
-    ...DEFAULT_ROUTING_PREFERENCES,
-    provider_priority: [...DEFAULT_ROUTING_PREFERENCES.provider_priority],
-    disabled_providers: [...DEFAULT_ROUTING_PREFERENCES.disabled_providers],
+    ...config,
+    provider_priority: [...config.provider_priority],
+    disabled_providers: [...config.disabled_providers],
   };
 }
 
-function timestamp(): string {
-  return new Date().toISOString().replace(/[:.]/g, "-");
+function cloneDefaults(): RoutingPreferences {
+  return cloneConfig(DEFAULT_ROUTING_PREFERENCES);
 }
 
 export function normalizeProviderName(value: unknown): ProviderName {
@@ -95,24 +94,11 @@ function normalizeThreshold(value: unknown): number {
   return Number(threshold.toFixed(3));
 }
 
-function atomicWriteJson(file: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tempFile = `${file}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tempFile, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  fs.renameSync(tempFile, file);
-}
-
-function quarantineFile(file: string): string | null {
-  if (!fs.existsSync(file)) return null;
-  const brokenPath = `${file}.broken-${timestamp()}`;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.renameSync(file, brokenPath);
-  return brokenPath;
-}
-
 export function resolveRoutingConfigPath(pluginConfig: Record<string, any> = {}): string {
-  const override = typeof pluginConfig?.routingConfigPath === "string" ? pluginConfig.routingConfigPath.trim() : "";
-  return path.resolve(override || path.join(getPluginDir(), "config", "routing-preferences.json"));
+  const configuredName = typeof pluginConfig?.routingConfigPath === "string" && pluginConfig.routingConfigPath.trim()
+    ? pluginConfig.routingConfigPath.trim()
+    : "default";
+  return `memory:${configuredName}`;
 }
 
 export function validateRoutingPreferences(raw: unknown): RoutingPreferences {
@@ -131,42 +117,46 @@ export function validateRoutingPreferences(raw: unknown): RoutingPreferences {
 }
 
 export function loadRoutingPreferences(pluginConfig: Record<string, any> = {}): RoutingConfigLoadResult {
-  const file = resolveRoutingConfigPath(pluginConfig);
-  if (!fs.existsSync(file)) {
-    return { config: cloneDefaults(), path: file, source: "default" };
+  const path = resolveRoutingConfigPath(pluginConfig);
+  const existing = memoryRoutingPreferences.get(path);
+  if (existing) return { config: cloneConfig(existing), path, source: "memory" };
+
+  const configuredPreferences = pluginConfig?.routingPreferences;
+  if (configuredPreferences != null) {
+    try {
+      const validated = validateRoutingPreferences(configuredPreferences);
+      memoryRoutingPreferences.set(path, cloneConfig(validated));
+      return { config: cloneConfig(validated), path, source: "plugin_config" };
+    } catch (error: any) {
+      return {
+        config: cloneDefaults(),
+        path,
+        source: "default",
+        warning: `Routing config reset to defaults after validation failure: ${String(error?.message || error)}`,
+      };
+    }
   }
 
-  try {
-    const text = fs.readFileSync(file, "utf8");
-    const parsed = text.trim() ? JSON.parse(text) : {};
-    return { config: validateRoutingPreferences(parsed), path: file, source: "file" };
-  } catch (error: any) {
-    const brokenPath = quarantineFile(file);
-    return {
-      config: cloneDefaults(),
-      path: file,
-      source: "default",
-      warning: `Routing config reset to defaults after validation failure: ${String(error?.message || error)}`,
-      quarantine_path: brokenPath || undefined,
-    };
-  }
+  return { config: cloneDefaults(), path, source: "default" };
 }
 
 export function saveRoutingPreferences(pluginConfig: Record<string, any> = {}, config: unknown): RoutingConfigLoadResult {
-  const file = resolveRoutingConfigPath(pluginConfig);
+  const path = resolveRoutingConfigPath(pluginConfig);
   const validated = validateRoutingPreferences(config);
-  atomicWriteJson(file, validated);
-  return { config: validated, path: file, source: "file" };
+  memoryRoutingPreferences.set(path, cloneConfig(validated));
+  return { config: cloneConfig(validated), path, source: "memory" };
 }
 
-export function resetRoutingPreferences(pluginConfig: Record<string, any> = {}): RoutingConfigLoadResult & { backup_path?: string } {
-  const file = resolveRoutingConfigPath(pluginConfig);
-  let backupPath: string | undefined;
-  if (fs.existsSync(file)) {
-    backupPath = `${file}.backup-${timestamp()}`;
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.copyFileSync(file, backupPath);
+export function __resetRoutingPreferencesForTests(): void {
+  memoryRoutingPreferences.clear();
+}
+
+export function resetRoutingPreferences(pluginConfig: Record<string, any> = {}): RoutingConfigLoadResult {
+  const path = resolveRoutingConfigPath(pluginConfig);
+  memoryRoutingPreferences.delete(path);
+  const configuredPreferences = pluginConfig?.routingPreferences;
+  if (configuredPreferences != null) {
+    return loadRoutingPreferences(pluginConfig);
   }
-  const result = saveRoutingPreferences(pluginConfig, cloneDefaults());
-  return { ...result, backup_path: backupPath };
+  return { config: cloneDefaults(), path, source: "default" };
 }

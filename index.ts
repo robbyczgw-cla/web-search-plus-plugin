@@ -1,32 +1,10 @@
 import crypto from "crypto";
-import path from "path";
 import dns from "dns/promises";
 import net from "net";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { getPluginDir } from "./paths.ts";
 import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
-import { readJsonFile, writeJsonFile, readCachedJson } from "./storage.ts";
 import { DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
-
-type PluginPaths = {
-  pluginDir: string;
-  cacheDir: string;
-  providerHealthFile: string;
-};
-
-let pluginPathsCache: PluginPaths | null = null;
-
-function getPluginPaths(): PluginPaths {
-  if (pluginPathsCache) return pluginPathsCache;
-  const pluginDir = getPluginDir();
-  pluginPathsCache = {
-    pluginDir,
-    cacheDir: path.join(pluginDir, ".cache"),
-    providerHealthFile: path.join(pluginDir, ".cache", "provider_health.json"),
-  };
-  return pluginPathsCache;
-}
 
 const DEFAULT_CACHE_TTL = 3600;
 const RETRY_BACKOFF_MS = [1000, 3000, 9000];
@@ -262,21 +240,25 @@ export function buildCacheKey(query: string, provider: string, maxResults: numbe
   return sha256(JSON.stringify(normalizeJsonForCache({ query, provider, maxResults, params: params || null }))).slice(0, 32);
 }
 
-function getCachePath(cacheKey: string): string {
-  return path.join(getPluginPaths().cacheDir, `${cacheKey}.json`);
-}
+const memoryCache = new Map<string, any>();
+const providerHealthState: Json = {};
 
 function cacheGet(query: string, provider: string, maxResults: number, ttl: number, params?: Json): any | null {
   const key = buildCacheKey(query, provider, maxResults, params);
-  const file = getCachePath(key);
-  return readCachedJson(file, ttl);
+  const cached = memoryCache.get(key);
+  if (!cached) return null;
+  const ts = Number(cached._cache_timestamp || 0);
+  if (!ts || Date.now() / 1000 - ts > ttl) {
+    memoryCache.delete(key);
+    return null;
+  }
+  return cached;
 }
 
 function cachePut(query: string, provider: string, maxResults: number, result: any, params?: Json): void {
   const key = buildCacheKey(query, provider, maxResults, params);
-  const file = getCachePath(key);
   const sanitizedResult = sanitizeOutput(result);
-  const payload = {
+  memoryCache.set(key, {
     ...sanitizedResult,
     _cache_timestamp: Math.floor(Date.now() / 1000),
     _cache_key: key,
@@ -284,16 +266,17 @@ function cachePut(query: string, provider: string, maxResults: number, result: a
     _cache_provider: provider,
     _cache_max_results: maxResults,
     _cache_params: sanitizeOutput(params || {}),
-  };
-  writeJsonFile(file, payload);
+  });
 }
 
 function loadProviderHealth(): Json {
-  return readJsonFile(getPluginPaths().providerHealthFile, {});
+  return providerHealthState;
 }
 
 function saveProviderHealth(state: Json): void {
-  writeJsonFile(getPluginPaths().providerHealthFile, state);
+  if (state === providerHealthState) return;
+  for (const key of Object.keys(providerHealthState)) delete providerHealthState[key];
+  Object.assign(providerHealthState, state);
 }
 
 function providerInCooldown(provider: string): { inCooldown: boolean; remaining: number } {
@@ -325,6 +308,11 @@ function resetProviderHealth(provider: string): void {
     delete state[provider];
     saveProviderHealth(state);
   }
+}
+
+export function __resetRuntimeStateForTests(): void {
+  memoryCache.clear();
+  for (const key of Object.keys(providerHealthState)) delete providerHealthState[key];
 }
 
 function normalizeResultUrl(url: string): string {

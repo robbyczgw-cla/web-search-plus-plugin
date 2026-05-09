@@ -1,7 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import { register } from "../index.ts";
 
 type MockFetchCall = { url: string; init?: RequestInit };
@@ -15,9 +13,10 @@ function withRegistered(pluginConfig: Record<string, any> = {}) {
   return registered;
 }
 
+let routingConfigCounter = 0;
 function makeRoutingConfigPath() {
-  const dir = fs.mkdtempSync(path.join(process.cwd(), "tmp-routing-config-"));
-  return { dir, file: path.join(dir, "routing-preferences.json") };
+  routingConfigCounter += 1;
+  return { file: `test-routing-${routingConfigCounter}` };
 }
 
 async function withMockedFetch(
@@ -58,10 +57,10 @@ test("web_routing_config_plus shows defaults without leaking secrets", async () 
   assert.equal(payload.config.default_provider, null);
   assert.equal(payload.config.confidence_threshold, 0.4);
   assert.equal(JSON.stringify(payload).includes("serper-secret"), false);
-  assert.equal(payload.config_path, file);
+  assert.equal(payload.config_path, `memory:${file}`);
 });
 
-test("web_routing_config_plus supports set/show/reset actions with backup", async () => {
+test("web_routing_config_plus supports set/show/reset actions", async () => {
   const { file } = makeRoutingConfigPath();
   const registered = withRegistered({ routingConfigPath: file });
   const tool = registered.get("web_routing_config_plus");
@@ -84,8 +83,7 @@ test("web_routing_config_plus supports set/show/reset actions with backup", asyn
 
   const reset = JSON.parse((await tool.execute("cfg-reset", { action: "reset" })).content[0].text);
   assert.equal(reset.config.auto_routing, true);
-  assert.ok(reset.backup_path);
-  assert.equal(fs.existsSync(reset.backup_path), true);
+  assert.equal(reset.backup_path, undefined);
 });
 
 test("web_search_plus uses strict default provider mode when auto routing is disabled", async () => {
@@ -117,48 +115,39 @@ test("web_search_plus uses strict default provider mode when auto routing is dis
   );
 });
 
-test("invalid provider config is quarantined and defaults are used", async () => {
+test("invalid provider config falls back to defaults", async () => {
   const { file } = makeRoutingConfigPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ disabled_providers: ["bogus"] }));
-  const registered = withRegistered({ routingConfigPath: file });
+  const registered = withRegistered({ routingConfigPath: file, routingPreferences: { disabled_providers: ["bogus"] } });
 
   const response = await registered.get("web_routing_config_plus").execute("cfg-invalid-provider", { action: "show" });
   const payload = JSON.parse(response.content[0].text);
 
   assert.equal(payload.source, "default");
   assert.match(payload.warning, /validation failure/i);
-  assert.ok(payload.quarantine_path);
-  assert.equal(fs.existsSync(payload.quarantine_path), true);
+  assert.equal(payload.quarantine_path, undefined);
   assert.deepEqual(payload.config.disabled_providers, []);
 });
 
-test("invalid threshold config is quarantined and defaults are used", async () => {
+test("invalid threshold config falls back to defaults", async () => {
   const { file } = makeRoutingConfigPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ confidence_threshold: 9 }));
-  const registered = withRegistered({ routingConfigPath: file });
+  const registered = withRegistered({ routingConfigPath: file, routingPreferences: { confidence_threshold: 9 } });
 
   const response = await registered.get("web_routing_config_plus").execute("cfg-invalid-threshold", { action: "show" });
   const payload = JSON.parse(response.content[0].text);
 
   assert.equal(payload.source, "default");
-  assert.ok(payload.quarantine_path);
-  assert.equal(fs.existsSync(payload.quarantine_path), true);
+  assert.equal(payload.quarantine_path, undefined);
   assert.equal(payload.config.confidence_threshold, 0.4);
 });
 
-test("corrupt routing JSON is quarantined and defaults are used", async () => {
+test("object routing config from plugin config is applied", async () => {
   const { file } = makeRoutingConfigPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, "{ definitely not json");
-  const registered = withRegistered({ routingConfigPath: file });
+  const registered = withRegistered({ routingConfigPath: file, routingPreferences: { auto_routing: false, default_provider: "brave" } });
 
-  const response = await registered.get("web_routing_config_plus").execute("cfg-corrupt", { action: "show" });
+  const response = await registered.get("web_routing_config_plus").execute("cfg-object", { action: "show" });
   const payload = JSON.parse(response.content[0].text);
 
-  assert.equal(payload.source, "default");
-  assert.ok(payload.quarantine_path);
-  assert.equal(fs.existsSync(payload.quarantine_path), true);
-  assert.equal(payload.config.auto_routing, true);
+  assert.equal(payload.source, "plugin_config");
+  assert.equal(payload.config.auto_routing, false);
+  assert.equal(payload.config.default_provider, "brave");
 });
