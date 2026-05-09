@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.4.0] - 2026-05-09
+
+### Added
+- Add optional beta `web_answer_plus`, gated by explicit OpenClaw config (`enableWebAnswer` → `WSP_ENABLE_WEB_ANSWER`), for written answers and cited synthesis over `web_search_plus` plus bounded extraction.
+- Add snippet-backed fallback answers with an explicit warning when no extraction-capable provider is configured.
+
+### Changed
+- Set `web_answer_plus` freshness default to `none`; recency must be requested explicitly with `auto/day/week/month/year`.
+- Cap answer extraction cost with `max_extracts` and a hard limit of 5 URLs.
+- Refresh README, SKILL.md, package metadata, and plugin metadata around onboarding, starter provider setup, and full provider coverage.
+
+### Fixed
+- Keep the OpenClaw config-field credential model while adding the beta answer tool toggle.
+
 ## [2.3.10] - 2026-05-03
 
 ### Packaging

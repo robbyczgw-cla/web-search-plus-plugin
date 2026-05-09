@@ -1,68 +1,57 @@
 ---
 name: web-search-plus-plugin-v2
-version: 2.3.10
-description: OpenClaw plugin for multi-provider web search and URL extraction with intelligent auto-routing. Registers `web_search_plus` and `web_extract_plus`; supports Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity/Kilo, You.com, and SearXNG.
+version: 2.4.0
+description: OpenClaw plugin for multi-provider web search, extraction, and optional beta answer synthesis. Registers `web_search_plus`, `web_extract_plus`, and gated beta `web_answer_plus`.
 ---
 
 # Web Search Plus Plugin
 
-Native OpenClaw plugin that registers `web_search_plus` and `web_extract_plus`. It analyzes query intent and routes to the best configured provider automatically.
+Native OpenClaw plugin that gives agents one clean set of web tools.
 
-## Quick Start
+## Tools
 
-```bash
-openclaw plugins install clawhub:web-search-plus-plugin-v2
-```
+- `web_search_plus`
+- `web_extract_plus`
+- `web_answer_plus` (**beta**, gated by `enableWebAnswer`)
 
-Configure at least one provider through OpenClaw plugin config, then allow the tools for your agent if your setup uses tool allowlists:
+## Good starter setup
 
-```json
-{ "tools": { "allow": ["web_search_plus", "web_extract_plus"] } }
-```
+Use any one provider to begin, but the recommended starter mix is:
 
-## Runtime
+- Tavily
+- Linkup
+- Brave
 
-- ClawPack / npm-pack artifact with built JavaScript runtime
-- Zero external runtime dependencies
-- Provider calls use native `fetch()`
-- In-memory result cache and provider health tracking only
-- Built-in SSRF protection for SearXNG
+Linkup is the preferred extraction provider when present.
 
-## Providers
+## Config fields
 
-- Serper — Google-backed general search, news, shopping
-- Brave — general/current web search with deterministic routing parity vs Serper
-- Tavily — research-focused search and extraction
-- Linkup — source-grounded search with citations and fact-check signals
-- Querit — multilingual AI search
-- Firecrawl — web search with optional extraction-ready content
-- Exa — neural/semantic search with deep reasoning modes
-- Perplexity — AI-synthesized answers with citations
-- Kilo gateway — Perplexity-compatible answer route
-- You.com — real-time RAG snippets
-- SearXNG — self-hosted, privacy-first metasearch
+Search providers:
 
-## Configuration
+- `serperApiKey`
+- `braveApiKey`
+- `tavilyApiKey`
+- `exaApiKey`
+- `queritApiKey`
+- `linkupApiKey`
+- `firecrawlApiKey`
+- `perplexityApiKey`
+- `kilocodeApiKey`
+- `youApiKey`
+- `searxngInstanceUrl`
 
-Use OpenClaw plugin config fields. Example:
+Extra settings:
 
-```json
-{
-  "plugins": {
-    "entries": {
-      "web-search-plus-plugin-v2": {
-        "config": {
-          "serperApiKey": "...",
-          "braveApiKey": "...",
-          "tavilyApiKey": "...",
-          "exaApiKey": "..."
-        }
-      }
-    }
-  }
-}
-```
+- `braveCountry`
+- `braveSearchLang`
+- `braveSafesearch`
+- `searxngAllowPrivate`
+- `enableWebAnswer`
 
-Supported config fields include `serperApiKey`, `braveApiKey`, `tavilyApiKey`, `linkupApiKey`, `queritApiKey`, `exaApiKey`, `firecrawlApiKey`, `perplexityApiKey`, `kilocodeApiKey`, `youApiKey`, and `searxngInstanceUrl`.
+## Usage guidance
 
-Package metadata declares the matching provider env names for ClawHub transparency, but the bundled runtime does not directly read `.env` or `process.env` credentials.
+Prefer `web_search_plus` for live/current info, prices, weather, sports, schedules, and finding raw sources.
+
+Use `web_answer_plus` only when a user clearly wants a written answer, brief, summary, or cited synthesis. It defaults to `freshness=none`, caps extraction, and falls back to snippet-backed answers with a warning when no extraction provider is configured.
+
+OpenClaw plugin config remains the source of truth for credentials; runtime code does not rely on direct `.env` reads.

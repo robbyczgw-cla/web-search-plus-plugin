@@ -4,6 +4,133 @@ import path2 from "path";
 import dns from "dns/promises";
 import net from "net";
 
+// node_modules/openclaw/dist/plugin-cache-primitives-BXH3UUqE.js
+var PluginLruCache = class {
+  #defaultMaxEntries;
+  #maxEntries;
+  #entries = /* @__PURE__ */ new Map();
+  constructor(defaultMaxEntries) {
+    this.#defaultMaxEntries = normalizeMaxEntries(defaultMaxEntries, 1);
+    this.#maxEntries = this.#defaultMaxEntries;
+  }
+  get maxEntries() {
+    return this.#maxEntries;
+  }
+  get size() {
+    return this.#entries.size;
+  }
+  setMaxEntriesForTest(value) {
+    this.#maxEntries = typeof value === "number" ? normalizeMaxEntries(value, this.#defaultMaxEntries) : this.#defaultMaxEntries;
+    this.#evictOldestEntries();
+  }
+  clear() {
+    this.#entries.clear();
+  }
+  get(cacheKey) {
+    const cached = this.getResult(cacheKey);
+    return cached.hit ? cached.value : void 0;
+  }
+  getResult(cacheKey) {
+    if (!this.#entries.has(cacheKey)) return { hit: false };
+    const cached = this.#entries.get(cacheKey);
+    this.#entries.delete(cacheKey);
+    this.#entries.set(cacheKey, cached);
+    return {
+      hit: true,
+      value: cached
+    };
+  }
+  set(cacheKey, value) {
+    if (this.#entries.has(cacheKey)) this.#entries.delete(cacheKey);
+    this.#entries.set(cacheKey, value);
+    this.#evictOldestEntries();
+  }
+  #evictOldestEntries() {
+    while (this.#entries.size > this.#maxEntries) {
+      const oldestEntry = this.#entries.keys().next();
+      if (oldestEntry.done) break;
+      this.#entries.delete(oldestEntry.value);
+    }
+  }
+};
+function normalizeMaxEntries(value, fallback) {
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.floor(value));
+}
+
+// node_modules/openclaw/dist/ansi-Dqm1lzVL.js
+var ANSI_CSI_PATTERN = "\\x1b\\[[\\x20-\\x3f]*[\\x40-\\x7e]";
+var OSC8_PATTERN = "\\x1b\\]8;;.*?(?:\\x1b\\\\|\\x07)|\\x1b\\]8;;(?:\\x1b\\\\|\\x07)";
+var ANSI_CSI_REGEX = new RegExp(ANSI_CSI_PATTERN, "g");
+var OSC8_REGEX = new RegExp(OSC8_PATTERN, "g");
+var graphemeSegmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter(void 0, { granularity: "grapheme" }) : null;
+
+// node_modules/openclaw/dist/schema-validator-CwMY3Tzl.js
+import { createRequire } from "node:module";
+var require2 = createRequire(import.meta.url);
+var schemaCache = new PluginLruCache(512);
+
+// node_modules/openclaw/dist/config-schema-Crc2mMHj.js
+function error(message) {
+  return {
+    success: false,
+    error: { issues: [{
+      path: [],
+      message
+    }] }
+  };
+}
+function emptyPluginConfigSchema() {
+  return {
+    safeParse(value) {
+      if (value === void 0) return {
+        success: true,
+        data: void 0
+      };
+      if (!value || typeof value !== "object" || Array.isArray(value)) return error("expected config object");
+      if (Object.keys(value).length > 0) return error("config must be empty");
+      return {
+        success: true,
+        data: value
+      };
+    },
+    jsonSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {}
+    }
+  };
+}
+
+// node_modules/openclaw/dist/plugin-entry-DmhVEOw1.js
+function createCachedLazyValueGetter(value, fallback) {
+  let resolved = false;
+  let cached;
+  return () => {
+    if (!resolved) {
+      cached = (typeof value === "function" ? value() : value) ?? fallback;
+      resolved = true;
+    }
+    return cached;
+  };
+}
+function definePluginEntry({ id, name, description, kind, configSchema = emptyPluginConfigSchema, reload, nodeHostCommands, securityAuditCollectors, register: register2 }) {
+  const getConfigSchema = createCachedLazyValueGetter(configSchema);
+  return {
+    id,
+    name,
+    description,
+    ...kind ? { kind } : {},
+    ...reload ? { reload } : {},
+    ...nodeHostCommands ? { nodeHostCommands } : {},
+    ...securityAuditCollectors ? { securityAuditCollectors } : {},
+    get configSchema() {
+      return getConfigSchema();
+    },
+    register: register2
+  };
+}
+
 // paths.ts
 import path from "path";
 import { fileURLToPath } from "url";
@@ -31,13 +158,15 @@ var CONFIG_KEY_MAP = {
   kilocodeApiKey: "KILOCODE_API_KEY",
   youApiKey: "YOU_API_KEY",
   searxngInstanceUrl: "SEARXNG_INSTANCE_URL",
-  searxngAllowPrivate: "SEARXNG_ALLOW_PRIVATE"
+  searxngAllowPrivate: "SEARXNG_ALLOW_PRIVATE",
+  enableWebAnswer: "WSP_ENABLE_WEB_ANSWER"
 };
 function getRuntimeEnv(pluginConfig) {
   const mapped = {};
   for (const [cfgKey, envKey] of Object.entries(CONFIG_KEY_MAP)) {
     const val = pluginConfig?.[cfgKey];
-    if (val && typeof val === "string") mapped[envKey] = val;
+    if (typeof val === "string" && val) mapped[envKey] = val;
+    else if (typeof val === "boolean") mapped[envKey] = String(val);
   }
   return mapped;
 }
@@ -140,9 +269,9 @@ async function requestJson(url, init, timeout = 30) {
       throw new Error(String(message));
     }
     return data;
-  } catch (error) {
-    if (error?.name === "AbortError") throw new Error(`Request timed out after ${timeout}s`);
-    throw error;
+  } catch (error2) {
+    if (error2?.name === "AbortError") throw new Error(`Request timed out after ${timeout}s`);
+    throw error2;
   } finally {
     clearTimeout(timer);
   }
@@ -206,8 +335,8 @@ async function extractFirecrawl(urls, apiKey, outputFormat = "markdown", include
         images,
         metadata
       }));
-    } catch (error) {
-      results.push(normalizeExtractResult("firecrawl", url, "", "", void 0, { error: String(error?.message || error) }));
+    } catch (error2) {
+      results.push(normalizeExtractResult("firecrawl", url, "", "", void 0, { error: String(error2?.message || error2) }));
     }
   }
   return { provider: "firecrawl", results };
@@ -238,8 +367,8 @@ async function extractLinkup(urls, apiKey, outputFormat = "markdown", includeIma
         images: includeImages ? normalizeImages(data?.images) : void 0,
         metadata: data?.metadata && typeof data.metadata === "object" ? data.metadata : void 0
       }));
-    } catch (error) {
-      results.push(normalizeExtractResult("linkup", url, "", "", void 0, { error: String(error?.message || error) }));
+    } catch (error2) {
+      results.push(normalizeExtractResult("linkup", url, "", "", void 0, { error: String(error2?.message || error2) }));
     }
   }
   return { provider: "linkup", results };
@@ -373,8 +502,8 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           fallback_errors: errors
         }
       };
-    } catch (error) {
-      errors.push({ provider: currentProvider, error: String(error?.message || error) });
+    } catch (error2) {
+      errors.push({ provider: currentProvider, error: String(error2?.message || error2) });
     }
   }
   return {
@@ -435,6 +564,56 @@ var PARAMETERS_SCHEMA = {
     }
   }
 };
+var ANSWER_PARAMETERS_SCHEMA = {
+  type: "object",
+  required: ["query"],
+  properties: {
+    query: { type: "string", description: "Question or topic to answer from the web." },
+    mode: {
+      type: "string",
+      enum: ["quick", "deep"],
+      default: "quick",
+      description: "quick = fast synthesis from a few sources; deep = broader cited synthesis with a slightly larger search pass."
+    },
+    sources: {
+      type: "number",
+      default: 3,
+      minimum: 1,
+      maximum: 10,
+      description: "Number of citation-ready sources to return."
+    },
+    freshness: {
+      type: "string",
+      enum: ["none", "auto", "day", "week", "month", "year"],
+      default: "none",
+      description: "Optional recency control. Default none avoids accidental stale/current overfitting; set auto/day/week/month/year explicitly when needed."
+    },
+    output: {
+      type: "string",
+      enum: ["answer", "brief", "sources", "json"],
+      default: "answer",
+      description: "Return a markdown answer, short brief, sources-only list, or structured JSON."
+    },
+    language: {
+      type: "string",
+      default: "auto",
+      description: "Optional language hint such as en, de, fr, or auto."
+    },
+    country: {
+      type: "string",
+      default: "auto",
+      description: "Optional country hint such as US, AT, DE, or auto."
+    },
+    max_extracts: {
+      type: "number",
+      minimum: 0,
+      maximum: 5,
+      description: "Advanced: number of top URLs to extract. Default 2, hard-capped at 5 for cost safety."
+    }
+  }
+};
+var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng"];
+var SEARCH_PROVIDER_PRIORITY = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
 var ProviderConfigError = class extends Error {
 };
 var ProviderRequestError = class extends Error {
@@ -636,6 +815,132 @@ function titleFromUrl2(url) {
     return url.slice(0, 80);
   }
 }
+function domainFromUrl(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "unknown";
+  }
+}
+function inferSourceType(url) {
+  const domain = domainFromUrl(url);
+  if (["docs", "developer", "support", "help"].some((part) => domain.includes(part))) return "docs";
+  if (["wikipedia.org", "britannica.com"].some((part) => domain.includes(part))) return "reference";
+  if (["github.com", "gitlab.com"].some((part) => domain.includes(part))) return "code";
+  if (["reuters.com", "apnews.com", "bbc.com", "nytimes.com", "wsj.com"].some((part) => domain.includes(part))) return "news";
+  return "web";
+}
+function normalizeAnswerFreshness(query, requested = "none") {
+  const value = requested || "none";
+  if (value !== "auto") {
+    return {
+      requested: value,
+      applied: value === "none" ? "none" : value,
+      reason: value === "none" ? "default freshness disabled" : "explicit freshness requested"
+    };
+  }
+  const q = query.toLowerCase();
+  const dayTerms = ["today", "right now", "breaking", "now", "heute", "gerade", "aktuell"];
+  const weekTerms = ["latest", "this week", "past week", "recent", "news", "updates", "new", "neueste", "diese woche", "nachrichten"];
+  const monthTerms = ["this month", "past month", "dieser monat", "letzter monat"];
+  if (dayTerms.some((term) => q.includes(term))) return { requested: value, applied: "day", reason: "query looked time-sensitive" };
+  if (weekTerms.some((term) => q.includes(term)) || /\b20[2-9][0-9]\b/.test(q)) return { requested: value, applied: "week", reason: "query looked time-sensitive" };
+  if (monthTerms.some((term) => q.includes(term))) return { requested: value, applied: "month", reason: "query looked time-sensitive" };
+  return { requested: value, applied: "none", reason: "no freshness signals detected" };
+}
+function detectAnswerLocale(query, language = "auto", country = "auto") {
+  const q = query.toLowerCase();
+  let detectedLanguage = language === "auto" ? "" : String(language).toLowerCase();
+  let detectedCountry = country === "auto" ? "" : String(country).toUpperCase();
+  let confidence = detectedLanguage ? "explicit" : "low";
+  if (!detectedLanguage) {
+    const languageSignals = [
+      ["fr", ["meilleur", "meilleurs", "pas cher", "comparaison", "avis", "france"]],
+      ["es", ["precio", "barato", "comparaci\xF3n", "alternativas", "espa\xF1a", "m\xE9xico"]],
+      ["it", ["prezzo", "migliori", "confronto", "italia"]],
+      ["pt", ["pre\xE7o", "melhores", "compara\xE7\xE3o", "brasil", "portugal"]],
+      ["de", ["preis", "g\xFCnstig", "vergleich", "\xF6sterreich", "deutschland", "schweiz"]]
+    ];
+    for (const [code, terms] of languageSignals) {
+      if (terms.some((term) => q.includes(term))) {
+        detectedLanguage = code;
+        confidence = "medium";
+        break;
+      }
+    }
+  }
+  if (!detectedLanguage) detectedLanguage = "en";
+  if (!detectedCountry) {
+    const countrySignals = [
+      ["AT", ["\xF6sterreich", "austria", "graz", "wien", "vienna"]],
+      ["DE", ["deutschland", "germany", "berlin", "m\xFCnchen"]],
+      ["FR", ["france", "paris"]],
+      ["ES", ["espa\xF1a", "spain", "madrid"]],
+      ["IT", ["italia", "italy"]],
+      ["US", ["united states", "usa", "new york", "california"]]
+    ];
+    for (const [code, terms] of countrySignals) {
+      if (terms.some((term) => q.includes(term))) {
+        detectedCountry = code;
+        break;
+      }
+    }
+  }
+  if (!detectedCountry) detectedCountry = "US";
+  return { language: detectedLanguage, country: detectedCountry, language_confidence: confidence };
+}
+function preferredAnswerExtractProvider(env) {
+  if ((env.LINKUP_API_KEY || "").trim()) return "linkup";
+  if (hasAnyExtractProviderCredential(env)) return "auto";
+  return null;
+}
+function cleanAnswerEvidence(input) {
+  return String(input || "").replace(/!\[[^\]]*\]\(data:[^)]+\)/gi, " ").replace(/\[Reload\]\([^)]*\)/gi, " ").replace(/skip to content/gi, " ").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+}
+function normalizeAnswerSources(results, provider, limit = 3) {
+  return results.slice(0, limit).map((item) => {
+    const url = String(item.url || "");
+    const domain = domainFromUrl(url);
+    const publishedDate = item.date || item.published_date || item.age || null;
+    const title = String(item.title || titleFromUrl2(url));
+    return {
+      title,
+      domain,
+      url,
+      published_date: publishedDate,
+      source_type: inferSourceType(url),
+      provider: item.provider || provider || null,
+      extracted_status: "not_requested",
+      used_in_answer: true,
+      citation: `[${title} (${domain}${publishedDate ? `, ${publishedDate}` : ""})](${url})`,
+      snippet: cleanAnswerEvidence(String(item.snippet || ""))
+    };
+  });
+}
+function buildAnswerText(query, sources, warnings, snippetOnly) {
+  const intro = snippetOnly ? `Snippet-backed brief for: ${query}` : `Source-backed brief for: ${query}`;
+  const bullets = sources.map((source, index) => `- [${index + 1}] ${source.title} \u2014 ${source.evidence || source.snippet || "No usable evidence captured."}`).join("\n");
+  const warningText = warnings.length ? `
+
+Warnings:
+${warnings.map((item) => `- ${item}`).join("\n")}` : "";
+  const citations = sources.length ? `
+
+Citations:
+${sources.map((source) => `- ${source.citation}`).join("\n")}` : "";
+  return `${intro}
+
+${bullets || "- No sources found."}${warningText}${citations}`.trim();
+}
+function formatAnswerBrief(payload) {
+  const warnings = Array.isArray(payload.warnings) && payload.warnings.length ? `
+**Warnings:**
+${payload.warnings.map((item) => `- ${item}`).join("\n")}` : "";
+  return `**Answer**
+${payload.answer}
+
+**Freshness:** ${payload.freshness?.applied || "none"}${warnings}`.trim();
+}
 async function httpJson(url, init, timeoutMs = 3e4) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -659,10 +964,10 @@ async function httpJson(url, init, timeoutMs = 3e4) {
       throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, res.status, TRANSIENT_HTTP_CODES.has(res.status));
     }
     return data ?? {};
-  } catch (error) {
-    if (error?.name === "AbortError") throw new ProviderRequestError(`Request timed out after ${timeoutMs}ms`, void 0, true);
-    if (error instanceof ProviderRequestError) throw error;
-    throw new ProviderRequestError(`Network error: ${String(error?.message || error)}`, void 0, true);
+  } catch (error2) {
+    if (error2?.name === "AbortError") throw new ProviderRequestError(`Request timed out after ${timeoutMs}ms`, void 0, true);
+    if (error2 instanceof ProviderRequestError) throw error2;
+    throw new ProviderRequestError(`Network error: ${String(error2?.message || error2)}`, void 0, true);
   } finally {
     clearTimeout(timer);
   }
@@ -1414,13 +1719,226 @@ async function executeWithRetry(fn) {
   for (let attempt = 0; attempt < RETRY_BACKOFF_MS.length; attempt += 1) {
     try {
       return await fn();
-    } catch (error) {
-      lastError = error;
-      if (!(error instanceof ProviderRequestError) || !error.transient || error.statusCode === 401 || error.statusCode === 403) break;
+    } catch (error2) {
+      lastError = error2;
+      if (!(error2 instanceof ProviderRequestError) || !error2.transient || error2.statusCode === 401 || error2.statusCode === 403) break;
       if (attempt < RETRY_BACKOFF_MS.length - 1) await sleep(RETRY_BACKOFF_MS[attempt]);
     }
   }
   throw lastError;
+}
+async function executeSearch(runtimeEnv, params) {
+  try {
+    const query = String(params.query || "").trim();
+    if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
+    const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
+    const requestedProvider = params.provider || "auto";
+    const timeRange = toTimeRange(params.time_range);
+    const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : void 0;
+    const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : void 0;
+    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeEnv));
+    const braveOptions = {
+      country: runtimeEnv.BRAVE_COUNTRY,
+      search_lang: runtimeEnv.BRAVE_SEARCH_LANG,
+      safesearch: runtimeEnv.BRAVE_SAFESEARCH
+    };
+    let routingInfo;
+    let provider;
+    if (requestedProvider === "auto") {
+      const analyzer = new QueryAnalyzer();
+      const routing = analyzer.route(query, configuredProviders);
+      provider = routing.provider;
+      routingInfo = { auto_routed: true, provider, confidence: routing.confidence, confidence_level: routing.confidence_level, reason: routing.reason, top_signals: routing.top_signals, scores: routing.scores, exa_depth: routing.exa_depth };
+    } else {
+      provider = requestedProvider;
+      routingInfo = { auto_routed: false, provider };
+    }
+    const providersToTry = [provider, ...SEARCH_PROVIDER_PRIORITY.filter((p) => p !== provider && configuredProviders.includes(p))];
+    const eligibleProviders = [];
+    const cooldownSkips = [];
+    for (const p of providersToTry) {
+      const cooldown = providerInCooldown(p);
+      if (cooldown.inCooldown) cooldownSkips.push({ provider: p, cooldown_remaining_seconds: cooldown.remaining });
+      else eligibleProviders.push(p);
+    }
+    if (!eligibleProviders.length) eligibleProviders.push(provider);
+    const cacheContext = {
+      time_range: timeRange,
+      include_domains: includeDomains ? [...includeDomains].sort() : null,
+      exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
+      exa_depth: params.depth || routingInfo.exa_depth || "normal",
+      brave_country: normalizeBraveCountry(braveOptions.country),
+      brave_search_lang: normalizeBraveLanguage(braveOptions.search_lang),
+      brave_safesearch: normalizeBraveSafesearch(braveOptions.safesearch)
+    };
+    const cached = cacheGet(query, provider, count, DEFAULT_CACHE_TTL, cacheContext);
+    if (cached) {
+      const result2 = { ...cached };
+      for (const key of Object.keys(result2)) if (key.startsWith("_cache_")) delete result2[key];
+      result2.cached = true;
+      result2.cache_age_seconds = Math.floor(Date.now() / 1e3 - Number(cached._cache_timestamp || 0));
+      result2.routing = { ...routingInfo, ...cooldownSkips.length ? { cooldown_skips: cooldownSkips } : {} };
+      return { ok: true, payload: sanitizeOutput(result2) };
+    }
+    const errors = [];
+    const successes = [];
+    const runProvider = async (p) => {
+      const key = validateApiKey(p, runtimeEnv);
+      if (p === "serper") return searchSerper(query, key, count, timeRange);
+      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
+      if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
+      if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
+      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "exa") {
+        const exaDepth = params.depth || routingInfo.exa_depth || "normal";
+        return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
+      }
+      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
+      if (p === "you") return searchYou(query, key, count, timeRange);
+      return searchSearxng(query, key, count, timeRange, runtimeEnv);
+    };
+    for (const p of eligibleProviders) {
+      try {
+        const result2 = await executeWithRetry(() => runProvider(p));
+        resetProviderHealth(p);
+        successes.push([p, result2]);
+        if ((result2.results || []).length >= count || errors.length === 0) break;
+      } catch (error2) {
+        const message = sanitizeOutput(String(error2?.message || error2));
+        const cooldown = markProviderFailure(p, message);
+        errors.push({ provider: p, error: message, cooldown_seconds: cooldown.cooldown_seconds });
+      }
+    }
+    if (!successes.length) {
+      return { ok: false, payload: sanitizeOutput({ error: "All providers failed", provider, query, routing: routingInfo, provider_errors: errors, cooldown_skips: cooldownSkips }) };
+    }
+    let result;
+    if (successes.length === 1) {
+      result = successes[0][1];
+    } else {
+      result = { ...successes[0][1] };
+      const deduped = deduplicateResultsAcrossProviders(successes, count);
+      result.results = deduped.results;
+      result.deduplicated = deduped.dedupCount > 0;
+      result.metadata = { ...result.metadata || {}, dedup_count: deduped.dedupCount, providers_merged: successes.map(([p]) => p) };
+    }
+    const successfulProvider = successes[0][0];
+    if (successfulProvider !== provider) {
+      routingInfo = { ...routingInfo, fallback_used: true, original_provider: provider, provider: successfulProvider, fallback_errors: errors };
+    }
+    if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
+    result.routing = routingInfo;
+    result.cached = false;
+    if (!result.metadata) result.metadata = {};
+    if (result.deduplicated == null) result.deduplicated = false;
+    if (result.metadata.dedup_count == null) result.metadata.dedup_count = 0;
+    cachePut(query, successfulProvider, count, result, cacheContext);
+    return { ok: true, payload: sanitizeOutput(result) };
+  } catch (error2) {
+    return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` } };
+  }
+}
+async function composeAnswerPayload(runtimeEnv, params) {
+  const query = String(params.query || "").trim();
+  if (!query) return { beta: true, stage: "input", error: "query is required" };
+  const mode = params.mode === "deep" ? "deep" : "quick";
+  const output = ["answer", "brief", "sources", "json"].includes(String(params.output || "")) ? params.output : "answer";
+  const sourceCount = Math.max(1, Math.min(10, Math.floor(Number(params.sources || (mode === "deep" ? 6 : 3)))));
+  const requestedExtracts = params.max_extracts == null ? 2 : Math.max(0, Math.floor(Number(params.max_extracts)));
+  const extractCap = 5;
+  const extractCount = Math.min(requestedExtracts, extractCap, sourceCount);
+  const freshness = normalizeAnswerFreshness(query, params.freshness || "none");
+  const locale = detectAnswerLocale(query, params.language || "auto", params.country || "auto");
+  const warnings = [];
+  if (requestedExtracts > extractCap) warnings.push(`max_extracts capped at ${extractCap} to protect provider budget.`);
+  const searchResult = await executeSearch(runtimeEnv, {
+    query,
+    provider: "auto",
+    count: sourceCount,
+    depth: mode === "deep" ? "deep" : "normal",
+    time_range: freshness.applied === "none" ? void 0 : freshness.applied
+  });
+  if (!searchResult.ok) {
+    const failure = searchResult.payload;
+    return { beta: true, stage: "search", query, mode, output, freshness, warnings, ...failure };
+  }
+  const searchPayload = searchResult.payload;
+  const normalizedSources = normalizeAnswerSources(searchPayload.results || [], searchPayload.provider, sourceCount);
+  const urlsToExtract = normalizedSources.slice(0, extractCount).map((source) => source.url).filter(Boolean);
+  const extractProvider = preferredAnswerExtractProvider(runtimeEnv);
+  let extractPayload = { provider: null, results: [] };
+  if (urlsToExtract.length && !extractProvider) {
+    warnings.push("No extraction-capable provider is configured, so this answer uses search snippets only. Add Linkup (preferred), Firecrawl, Tavily, Exa, or You.com for fuller cited answers.");
+  } else if (urlsToExtract.length && extractProvider) {
+    extractPayload = await extractPlus(urlsToExtract, extractProvider, "markdown", false, false, false, runtimeEnv);
+    if (extractPayload?.error) warnings.push(`Extraction issue: ${extractPayload.error}`);
+    const extractedByUrl = new Map((extractPayload.results || []).map((item) => [item.url, item]));
+    for (const source of normalizedSources.slice(0, extractCount)) {
+      const extracted = extractedByUrl.get(source.url);
+      if (extracted?.content) {
+        source.evidence = cleanAnswerEvidence(String(extracted.content).slice(0, 500));
+        source.extracted_status = "extracted";
+        source.extraction_provider = extracted.provider || extractPayload.provider || void 0;
+      } else if (extracted?.error) {
+        source.extracted_status = "failed";
+        source.extraction_error = String(extracted.error);
+        source.evidence = source.snippet;
+        warnings.push(`Extraction failed for ${source.url}: ${source.extraction_error}`);
+      }
+    }
+  }
+  for (const source of normalizedSources) {
+    if (!source.evidence) {
+      source.evidence = source.snippet;
+      if (source.extracted_status === "not_requested") {
+        source.extracted_status = urlsToExtract.includes(source.url) && extractProvider ? "failed" : "snippet_only";
+      }
+    }
+  }
+  const extractedCount = normalizedSources.filter((source) => source.extracted_status === "extracted").length;
+  const snippetOnly = extractedCount === 0;
+  const answer = buildAnswerText(query, normalizedSources, warnings, snippetOnly);
+  const confidence = normalizedSources.length >= 3 && extractedCount > 0 ? "high" : normalizedSources.length >= 2 ? "medium" : "low";
+  const payload = {
+    beta: true,
+    query,
+    mode,
+    output,
+    answer,
+    freshness,
+    language: locale.language,
+    country: locale.country,
+    confidence,
+    confidence_reason: {
+      sources: normalizedSources.length,
+      extracted_sources: extractedCount,
+      snippet_only: snippetOnly
+    },
+    warnings,
+    provider: searchPayload.provider,
+    routing: searchPayload.routing,
+    sources: normalizedSources,
+    search_results_considered: normalizedSources.length,
+    extraction: {
+      provider: extractProvider,
+      actual_provider: extractPayload?.provider || null,
+      requested_urls: urlsToExtract,
+      attempted: urlsToExtract.length > 0 && !!extractProvider,
+      successful: extractedCount,
+      snippet_only: snippetOnly
+    },
+    cost_estimate: {
+      extract_provider: extractProvider,
+      extracts_requested: urlsToExtract.length,
+      extracts_completed: extractedCount,
+      extract_cap: extractCap
+    }
+  };
+  if (output === "json") return payload;
+  if (output === "sources") return { text: normalizedSources.map((source) => `- ${source.citation}`).join("\n") || "- No sources found." };
+  if (output === "brief") return { text: formatAnswerBrief(payload) };
+  return { text: answer };
 }
 function register(api) {
   api.registerTool(
@@ -1430,118 +1948,41 @@ function register(api) {
       parameters: PARAMETERS_SCHEMA,
       async execute(_id, params) {
         try {
-          const query = String(params.query || "").trim();
-          if (!query) return { content: [{ type: "text", text: "Search failed: query is required" }] };
           const pluginConfig = api.pluginConfig ?? {};
           const runtimeEnv = getRuntimeEnv(pluginConfig);
-          const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
-          const requestedProvider = params.provider || "auto";
-          const timeRange = toTimeRange(params.time_range);
-          const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : void 0;
-          const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : void 0;
-          const allProviders = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng"];
-          const configuredProviders = allProviders.filter((p) => !!getApiKey(p, runtimeEnv));
-          const braveOptions = {
-            country: runtimeEnv.BRAVE_COUNTRY,
-            search_lang: runtimeEnv.BRAVE_SEARCH_LANG,
-            safesearch: runtimeEnv.BRAVE_SAFESEARCH
-          };
-          let routingInfo;
-          let provider;
-          if (requestedProvider === "auto") {
-            const analyzer = new QueryAnalyzer();
-            const routing = analyzer.route(query, configuredProviders);
-            provider = routing.provider;
-            routingInfo = { auto_routed: true, provider, confidence: routing.confidence, confidence_level: routing.confidence_level, reason: routing.reason, top_signals: routing.top_signals, scores: routing.scores, exa_depth: routing.exa_depth };
-          } else {
-            provider = requestedProvider;
-            routingInfo = { auto_routed: false, provider };
+          const result = await executeSearch(runtimeEnv, params);
+          if (!result.ok) {
+            const failure = result.payload;
+            return { content: [{ type: "text", text: failure.error ? String(failure.error) : JSON.stringify(sanitizeOutput(failure)) }] };
           }
-          const priority = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
-          const providersToTry = [provider, ...priority.filter((p) => p !== provider && configuredProviders.includes(p))];
-          const eligibleProviders = [];
-          const cooldownSkips = [];
-          for (const p of providersToTry) {
-            const cooldown = providerInCooldown(p);
-            if (cooldown.inCooldown) cooldownSkips.push({ provider: p, cooldown_remaining_seconds: cooldown.remaining });
-            else eligibleProviders.push(p);
-          }
-          if (!eligibleProviders.length) eligibleProviders.push(provider);
-          const cacheContext = {
-            time_range: timeRange,
-            include_domains: includeDomains ? [...includeDomains].sort() : null,
-            exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
-            exa_depth: params.depth || routingInfo.exa_depth || "normal",
-            brave_country: normalizeBraveCountry(braveOptions.country),
-            brave_search_lang: normalizeBraveLanguage(braveOptions.search_lang),
-            brave_safesearch: normalizeBraveSafesearch(braveOptions.safesearch)
-          };
-          const cached = cacheGet(query, provider, count, DEFAULT_CACHE_TTL, cacheContext);
-          if (cached) {
-            const result2 = { ...cached };
-            for (const key of Object.keys(result2)) if (key.startsWith("_cache_")) delete result2[key];
-            result2.cached = true;
-            result2.cache_age_seconds = Math.floor(Date.now() / 1e3 - Number(cached._cache_timestamp || 0));
-            result2.routing = { ...routingInfo, ...cooldownSkips.length ? { cooldown_skips: cooldownSkips } : {} };
-            return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result2)) }] };
-          }
-          const errors = [];
-          const successes = [];
-          const runProvider = async (p) => {
-            const key = validateApiKey(p, runtimeEnv);
-            if (p === "serper") return searchSerper(query, key, count, timeRange);
-            if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
-            if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
-            if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
-            if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
-            if (p === "exa") {
-              const exaDepth = params.depth || routingInfo.exa_depth || "normal";
-              return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
-            }
-            if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
-            if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
-            if (p === "you") return searchYou(query, key, count, timeRange);
-            return searchSearxng(query, key, count, timeRange, runtimeEnv);
-          };
-          for (const p of eligibleProviders) {
-            try {
-              const result2 = await executeWithRetry(() => runProvider(p));
-              resetProviderHealth(p);
-              successes.push([p, result2]);
-              if ((result2.results || []).length >= count || errors.length === 0) break;
-            } catch (error) {
-              const message = sanitizeOutput(String(error?.message || error));
-              const cooldown = markProviderFailure(p, message);
-              errors.push({ provider: p, error: message, cooldown_seconds: cooldown.cooldown_seconds });
-            }
-          }
-          if (!successes.length) {
-            return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: "All providers failed", provider, query, routing: routingInfo, provider_errors: errors, cooldown_skips: cooldownSkips })) }] };
-          }
-          let result;
-          if (successes.length === 1) {
-            result = successes[0][1];
-          } else {
-            result = { ...successes[0][1] };
-            const deduped = deduplicateResultsAcrossProviders(successes, count);
-            result.results = deduped.results;
-            result.deduplicated = deduped.dedupCount > 0;
-            result.metadata = { ...result.metadata || {}, dedup_count: deduped.dedupCount, providers_merged: successes.map(([p]) => p) };
-          }
-          const successfulProvider = successes[0][0];
-          if (successfulProvider !== provider) {
-            routingInfo = { ...routingInfo, fallback_used: true, original_provider: provider, provider: successfulProvider, fallback_errors: errors };
-          }
-          if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
-          result.routing = routingInfo;
-          result.cached = false;
-          if (!result.metadata) result.metadata = {};
-          if (result.deduplicated == null) result.deduplicated = false;
-          if (result.metadata.dedup_count == null) result.metadata.dedup_count = 0;
-          cachePut(query, successfulProvider, count, result, cacheContext);
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
-        } catch (error) {
-          return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error?.message || error))}` }] };
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result.payload)) }] };
+        } catch (error2) {
+          return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` }] };
+        }
+      }
+    },
+    { optional: true }
+  );
+  api.registerTool(
+    {
+      name: "web_answer_plus",
+      description: "Beta: produce a written web answer or cited brief by combining web_search_plus with bounded optional extraction. Prefer web_search_plus instead for current events, sports lineups, live scores, schedules, prices, weather, and raw source discovery. Use this only when you explicitly want a written answer, summary, brief, or cited synthesis.",
+      parameters: ANSWER_PARAMETERS_SCHEMA,
+      checkFn() {
+        const pluginConfig = api.pluginConfig ?? {};
+        const runtimeEnv = getRuntimeEnv(pluginConfig);
+        return ["1", "true", "yes", "on"].includes(String(runtimeEnv.WSP_ENABLE_WEB_ANSWER || "").toLowerCase());
+      },
+      async execute(_id, params) {
+        try {
+          const pluginConfig = api.pluginConfig ?? {};
+          const runtimeEnv = getRuntimeEnv(pluginConfig);
+          const payload = await composeAnswerPayload(runtimeEnv, params);
+          if (payload.error) return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
+          if (typeof payload.text === "string") return { content: [{ type: "text", text: payload.text }] };
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
+        } catch (error2) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ beta: true, error: String(error2?.message || error2) })) }] };
         }
       }
     },
@@ -1570,15 +2011,20 @@ function register(api) {
             runtimeEnv
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
-        } catch (error) {
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };
+        } catch (error2) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error2?.message || error2) })) }] };
         }
       }
     },
     { optional: true }
   );
 }
-var index_default = register;
+var index_default = definePluginEntry({
+  id: "web-search-plus-plugin-v2",
+  name: "Web Search Plus",
+  description: "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis.",
+  register
+});
 export {
   QueryAnalyzer,
   buildCacheKey,
