@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.5.0] - 2026-05-09
+
+### Added
+- Add `web_routing_config_plus` for persistent routing preferences stored in JSON, separate from provider secrets.
+- Add routing config validation, alias normalization for `kilo-perplexity`, corrupt-file quarantine, atomic writes, and reset backups.
+
+### Changed
+- Make `provider:auto` respect persistent routing preferences, including strict fixed-provider mode when auto routing is disabled.
+- Keep explicit provider requests strict instead of silently falling back.
+
+### Removed
+- Remove the accidental language/country expansion from OpenClaw-facing config and answer-tool UX in this release.
+
 ## [2.4.0] - 2026-05-09
 
 ### Added

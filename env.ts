@@ -1,8 +1,6 @@
 const CONFIG_KEY_MAP: Record<string, string> = {
   serperApiKey: "SERPER_API_KEY",
   braveApiKey: "BRAVE_API_KEY",
-  braveCountry: "BRAVE_COUNTRY",
-  braveSearchLang: "BRAVE_SEARCH_LANG",
   braveSafesearch: "BRAVE_SAFESEARCH",
   tavilyApiKey: "TAVILY_API_KEY",
   linkupApiKey: "LINKUP_API_KEY",

@@ -1,6 +1,6 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "OpenClaw plugin: one clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis across Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity, Kilo gateway, You.com, and SearXNG.",
   "type": "module",
   "main": "index.ts",
@@ -26,8 +26,6 @@
     "env": {
       "SERPER_API_KEY": "optional Serper/Google search provider API key; only used when configured/enabled for this plugin",
       "BRAVE_API_KEY": "optional Brave Search provider API key; only used when configured/enabled for this plugin",
-      "BRAVE_COUNTRY": "optional Brave Search country code override",
-      "BRAVE_SEARCH_LANG": "optional Brave Search language override",
       "BRAVE_SAFESEARCH": "optional Brave Search safesearch default: strict, moderate, or off",
       "TAVILY_API_KEY": "optional Tavily research search/extraction provider API key; only used when configured/enabled for this plugin",
       "LINKUP_API_KEY": "optional Linkup source-grounded search/extraction provider API key; only used when configured/enabled for this plugin",
@@ -47,6 +45,7 @@
     "extract.ts",
     "paths.ts",
     "storage.ts",
+    "routing-config.ts",
     "env.ts",
     "openclaw.plugin.json",
     "dist/index.js"
