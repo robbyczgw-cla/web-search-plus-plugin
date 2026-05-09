@@ -1,7 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import {
   QueryAnalyzer,
   buildCacheKey,
@@ -9,12 +7,16 @@ import {
   deduplicateResultsAcrossProviders,
   register,
   searchBrave,
+  __resetRuntimeStateForTests,
 } from "../index.ts";
-import { getPluginDir } from "../paths.ts";
+import { __resetRoutingPreferencesForTests } from "../routing-config.ts";
 
 type MockFetchCall = { url: string; init?: RequestInit };
 
-const CACHE_DIR = path.join(getPluginDir(), ".cache");
+function clearPluginCache() {
+  __resetRuntimeStateForTests();
+  __resetRoutingPreferencesForTests();
+}
 
 function mockJsonResponse(body: any, status = 200) {
   return {
@@ -24,10 +26,6 @@ function mockJsonResponse(body: any, status = 200) {
       return JSON.stringify(body);
     },
   };
-}
-
-function clearPluginCache() {
-  fs.rmSync(CACHE_DIR, { recursive: true, force: true });
 }
 
 async function withMockedFetch(
@@ -159,7 +157,6 @@ test("searchBrave parses Brave web results and request params", async () => {
 });
 
 test("registered web_search_plus supports explicit provider=brave", async () => {
-  clearPluginCache();
   await withMockedFetch(
     () => mockJsonResponse({
       web: { results: [{ title: "Brave explicit", url: "https://example.com/brave-explicit", description: "Found via Brave" }] },
@@ -198,7 +195,6 @@ test("QueryAnalyzer auto routing deterministically picks brave or serper for gen
 });
 
 test("registered web_search_plus keeps explicit provider mode strict when the provider fails", async () => {
-  clearPluginCache();
   await withMockedFetch(
     (url) => {
       if (url.includes("firecrawl.dev")) {
@@ -236,7 +232,6 @@ test("registered web_search_plus keeps explicit provider mode strict when the pr
 });
 
 test("registered web_search_plus still falls back in auto mode using routing preferences", async () => {
-  clearPluginCache();
   await withMockedFetch(
     (url) => {
       if (url.includes("firecrawl.dev")) {
@@ -250,8 +245,7 @@ test("registered web_search_plus still falls back in auto mode using routing pre
       throw new Error(`Unexpected URL: ${url}`);
     },
     async (calls) => {
-      const tempDir = fs.mkdtempSync(path.join(process.cwd(), "tmp-routing-"));
-      const routingConfigPath = path.join(tempDir, "routing-preferences.json");
+      const routingConfigPath = "search-test-routing-fallback";
       const registered = new Map<string, any>();
       register({
         registerTool(tool: any) { registered.set(tool.name, tool); },
@@ -289,7 +283,6 @@ test("registered web_search_plus still falls back in auto mode using routing pre
 });
 
 test("registered web_answer_plus is gated and defaults freshness to none", async () => {
-  clearPluginCache();
   await withMockedFetch(
     (url) => {
       if (url.includes("serper.dev")) {
@@ -336,7 +329,6 @@ test("registered web_answer_plus is gated and defaults freshness to none", async
 });
 
 test("registered web_answer_plus caps extraction and uses Linkup when configured", async () => {
-  clearPluginCache();
   await withMockedFetch(
     (url, init) => {
       if (url.includes("serper.dev")) {

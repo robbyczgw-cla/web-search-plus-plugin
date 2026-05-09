@@ -9,7 +9,7 @@ It registers:
 - `web_search_plus` — intelligent multi-provider web search
 - `web_extract_plus` — URL extraction across supported extract providers
 - `web_answer_plus` — **optional beta** written answer / cited synthesis tool
-- `web_routing_config_plus` — persistent routing preferences manager
+- `web_routing_config_plus` — runtime routing preferences manager
 
 You only need **one** provider configured to start. The best starter stack is:
 
@@ -82,7 +82,7 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `braveSafesearch`
 - `searxngAllowPrivate`
 - `enableWebAnswer` — enables the optional beta `web_answer_plus`
-- `routingConfigPath` — optional override for the routing-preferences JSON file
+- `routingConfigPath` — optional namespace for in-memory routing preferences
 
 Example:
 
@@ -139,7 +139,7 @@ Important behavior:
 
 ## Routing preferences
 
-`web_routing_config_plus` manages persistent behavior in JSON, separate from provider secrets.
+`web_routing_config_plus` manages runtime routing behavior in memory, separate from provider secrets. ClawHub scanner constraints intentionally avoid runtime filesystem reads in this package.
 
 Default path:
 
@@ -186,7 +186,7 @@ Typical tendencies:
 - SearXNG private-network protection stays on by default
 - `searxngAllowPrivate=true` disables that protection only for trusted setups
 - package artifact ships runtime files only
-- no secrets are persisted by the routing preferences file or runtime cache
+- no secrets are persisted by routing preferences or runtime cache
 
 ## Verification
 

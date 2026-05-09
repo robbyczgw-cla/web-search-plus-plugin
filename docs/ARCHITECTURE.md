@@ -28,13 +28,13 @@
 
 ### Runtime module layout
 
-The runtime entry lives in `index.ts`, with a few local helper modules for path resolution, configuration mapping, filesystem-backed storage helpers, and routing-preferences persistence.
+The runtime entry lives in `index.ts`, with local helper modules for configuration mapping and scanner-safe routing preferences.
 
 Together they cover:
 - Type definitions for tool input/output and internal state
 - Environment/config loading
 - Shared HTTP request helper built on native `fetch()`
-- Filesystem-backed cache helpers
+- In-memory cache helpers
 - Provider health and cooldown state management
 - SearXNG SSRF validation using `dns/promises` and `net`
 - Query analysis and auto-routing heuristics
@@ -80,18 +80,18 @@ No `child_process`, no external interpreters.
 
 ### 4. Cache
 
-The runtime cache is stored on disk under the plugin `.cache/` directory.
+The runtime cache is process-local memory. The package intentionally avoids runtime filesystem reads so ClawHub does not classify benign cache/config access as potential exfiltration.
 
 Characteristics:
 - cache key is derived from query + provider + result count + relevant search parameters
 - cache metadata tracks timestamp, params, provider, and query context
 - default TTL is currently one hour
 - cache entries expire lazily on read
-- writes are atomic JSON file replaces
+- cache writes update process memory only
 
 ### 5. Provider Health / Cooldown
 
-Provider health state is stored on disk alongside the cache.
+Provider health state is process-local memory alongside the cache.
 
 Behavior:
 - repeated failures increase a provider's failure count
@@ -127,7 +127,7 @@ Signals include:
 - query complexity heuristics
 - provider availability
 
-The router returns an internal provider choice, confidence estimate, and Exa depth hint when relevant. The default tool UX keeps those details trimmed down and applies persistent routing preferences on top.
+The router returns an internal provider choice, confidence estimate, and Exa depth hint when relevant. The default tool UX keeps those details trimmed down and applies runtime routing preferences on top.
 
 ### 8. Providers
 
@@ -201,7 +201,7 @@ The registered tool currently supports:
 7. If provider still fails, fallback chain tries the next healthy provider
 8. Provider response is normalized to shared result schema
 9. Results are deduplicated if multiple providers contributed
-10. Final result is cached in memory and returned to OpenClaw
+10. Final result is cached in process memory and returned to OpenClaw
 ```
 
 ## File Structure
