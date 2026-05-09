@@ -1,8 +1,8 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "2.3.10",
-  "description": "Multi-provider web search (Serper/Google, Brave, Tavily, Linkup, Querit/Multilingual AI Search, Exa/Neural+Deep, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, SearXNG) with intelligent auto-routing. Requires at least one configured provider credential or a SearXNG instance URL before use.",
+  "version": "2.4.0",
+  "description": "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, and SearXNG.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -62,6 +62,10 @@
       "searxngInstanceUrl": {
         "type": "string",
         "description": "Base URL for a SearXNG instance. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      "enableWebAnswer": {
+        "type": "boolean",
+        "description": "Optional beta toggle for web_answer_plus. Leave off unless you want answer synthesis in addition to web_search_plus and web_extract_plus."
       }
     }
   },
@@ -136,6 +140,11 @@
       "label": "SearXNG Instance URL",
       "placeholder": "https://searx.example.com",
       "description": "Self-hosted metasearch instance URL. Counts as a configured provider even without an API key.",
+      "sensitive": false
+    },
+    "enableWebAnswer": {
+      "label": "Enable web_answer_plus (beta)",
+      "description": "Turns on the optional beta answer-synthesis tool. Prefer web_search_plus for live/current info and raw source discovery.",
       "sensitive": false
     }
   },

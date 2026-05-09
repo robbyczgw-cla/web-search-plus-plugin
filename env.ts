@@ -14,14 +14,16 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   youApiKey: "YOU_API_KEY",
   searxngInstanceUrl: "SEARXNG_INSTANCE_URL",
   searxngAllowPrivate: "SEARXNG_ALLOW_PRIVATE",
+  enableWebAnswer: "WSP_ENABLE_WEB_ANSWER",
 };
 
-export function getRuntimeEnv(pluginConfig: Record<string, string>): Record<string, string> {
+export function getRuntimeEnv(pluginConfig: Record<string, any>): Record<string, string> {
   const mapped: Record<string, string> = {};
 
   for (const [cfgKey, envKey] of Object.entries(CONFIG_KEY_MAP)) {
     const val = pluginConfig?.[cfgKey];
-    if (val && typeof val === "string") mapped[envKey] = val;
+    if (typeof val === "string" && val) mapped[envKey] = val;
+    else if (typeof val === "boolean") mapped[envKey] = String(val);
   }
 
   return mapped;

@@ -65,8 +65,59 @@ const PARAMETERS_SCHEMA = {
   },
 };
 
+const ANSWER_PARAMETERS_SCHEMA = {
+  type: "object",
+  required: ["query"],
+  properties: {
+    query: { type: "string", description: "Question or topic to answer from the web." },
+    mode: {
+      type: "string",
+      enum: ["quick", "deep"],
+      default: "quick",
+      description: "quick = fast synthesis from a few sources; deep = broader cited synthesis with a slightly larger search pass.",
+    },
+    sources: {
+      type: "number",
+      default: 3,
+      minimum: 1,
+      maximum: 10,
+      description: "Number of citation-ready sources to return.",
+    },
+    freshness: {
+      type: "string",
+      enum: ["none", "auto", "day", "week", "month", "year"],
+      default: "none",
+      description: "Optional recency control. Default none avoids accidental stale/current overfitting; set auto/day/week/month/year explicitly when needed.",
+    },
+    output: {
+      type: "string",
+      enum: ["answer", "brief", "sources", "json"],
+      default: "answer",
+      description: "Return a markdown answer, short brief, sources-only list, or structured JSON.",
+    },
+    language: {
+      type: "string",
+      default: "auto",
+      description: "Optional language hint such as en, de, fr, or auto.",
+    },
+    country: {
+      type: "string",
+      default: "auto",
+      description: "Optional country hint such as US, AT, DE, or auto.",
+    },
+    max_extracts: {
+      type: "number",
+      minimum: 0,
+      maximum: 5,
+      description: "Advanced: number of top URLs to extract. Default 2, hard-capped at 5 for cost safety.",
+    },
+  },
+};
+
 type Json = Record<string, any>;
 type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "you" | "searxng";
+const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng"];
+const SEARCH_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
 type ToolParams = {
   query: string;
   provider?: ProviderName | "auto";
@@ -75,6 +126,20 @@ type ToolParams = {
   time_range?: "hour" | "day" | "week" | "month" | "year";
   include_domains?: string[];
   exclude_domains?: string[];
+};
+
+type AnswerFreshness = "none" | "auto" | "day" | "week" | "month" | "year";
+type AnswerMode = "quick" | "deep";
+type AnswerOutput = "answer" | "brief" | "sources" | "json";
+type AnswerParams = {
+  query: string;
+  mode?: AnswerMode;
+  sources?: number;
+  freshness?: AnswerFreshness;
+  output?: AnswerOutput;
+  language?: string;
+  country?: string;
+  max_extracts?: number;
 };
 
 type SearchResult = {
@@ -93,6 +158,27 @@ type SearchResponse = {
   answer?: string;
   metadata?: Json;
   [key: string]: any;
+};
+
+type AnswerSource = {
+  title: string;
+  domain: string;
+  url: string;
+  published_date?: string | null;
+  source_type: string;
+  provider?: string | null;
+  extracted_status: "not_requested" | "extracted" | "failed" | "snippet_only";
+  used_in_answer: boolean;
+  citation: string;
+  snippet: string;
+  evidence?: string;
+  extraction_provider?: string;
+  extraction_error?: string;
+};
+
+type SearchExecutionResult = {
+  ok: boolean;
+  payload: SearchResponse | Json;
 };
 
 class ProviderConfigError extends Error {}
@@ -320,6 +406,140 @@ function titleFromUrl(url: string): string {
   } catch {
     return url.slice(0, 80);
   }
+}
+
+function domainFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "unknown";
+  }
+}
+
+function inferSourceType(url: string): string {
+  const domain = domainFromUrl(url);
+  if (["docs", "developer", "support", "help"].some((part) => domain.includes(part))) return "docs";
+  if (["wikipedia.org", "britannica.com"].some((part) => domain.includes(part))) return "reference";
+  if (["github.com", "gitlab.com"].some((part) => domain.includes(part))) return "code";
+  if (["reuters.com", "apnews.com", "bbc.com", "nytimes.com", "wsj.com"].some((part) => domain.includes(part))) return "news";
+  return "web";
+}
+
+function normalizeAnswerFreshness(query: string, requested: AnswerFreshness = "none"): { requested: AnswerFreshness; applied: "none" | "day" | "week" | "month" | "year"; reason: string } {
+  const value = requested || "none";
+  if (value !== "auto") {
+    return {
+      requested: value,
+      applied: value === "none" ? "none" : value,
+      reason: value === "none" ? "default freshness disabled" : "explicit freshness requested",
+    };
+  }
+
+  const q = query.toLowerCase();
+  const dayTerms = ["today", "right now", "breaking", "now", "heute", "gerade", "aktuell"];
+  const weekTerms = ["latest", "this week", "past week", "recent", "news", "updates", "new", "neueste", "diese woche", "nachrichten"];
+  const monthTerms = ["this month", "past month", "dieser monat", "letzter monat"];
+  if (dayTerms.some((term) => q.includes(term))) return { requested: value, applied: "day", reason: "query looked time-sensitive" };
+  if (weekTerms.some((term) => q.includes(term)) || /\b20[2-9][0-9]\b/.test(q)) return { requested: value, applied: "week", reason: "query looked time-sensitive" };
+  if (monthTerms.some((term) => q.includes(term))) return { requested: value, applied: "month", reason: "query looked time-sensitive" };
+  return { requested: value, applied: "none", reason: "no freshness signals detected" };
+}
+
+function detectAnswerLocale(query: string, language = "auto", country = "auto"): { language: string; country: string; language_confidence: string } {
+  const q = query.toLowerCase();
+  let detectedLanguage = language === "auto" ? "" : String(language).toLowerCase();
+  let detectedCountry = country === "auto" ? "" : String(country).toUpperCase();
+  let confidence = detectedLanguage ? "explicit" : "low";
+
+  if (!detectedLanguage) {
+    const languageSignals: Array<[string, string[]]> = [
+      ["fr", ["meilleur", "meilleurs", "pas cher", "comparaison", "avis", "france"]],
+      ["es", ["precio", "barato", "comparación", "alternativas", "españa", "méxico"]],
+      ["it", ["prezzo", "migliori", "confronto", "italia"]],
+      ["pt", ["preço", "melhores", "comparação", "brasil", "portugal"]],
+      ["de", ["preis", "günstig", "vergleich", "österreich", "deutschland", "schweiz"]],
+    ];
+    for (const [code, terms] of languageSignals) {
+      if (terms.some((term) => q.includes(term))) {
+        detectedLanguage = code;
+        confidence = "medium";
+        break;
+      }
+    }
+  }
+  if (!detectedLanguage) detectedLanguage = "en";
+
+  if (!detectedCountry) {
+    const countrySignals: Array<[string, string[]]> = [
+      ["AT", ["österreich", "austria", "graz", "wien", "vienna"]],
+      ["DE", ["deutschland", "germany", "berlin", "münchen"]],
+      ["FR", ["france", "paris"]],
+      ["ES", ["españa", "spain", "madrid"]],
+      ["IT", ["italia", "italy"]],
+      ["US", ["united states", "usa", "new york", "california"]],
+    ];
+    for (const [code, terms] of countrySignals) {
+      if (terms.some((term) => q.includes(term))) {
+        detectedCountry = code;
+        break;
+      }
+    }
+  }
+  if (!detectedCountry) detectedCountry = "US";
+  return { language: detectedLanguage, country: detectedCountry, language_confidence: confidence };
+}
+
+function preferredAnswerExtractProvider(env: Record<string, string>): "auto" | "linkup" | null {
+  if ((env.LINKUP_API_KEY || "").trim()) return "linkup";
+  if (hasAnyExtractProviderCredential(env)) return "auto";
+  return null;
+}
+
+function cleanAnswerEvidence(input: string): string {
+  return String(input || "")
+    .replace(/!\[[^\]]*\]\(data:[^)]+\)/gi, " ")
+    .replace(/\[Reload\]\([^)]*\)/gi, " ")
+    .replace(/skip to content/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeAnswerSources(results: SearchResult[], provider?: string, limit = 3): AnswerSource[] {
+  return results.slice(0, limit).map((item) => {
+    const url = String(item.url || "");
+    const domain = domainFromUrl(url);
+    const publishedDate = item.date || item.published_date || item.age || null;
+    const title = String(item.title || titleFromUrl(url));
+    return {
+      title,
+      domain,
+      url,
+      published_date: publishedDate,
+      source_type: inferSourceType(url),
+      provider: item.provider || provider || null,
+      extracted_status: "not_requested",
+      used_in_answer: true,
+      citation: `[${title} (${domain}${publishedDate ? `, ${publishedDate}` : ""})](${url})`,
+      snippet: cleanAnswerEvidence(String(item.snippet || "")),
+    };
+  });
+}
+
+function buildAnswerText(query: string, sources: AnswerSource[], warnings: string[], snippetOnly: boolean): string {
+  const intro = snippetOnly ? `Snippet-backed brief for: ${query}` : `Source-backed brief for: ${query}`;
+  const bullets = sources.map((source, index) => `- [${index + 1}] ${source.title} — ${source.evidence || source.snippet || "No usable evidence captured."}`).join("\n");
+  const warningText = warnings.length ? `\n\nWarnings:\n${warnings.map((item) => `- ${item}`).join("\n")}` : "";
+  const citations = sources.length ? `\n\nCitations:\n${sources.map((source) => `- ${source.citation}`).join("\n")}` : "";
+  return `${intro}\n\n${bullets || "- No sources found."}${warningText}${citations}`.trim();
+}
+
+function formatAnswerBrief(payload: Json): string {
+  const warnings = Array.isArray(payload.warnings) && payload.warnings.length
+    ? `\n**Warnings:**\n${payload.warnings.map((item: string) => `- ${item}`).join("\n")}`
+    : "";
+  return `**Answer**\n${payload.answer}\n\n**Freshness:** ${payload.freshness?.applied || "none"}${warnings}`.trim();
 }
 
 async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Promise<any> {
@@ -889,6 +1109,240 @@ async function executeWithRetry(fn: () => Promise<SearchResponse>): Promise<Sear
   throw lastError;
 }
 
+async function executeSearch(runtimeEnv: Record<string, string>, params: ToolParams): Promise<SearchExecutionResult> {
+  try {
+    const query = String(params.query || "").trim();
+    if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
+
+    const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
+    const requestedProvider = (params.provider || "auto") as ProviderName | "auto";
+    const timeRange = toTimeRange(params.time_range);
+    const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : undefined;
+    const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
+    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeEnv));
+    const braveOptions = {
+      country: runtimeEnv.BRAVE_COUNTRY,
+      search_lang: runtimeEnv.BRAVE_SEARCH_LANG,
+      safesearch: runtimeEnv.BRAVE_SAFESEARCH,
+    };
+
+    let routingInfo: Json;
+    let provider: ProviderName;
+    if (requestedProvider === "auto") {
+      const analyzer = new QueryAnalyzer();
+      const routing = analyzer.route(query, configuredProviders);
+      provider = routing.provider;
+      routingInfo = { auto_routed: true, provider, confidence: routing.confidence, confidence_level: routing.confidence_level, reason: routing.reason, top_signals: routing.top_signals, scores: routing.scores, exa_depth: routing.exa_depth };
+    } else {
+      provider = requestedProvider;
+      routingInfo = { auto_routed: false, provider };
+    }
+
+    const providersToTry: ProviderName[] = [provider, ...SEARCH_PROVIDER_PRIORITY.filter((p) => p !== provider && configuredProviders.includes(p))];
+    const eligibleProviders: ProviderName[] = [];
+    const cooldownSkips: Json[] = [];
+    for (const p of providersToTry) {
+      const cooldown = providerInCooldown(p);
+      if (cooldown.inCooldown) cooldownSkips.push({ provider: p, cooldown_remaining_seconds: cooldown.remaining });
+      else eligibleProviders.push(p);
+    }
+    if (!eligibleProviders.length) eligibleProviders.push(provider);
+
+    const cacheContext = {
+      time_range: timeRange,
+      include_domains: includeDomains ? [...includeDomains].sort() : null,
+      exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
+      exa_depth: params.depth || routingInfo.exa_depth || "normal",
+      brave_country: normalizeBraveCountry(braveOptions.country),
+      brave_search_lang: normalizeBraveLanguage(braveOptions.search_lang),
+      brave_safesearch: normalizeBraveSafesearch(braveOptions.safesearch),
+    };
+
+    const cached = cacheGet(query, provider, count, DEFAULT_CACHE_TTL, cacheContext);
+    if (cached) {
+      const result = { ...cached };
+      for (const key of Object.keys(result)) if (key.startsWith("_cache_")) delete result[key];
+      result.cached = true;
+      result.cache_age_seconds = Math.floor(Date.now() / 1000 - Number(cached._cache_timestamp || 0));
+      result.routing = { ...routingInfo, ...(cooldownSkips.length ? { cooldown_skips: cooldownSkips } : {}) };
+      return { ok: true, payload: sanitizeOutput(result) };
+    }
+
+    const errors: Json[] = [];
+    const successes: Array<[string, SearchResponse]> = [];
+
+    const runProvider = async (p: ProviderName): Promise<SearchResponse> => {
+      const key = validateApiKey(p, runtimeEnv);
+      if (p === "serper") return searchSerper(query, key, count, timeRange);
+      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
+      if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
+      if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
+      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "exa") {
+        const exaDepth = (params.depth || routingInfo.exa_depth || "normal") as "normal" | "deep" | "deep-reasoning";
+        return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
+      }
+      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
+      if (p === "you") return searchYou(query, key, count, timeRange);
+      return searchSearxng(query, key, count, timeRange, runtimeEnv);
+    };
+
+    for (const p of eligibleProviders) {
+      try {
+        const result = await executeWithRetry(() => runProvider(p));
+        resetProviderHealth(p);
+        successes.push([p, result]);
+        if ((result.results || []).length >= count || errors.length === 0) break;
+      } catch (error: any) {
+        const message = sanitizeOutput(String(error?.message || error));
+        const cooldown = markProviderFailure(p, message);
+        errors.push({ provider: p, error: message, cooldown_seconds: cooldown.cooldown_seconds });
+      }
+    }
+
+    if (!successes.length) {
+      return { ok: false, payload: sanitizeOutput({ error: "All providers failed", provider, query, routing: routingInfo, provider_errors: errors, cooldown_skips: cooldownSkips }) };
+    }
+
+    let result: SearchResponse;
+    if (successes.length === 1) {
+      result = successes[0][1];
+    } else {
+      result = { ...successes[0][1] };
+      const deduped = deduplicateResultsAcrossProviders(successes, count);
+      result.results = deduped.results;
+      result.deduplicated = deduped.dedupCount > 0;
+      result.metadata = { ...(result.metadata || {}), dedup_count: deduped.dedupCount, providers_merged: successes.map(([p]) => p) };
+    }
+
+    const successfulProvider = successes[0][0] as ProviderName;
+    if (successfulProvider !== provider) {
+      routingInfo = { ...routingInfo, fallback_used: true, original_provider: provider, provider: successfulProvider, fallback_errors: errors };
+    }
+    if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
+    result.routing = routingInfo;
+    result.cached = false;
+    if (!(result as any).metadata) result.metadata = {};
+    if ((result as any).deduplicated == null) (result as any).deduplicated = false;
+    if ((result.metadata as any).dedup_count == null) (result.metadata as any).dedup_count = 0;
+
+    cachePut(query, successfulProvider, count, result, cacheContext);
+    return { ok: true, payload: sanitizeOutput(result) };
+  } catch (error: any) {
+    return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error?.message || error))}` } };
+  }
+}
+
+async function composeAnswerPayload(runtimeEnv: Record<string, string>, params: AnswerParams): Promise<Json> {
+  const query = String(params.query || "").trim();
+  if (!query) return { beta: true, stage: "input", error: "query is required" };
+
+  const mode: AnswerMode = params.mode === "deep" ? "deep" : "quick";
+  const output: AnswerOutput = ["answer", "brief", "sources", "json"].includes(String(params.output || "")) ? params.output as AnswerOutput : "answer";
+  const sourceCount = Math.max(1, Math.min(10, Math.floor(Number(params.sources || (mode === "deep" ? 6 : 3)))));
+  const requestedExtracts = params.max_extracts == null ? 2 : Math.max(0, Math.floor(Number(params.max_extracts)));
+  const extractCap = 5;
+  const extractCount = Math.min(requestedExtracts, extractCap, sourceCount);
+  const freshness = normalizeAnswerFreshness(query, (params.freshness || "none") as AnswerFreshness);
+  const locale = detectAnswerLocale(query, params.language || "auto", params.country || "auto");
+  const warnings: string[] = [];
+  if (requestedExtracts > extractCap) warnings.push(`max_extracts capped at ${extractCap} to protect provider budget.`);
+
+  const searchResult = await executeSearch(runtimeEnv, {
+    query,
+    provider: "auto",
+    count: sourceCount,
+    depth: mode === "deep" ? "deep" : "normal",
+    time_range: freshness.applied === "none" ? undefined : freshness.applied,
+  });
+  if (!searchResult.ok) {
+    const failure = searchResult.payload as Json;
+    return { beta: true, stage: "search", query, mode, output, freshness, warnings, ...failure };
+  }
+
+  const searchPayload = searchResult.payload as SearchResponse;
+  const normalizedSources = normalizeAnswerSources(searchPayload.results || [], searchPayload.provider, sourceCount);
+  const urlsToExtract = normalizedSources.slice(0, extractCount).map((source) => source.url).filter(Boolean);
+  const extractProvider = preferredAnswerExtractProvider(runtimeEnv);
+  let extractPayload: any = { provider: null, results: [] };
+
+  if (urlsToExtract.length && !extractProvider) {
+    warnings.push("No extraction-capable provider is configured, so this answer uses search snippets only. Add Linkup (preferred), Firecrawl, Tavily, Exa, or You.com for fuller cited answers.");
+  } else if (urlsToExtract.length && extractProvider) {
+    extractPayload = await extractPlus(urlsToExtract, extractProvider, "markdown", false, false, false, runtimeEnv);
+    if (extractPayload?.error) warnings.push(`Extraction issue: ${extractPayload.error}`);
+    const extractedByUrl = new Map<string, any>((extractPayload.results || []).map((item: any) => [item.url, item]));
+    for (const source of normalizedSources.slice(0, extractCount)) {
+      const extracted = extractedByUrl.get(source.url);
+      if (extracted?.content) {
+        source.evidence = cleanAnswerEvidence(String(extracted.content).slice(0, 500));
+        source.extracted_status = "extracted";
+        source.extraction_provider = extracted.provider || extractPayload.provider || undefined;
+      } else if (extracted?.error) {
+        source.extracted_status = "failed";
+        source.extraction_error = String(extracted.error);
+        source.evidence = source.snippet;
+        warnings.push(`Extraction failed for ${source.url}: ${source.extraction_error}`);
+      }
+    }
+  }
+
+  for (const source of normalizedSources) {
+    if (!source.evidence) {
+      source.evidence = source.snippet;
+      if (source.extracted_status === "not_requested") {
+        source.extracted_status = urlsToExtract.includes(source.url) && extractProvider ? "failed" : "snippet_only";
+      }
+    }
+  }
+
+  const extractedCount = normalizedSources.filter((source) => source.extracted_status === "extracted").length;
+  const snippetOnly = extractedCount === 0;
+  const answer = buildAnswerText(query, normalizedSources, warnings, snippetOnly);
+  const confidence = normalizedSources.length >= 3 && extractedCount > 0 ? "high" : normalizedSources.length >= 2 ? "medium" : "low";
+  const payload = {
+    beta: true,
+    query,
+    mode,
+    output,
+    answer,
+    freshness,
+    language: locale.language,
+    country: locale.country,
+    confidence,
+    confidence_reason: {
+      sources: normalizedSources.length,
+      extracted_sources: extractedCount,
+      snippet_only: snippetOnly,
+    },
+    warnings,
+    provider: searchPayload.provider,
+    routing: searchPayload.routing,
+    sources: normalizedSources,
+    search_results_considered: normalizedSources.length,
+    extraction: {
+      provider: extractProvider,
+      actual_provider: extractPayload?.provider || null,
+      requested_urls: urlsToExtract,
+      attempted: urlsToExtract.length > 0 && !!extractProvider,
+      successful: extractedCount,
+      snippet_only: snippetOnly,
+    },
+    cost_estimate: {
+      extract_provider: extractProvider,
+      extracts_requested: urlsToExtract.length,
+      extracts_completed: extractedCount,
+      extract_cap: extractCap,
+    },
+  };
+
+  if (output === "json") return payload;
+  if (output === "sources") return { text: normalizedSources.map((source) => `- ${source.citation}`).join("\n") || "- No sources found." };
+  if (output === "brief") return { text: formatAnswerBrief(payload) };
+  return { text: answer };
+}
+
 export function register(api: any) {
   api.registerTool(
     {
@@ -898,133 +1352,43 @@ export function register(api: any) {
       parameters: PARAMETERS_SCHEMA,
       async execute(_id: string, params: ToolParams) {
         try {
-          const query = String(params.query || "").trim();
-          if (!query) return { content: [{ type: "text", text: "Search failed: query is required" }] };
-
           const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
           const runtimeEnv = getRuntimeEnv(pluginConfig);
-
-          const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
-          const requestedProvider = (params.provider || "auto") as ProviderName | "auto";
-          const timeRange = toTimeRange(params.time_range);
-          const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : undefined;
-          const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
-
-          const allProviders: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng"];
-          const configuredProviders = allProviders.filter((p) => !!getApiKey(p, runtimeEnv));
-          const braveOptions = {
-            country: runtimeEnv.BRAVE_COUNTRY,
-            search_lang: runtimeEnv.BRAVE_SEARCH_LANG,
-            safesearch: runtimeEnv.BRAVE_SAFESEARCH,
-          };
-
-          let routingInfo: Json;
-          let provider: ProviderName;
-          if (requestedProvider === "auto") {
-            const analyzer = new QueryAnalyzer();
-            const routing = analyzer.route(query, configuredProviders);
-            provider = routing.provider;
-            routingInfo = { auto_routed: true, provider, confidence: routing.confidence, confidence_level: routing.confidence_level, reason: routing.reason, top_signals: routing.top_signals, scores: routing.scores, exa_depth: routing.exa_depth };
-          } else {
-            provider = requestedProvider;
-            routingInfo = { auto_routed: false, provider };
+          const result = await executeSearch(runtimeEnv, params);
+          if (!result.ok) {
+            const failure = result.payload as Json;
+            return { content: [{ type: "text", text: failure.error ? String(failure.error) : JSON.stringify(sanitizeOutput(failure)) }] };
           }
-
-          const priority: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
-          const providersToTry: ProviderName[] = [provider, ...priority.filter((p) => p !== provider && configuredProviders.includes(p))];
-          const eligibleProviders: ProviderName[] = [];
-          const cooldownSkips: Json[] = [];
-          for (const p of providersToTry) {
-            const cooldown = providerInCooldown(p);
-            if (cooldown.inCooldown) cooldownSkips.push({ provider: p, cooldown_remaining_seconds: cooldown.remaining });
-            else eligibleProviders.push(p);
-          }
-          if (!eligibleProviders.length) eligibleProviders.push(provider);
-
-          const cacheContext = {
-            time_range: timeRange,
-            include_domains: includeDomains ? [...includeDomains].sort() : null,
-            exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
-            exa_depth: params.depth || routingInfo.exa_depth || "normal",
-            brave_country: normalizeBraveCountry(braveOptions.country),
-            brave_search_lang: normalizeBraveLanguage(braveOptions.search_lang),
-            brave_safesearch: normalizeBraveSafesearch(braveOptions.safesearch),
-          };
-
-          const cached = cacheGet(query, provider, count, DEFAULT_CACHE_TTL, cacheContext);
-          if (cached) {
-            const result = { ...cached };
-            for (const key of Object.keys(result)) if (key.startsWith("_cache_")) delete result[key];
-            result.cached = true;
-            result.cache_age_seconds = Math.floor(Date.now() / 1000 - Number(cached._cache_timestamp || 0));
-            result.routing = { ...routingInfo, ...(cooldownSkips.length ? { cooldown_skips: cooldownSkips } : {}) };
-            return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
-          }
-
-          const errors: Json[] = [];
-          const successes: Array<[string, SearchResponse]> = [];
-
-          const runProvider = async (p: ProviderName): Promise<SearchResponse> => {
-            const key = validateApiKey(p, runtimeEnv);
-            if (p === "serper") return searchSerper(query, key, count, timeRange);
-            if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
-            if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
-            if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
-            if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
-            if (p === "exa") {
-              const exaDepth = (params.depth || routingInfo.exa_depth || "normal") as "normal" | "deep" | "deep-reasoning";
-              return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
-            }
-            if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
-            if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
-            if (p === "you") return searchYou(query, key, count, timeRange);
-            return searchSearxng(query, key, count, timeRange, runtimeEnv);
-          };
-
-          for (const p of eligibleProviders) {
-            try {
-              const result = await executeWithRetry(() => runProvider(p));
-              resetProviderHealth(p);
-              successes.push([p, result]);
-              if ((result.results || []).length >= count || errors.length === 0) break;
-            } catch (error: any) {
-              const message = sanitizeOutput(String(error?.message || error));
-              const cooldown = markProviderFailure(p, message);
-              errors.push({ provider: p, error: message, cooldown_seconds: cooldown.cooldown_seconds });
-            }
-          }
-
-          if (!successes.length) {
-            return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: "All providers failed", provider, query, routing: routingInfo, provider_errors: errors, cooldown_skips: cooldownSkips })) }] };
-          }
-
-          let result: SearchResponse;
-          if (successes.length === 1) {
-            result = successes[0][1];
-          } else {
-            result = { ...successes[0][1] };
-            const deduped = deduplicateResultsAcrossProviders(successes, count);
-            result.results = deduped.results;
-            result.deduplicated = deduped.dedupCount > 0;
-            result.metadata = { ...(result.metadata || {}), dedup_count: deduped.dedupCount, providers_merged: successes.map(([p]) => p) };
-          }
-
-          const successfulProvider = successes[0][0] as ProviderName;
-          if (successfulProvider !== provider) {
-            routingInfo = { ...routingInfo, fallback_used: true, original_provider: provider, provider: successfulProvider, fallback_errors: errors };
-          }
-          if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
-          result.routing = routingInfo;
-          result.cached = false;
-          if (!(result as any).metadata) result.metadata = {};
-          if ((result as any).deduplicated == null) (result as any).deduplicated = false;
-          if ((result.metadata as any).dedup_count == null) (result.metadata as any).dedup_count = 0;
-
-          cachePut(query, successfulProvider, count, result, cacheContext);
-
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result.payload)) }] };
         } catch (error: any) {
           return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error?.message || error))}` }] };
+        }
+      },
+    },
+    { optional: true },
+  );
+
+  api.registerTool(
+    {
+      name: "web_answer_plus",
+      description:
+        "Beta: produce a written web answer or cited brief by combining web_search_plus with bounded optional extraction. Prefer web_search_plus instead for current events, sports lineups, live scores, schedules, prices, weather, and raw source discovery. Use this only when you explicitly want a written answer, summary, brief, or cited synthesis.",
+      parameters: ANSWER_PARAMETERS_SCHEMA,
+      checkFn() {
+        const pluginConfig = (api.pluginConfig ?? {}) as Record<string, any>;
+        const runtimeEnv = getRuntimeEnv(pluginConfig);
+        return ["1", "true", "yes", "on"].includes(String(runtimeEnv.WSP_ENABLE_WEB_ANSWER || "").toLowerCase());
+      },
+      async execute(_id: string, params: AnswerParams) {
+        try {
+          const pluginConfig = (api.pluginConfig ?? {}) as Record<string, any>;
+          const runtimeEnv = getRuntimeEnv(pluginConfig);
+          const payload = await composeAnswerPayload(runtimeEnv, params);
+          if (payload.error) return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
+          if (typeof payload.text === "string") return { content: [{ type: "text", text: payload.text }] };
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
+        } catch (error: any) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ beta: true, error: String(error?.message || error) })) }] };
         }
       },
     },
