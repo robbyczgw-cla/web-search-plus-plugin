@@ -2,6 +2,7 @@ import crypto from "crypto";
 import path from "path";
 import dns from "dns/promises";
 import net from "net";
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { getPluginDir } from "./paths.ts";
 import { getRuntimeEnv } from "./env.ts";
 import { readJsonFile, writeJsonFile, readCachedJson } from "./storage.ts";
@@ -1428,4 +1429,9 @@ export function register(api: any) {
   );
 }
 
-export default register;
+export default definePluginEntry({
+  id: "web-search-plus-plugin-v2",
+  name: "Web Search Plus",
+  description: "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis.",
+  register,
+});

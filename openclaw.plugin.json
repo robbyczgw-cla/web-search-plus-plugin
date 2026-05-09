@@ -3,6 +3,27 @@
   "name": "Web Search Plus",
   "version": "2.4.0",
   "description": "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, and SearXNG.",
+  "contracts": {
+    "tools": [
+      "web_search_plus",
+      "web_extract_plus",
+      "web_answer_plus"
+    ]
+  },
+  "toolMetadata": {
+    "web_search_plus": {
+      "optional": true
+    },
+    "web_extract_plus": {
+      "optional": true
+    },
+    "web_answer_plus": {
+      "optional": true
+    }
+  },
+  "activation": {
+    "onStartup": false
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

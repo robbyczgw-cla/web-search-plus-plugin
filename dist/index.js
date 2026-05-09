@@ -4,6 +4,133 @@ import path2 from "path";
 import dns from "dns/promises";
 import net from "net";
 
+// node_modules/openclaw/dist/plugin-cache-primitives-BXH3UUqE.js
+var PluginLruCache = class {
+  #defaultMaxEntries;
+  #maxEntries;
+  #entries = /* @__PURE__ */ new Map();
+  constructor(defaultMaxEntries) {
+    this.#defaultMaxEntries = normalizeMaxEntries(defaultMaxEntries, 1);
+    this.#maxEntries = this.#defaultMaxEntries;
+  }
+  get maxEntries() {
+    return this.#maxEntries;
+  }
+  get size() {
+    return this.#entries.size;
+  }
+  setMaxEntriesForTest(value) {
+    this.#maxEntries = typeof value === "number" ? normalizeMaxEntries(value, this.#defaultMaxEntries) : this.#defaultMaxEntries;
+    this.#evictOldestEntries();
+  }
+  clear() {
+    this.#entries.clear();
+  }
+  get(cacheKey) {
+    const cached = this.getResult(cacheKey);
+    return cached.hit ? cached.value : void 0;
+  }
+  getResult(cacheKey) {
+    if (!this.#entries.has(cacheKey)) return { hit: false };
+    const cached = this.#entries.get(cacheKey);
+    this.#entries.delete(cacheKey);
+    this.#entries.set(cacheKey, cached);
+    return {
+      hit: true,
+      value: cached
+    };
+  }
+  set(cacheKey, value) {
+    if (this.#entries.has(cacheKey)) this.#entries.delete(cacheKey);
+    this.#entries.set(cacheKey, value);
+    this.#evictOldestEntries();
+  }
+  #evictOldestEntries() {
+    while (this.#entries.size > this.#maxEntries) {
+      const oldestEntry = this.#entries.keys().next();
+      if (oldestEntry.done) break;
+      this.#entries.delete(oldestEntry.value);
+    }
+  }
+};
+function normalizeMaxEntries(value, fallback) {
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.floor(value));
+}
+
+// node_modules/openclaw/dist/ansi-Dqm1lzVL.js
+var ANSI_CSI_PATTERN = "\\x1b\\[[\\x20-\\x3f]*[\\x40-\\x7e]";
+var OSC8_PATTERN = "\\x1b\\]8;;.*?(?:\\x1b\\\\|\\x07)|\\x1b\\]8;;(?:\\x1b\\\\|\\x07)";
+var ANSI_CSI_REGEX = new RegExp(ANSI_CSI_PATTERN, "g");
+var OSC8_REGEX = new RegExp(OSC8_PATTERN, "g");
+var graphemeSegmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter(void 0, { granularity: "grapheme" }) : null;
+
+// node_modules/openclaw/dist/schema-validator-CwMY3Tzl.js
+import { createRequire } from "node:module";
+var require2 = createRequire(import.meta.url);
+var schemaCache = new PluginLruCache(512);
+
+// node_modules/openclaw/dist/config-schema-Crc2mMHj.js
+function error(message) {
+  return {
+    success: false,
+    error: { issues: [{
+      path: [],
+      message
+    }] }
+  };
+}
+function emptyPluginConfigSchema() {
+  return {
+    safeParse(value) {
+      if (value === void 0) return {
+        success: true,
+        data: void 0
+      };
+      if (!value || typeof value !== "object" || Array.isArray(value)) return error("expected config object");
+      if (Object.keys(value).length > 0) return error("config must be empty");
+      return {
+        success: true,
+        data: value
+      };
+    },
+    jsonSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {}
+    }
+  };
+}
+
+// node_modules/openclaw/dist/plugin-entry-DmhVEOw1.js
+function createCachedLazyValueGetter(value, fallback) {
+  let resolved = false;
+  let cached;
+  return () => {
+    if (!resolved) {
+      cached = (typeof value === "function" ? value() : value) ?? fallback;
+      resolved = true;
+    }
+    return cached;
+  };
+}
+function definePluginEntry({ id, name, description, kind, configSchema = emptyPluginConfigSchema, reload, nodeHostCommands, securityAuditCollectors, register: register2 }) {
+  const getConfigSchema = createCachedLazyValueGetter(configSchema);
+  return {
+    id,
+    name,
+    description,
+    ...kind ? { kind } : {},
+    ...reload ? { reload } : {},
+    ...nodeHostCommands ? { nodeHostCommands } : {},
+    ...securityAuditCollectors ? { securityAuditCollectors } : {},
+    get configSchema() {
+      return getConfigSchema();
+    },
+    register: register2
+  };
+}
+
 // paths.ts
 import path from "path";
 import { fileURLToPath } from "url";
@@ -142,9 +269,9 @@ async function requestJson(url, init, timeout = 30) {
       throw new Error(String(message));
     }
     return data;
-  } catch (error) {
-    if (error?.name === "AbortError") throw new Error(`Request timed out after ${timeout}s`);
-    throw error;
+  } catch (error2) {
+    if (error2?.name === "AbortError") throw new Error(`Request timed out after ${timeout}s`);
+    throw error2;
   } finally {
     clearTimeout(timer);
   }
@@ -208,8 +335,8 @@ async function extractFirecrawl(urls, apiKey, outputFormat = "markdown", include
         images,
         metadata
       }));
-    } catch (error) {
-      results.push(normalizeExtractResult("firecrawl", url, "", "", void 0, { error: String(error?.message || error) }));
+    } catch (error2) {
+      results.push(normalizeExtractResult("firecrawl", url, "", "", void 0, { error: String(error2?.message || error2) }));
     }
   }
   return { provider: "firecrawl", results };
@@ -240,8 +367,8 @@ async function extractLinkup(urls, apiKey, outputFormat = "markdown", includeIma
         images: includeImages ? normalizeImages(data?.images) : void 0,
         metadata: data?.metadata && typeof data.metadata === "object" ? data.metadata : void 0
       }));
-    } catch (error) {
-      results.push(normalizeExtractResult("linkup", url, "", "", void 0, { error: String(error?.message || error) }));
+    } catch (error2) {
+      results.push(normalizeExtractResult("linkup", url, "", "", void 0, { error: String(error2?.message || error2) }));
     }
   }
   return { provider: "linkup", results };
@@ -375,8 +502,8 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           fallback_errors: errors
         }
       };
-    } catch (error) {
-      errors.push({ provider: currentProvider, error: String(error?.message || error) });
+    } catch (error2) {
+      errors.push({ provider: currentProvider, error: String(error2?.message || error2) });
     }
   }
   return {
@@ -837,10 +964,10 @@ async function httpJson(url, init, timeoutMs = 3e4) {
       throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, res.status, TRANSIENT_HTTP_CODES.has(res.status));
     }
     return data ?? {};
-  } catch (error) {
-    if (error?.name === "AbortError") throw new ProviderRequestError(`Request timed out after ${timeoutMs}ms`, void 0, true);
-    if (error instanceof ProviderRequestError) throw error;
-    throw new ProviderRequestError(`Network error: ${String(error?.message || error)}`, void 0, true);
+  } catch (error2) {
+    if (error2?.name === "AbortError") throw new ProviderRequestError(`Request timed out after ${timeoutMs}ms`, void 0, true);
+    if (error2 instanceof ProviderRequestError) throw error2;
+    throw new ProviderRequestError(`Network error: ${String(error2?.message || error2)}`, void 0, true);
   } finally {
     clearTimeout(timer);
   }
@@ -1592,9 +1719,9 @@ async function executeWithRetry(fn) {
   for (let attempt = 0; attempt < RETRY_BACKOFF_MS.length; attempt += 1) {
     try {
       return await fn();
-    } catch (error) {
-      lastError = error;
-      if (!(error instanceof ProviderRequestError) || !error.transient || error.statusCode === 401 || error.statusCode === 403) break;
+    } catch (error2) {
+      lastError = error2;
+      if (!(error2 instanceof ProviderRequestError) || !error2.transient || error2.statusCode === 401 || error2.statusCode === 403) break;
       if (attempt < RETRY_BACKOFF_MS.length - 1) await sleep(RETRY_BACKOFF_MS[attempt]);
     }
   }
@@ -1677,8 +1804,8 @@ async function executeSearch(runtimeEnv, params) {
         resetProviderHealth(p);
         successes.push([p, result2]);
         if ((result2.results || []).length >= count || errors.length === 0) break;
-      } catch (error) {
-        const message = sanitizeOutput(String(error?.message || error));
+      } catch (error2) {
+        const message = sanitizeOutput(String(error2?.message || error2));
         const cooldown = markProviderFailure(p, message);
         errors.push({ provider: p, error: message, cooldown_seconds: cooldown.cooldown_seconds });
       }
@@ -1708,8 +1835,8 @@ async function executeSearch(runtimeEnv, params) {
     if (result.metadata.dedup_count == null) result.metadata.dedup_count = 0;
     cachePut(query, successfulProvider, count, result, cacheContext);
     return { ok: true, payload: sanitizeOutput(result) };
-  } catch (error) {
-    return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error?.message || error))}` } };
+  } catch (error2) {
+    return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` } };
   }
 }
 async function composeAnswerPayload(runtimeEnv, params) {
@@ -1829,8 +1956,8 @@ function register(api) {
             return { content: [{ type: "text", text: failure.error ? String(failure.error) : JSON.stringify(sanitizeOutput(failure)) }] };
           }
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result.payload)) }] };
-        } catch (error) {
-          return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error?.message || error))}` }] };
+        } catch (error2) {
+          return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` }] };
         }
       }
     },
@@ -1854,8 +1981,8 @@ function register(api) {
           if (payload.error) return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
           if (typeof payload.text === "string") return { content: [{ type: "text", text: payload.text }] };
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
-        } catch (error) {
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ beta: true, error: String(error?.message || error) })) }] };
+        } catch (error2) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ beta: true, error: String(error2?.message || error2) })) }] };
         }
       }
     },
@@ -1884,15 +2011,20 @@ function register(api) {
             runtimeEnv
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
-        } catch (error) {
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };
+        } catch (error2) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error2?.message || error2) })) }] };
         }
       }
     },
     { optional: true }
   );
 }
-var index_default = register;
+var index_default = definePluginEntry({
+  id: "web-search-plus-plugin-v2",
+  name: "Web Search Plus",
+  description: "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis.",
+  register
+});
 export {
   QueryAnalyzer,
   buildCacheKey,
