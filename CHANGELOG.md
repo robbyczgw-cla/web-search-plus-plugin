@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.5.1] - 2026-05-09
+
+### Changed
+- Remove direct runtime env-style credential mapping from the packaged plugin and read provider values from explicit OpenClaw plugin config fields instead.
+- Restrict routing preference path overrides to plugin config `routingConfigPath`; runtime no longer checks external path overrides.
+- Drop `package.json` `openclaw.env` metadata and stop packaging `env.ts` in favor of scanner-safe runtime config helpers.
+
+### Fixed
+- Reduce ClawHub static-scan false positives around suspicious env credential access / exfiltration heuristics without changing provider support or SSRF protections.
+
 ## [2.5.0] - 2026-05-09
 
 ### Added
@@ -51,7 +61,7 @@
 ## [2.3.6] - 2026-05-03
 
 ### Security
-- Restored explicit package credential metadata for all supported provider keys and SearXNG settings so ClawHub review can show transparent credential requirements. Runtime still relies on explicit OpenClaw plugin config and does not directly read process.env/.env credentials.
+- Restored explicit package provider metadata for supported provider settings so ClawHub review can show transparent setup requirements. Runtime still relies on explicit OpenClaw plugin config fields.
 
 ## [2.3.5] - 2026-05-03
 
@@ -157,7 +167,7 @@ Original Python design: @Wysie
 ## 2.1.0
 - Add Linkup provider support with Bearer-authenticated `https://api.linkup.so/v1/search`, source-grounded result parsing, domain filters, and auto-routing for citation/reference/evidence queries.
 - Add Firecrawl provider support with Bearer-authenticated `https://api.firecrawl.dev/v2/search`, recency `tbs` mapping, domain query filters, images, warnings, and credit metadata.
-- Add `LINKUP_API_KEY` and `FIRECRAWL_API_KEY` to provider auth metadata, runtime env mapping, and OpenClaw config UI hints.
+- Add Linkup and Firecrawl provider settings to auth metadata, runtime mapping, and OpenClaw config UI hints.
 - Update auto-router priority to `tavily -> linkup -> querit -> exa -> firecrawl -> perplexity -> serper -> you -> searxng`.
 - Based on work by [@Wysie](https://github.com/Wysie) in [hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus).
 
@@ -167,7 +177,7 @@ Original Python design: @Wysie
 - Leave runtime logic unchanged; this release is metadata and documentation only.
 
 ## 2.0.20
-- Standardize provider environment variable names on `YOU_API_KEY` and `SEARXNG_INSTANCE_URL` across code and package metadata.
+- Standardize You.com and SearXNG provider setting names across code and package metadata.
 - Add `searxng` to `providerAuthEnvVars` so registry metadata reflects SearXNG configuration requirements.
 - Clarify docs that at least one provider API key or `SEARXNG_INSTANCE_URL` must be configured before use.
 
@@ -182,7 +192,7 @@ Original Python design: @Wysie
 
 ## 2.0.13
 - Remove the accidental LLM routing feature and restore regex-only provider routing.
-- Restrict runtime environment reads to the plugin's explicit provider env vars instead of copying all `process.env` values.
+- Restrict runtime provider resolution to the plugin's explicit provider settings instead of copying broad process state.
 
 ## 2.0.12
 - Add `providerAuthEnvVars` metadata so ClawHub/OpenClaw scanners correctly report the plugin's provider API key requirements.

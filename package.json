@@ -1,6 +1,6 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "OpenClaw plugin: one clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis across Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity, Kilo gateway, You.com, and SearXNG.",
   "type": "module",
   "main": "index.ts",
@@ -22,23 +22,7 @@
     },
     "runtimeExtensions": [
       "./dist/index.js"
-    ],
-    "env": {
-      "SERPER_API_KEY": "optional Serper/Google search provider API key; only used when configured/enabled for this plugin",
-      "BRAVE_API_KEY": "optional Brave Search provider API key; only used when configured/enabled for this plugin",
-      "BRAVE_SAFESEARCH": "optional Brave Search safesearch default: strict, moderate, or off",
-      "TAVILY_API_KEY": "optional Tavily research search/extraction provider API key; only used when configured/enabled for this plugin",
-      "LINKUP_API_KEY": "optional Linkup source-grounded search/extraction provider API key; only used when configured/enabled for this plugin",
-      "QUERIT_API_KEY": "optional Querit multilingual search provider API key; only used when configured/enabled for this plugin",
-      "EXA_API_KEY": "optional Exa neural search/extraction provider API key; only used when configured/enabled for this plugin",
-      "FIRECRAWL_API_KEY": "optional Firecrawl search/extraction provider API key; only used when configured/enabled for this plugin",
-      "PERPLEXITY_API_KEY": "optional Perplexity direct API key; only used when configured/enabled for this plugin",
-      "KILOCODE_API_KEY": "optional Kilo gateway key for Perplexity-compatible search; only used when configured/enabled for this plugin",
-      "YOU_API_KEY": "optional You.com search/extraction provider API key; only used when configured/enabled for this plugin",
-      "SEARXNG_INSTANCE_URL": "optional self-hosted SearXNG instance URL; search queries are sent to this URL when configured/enabled",
-      "SEARXNG_ALLOW_PRIVATE": "optional danger flag; true disables SSRF/private-network protection for SearXNG and should only be used on fully trusted private networks",
-      "WSP_ENABLE_WEB_ANSWER": "optional beta toggle for web_answer_plus; set via plugin config enableWebAnswer"
-    }
+    ]
   },
   "files": [
     "index.ts",
@@ -46,7 +30,7 @@
     "paths.ts",
     "storage.ts",
     "routing-config.ts",
-    "env.ts",
+    "runtime-config.ts",
     "openclaw.plugin.json",
     "dist/index.js"
   ],

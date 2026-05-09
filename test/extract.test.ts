@@ -170,8 +170,8 @@ test("extractPlus auto prefers firecrawl when available", async () => {
     () => mockJsonResponse({ success: true, data: { markdown: "firecrawl content", metadata: {} } }),
     async (calls) => {
       const result = await extractPlus(["https://example.com"], "auto", "markdown", false, false, false, {
-        FIRECRAWL_API_KEY: "fc-test",
-        LINKUP_API_KEY: "linkup-test",
+        firecrawlApiKey: "fc-test",
+        linkupApiKey: "linkup-test",
       });
       assert.equal(result.provider, "firecrawl");
       assert.equal(result.routing?.requested_provider, "auto");
@@ -186,7 +186,7 @@ test("extractPlus auto uses exa when only exa is available", async () => {
     () => mockJsonResponse({ results: [{ url: "https://example.com", text: "exa content" }] }),
     async (calls) => {
       const result = await extractPlus(["https://example.com"], "auto", "markdown", false, false, false, {
-        EXA_API_KEY: "exa-test",
+        exaApiKey: "exa-test",
       });
       assert.equal(result.provider, "exa");
       assert.equal(calls.length, 1);
@@ -223,8 +223,8 @@ test("extractPlus falls back when primary returns only errors", async () => {
     },
     async (calls) => {
       const result = await extractPlus(["https://example.com"], "firecrawl", "markdown", false, false, false, {
-        FIRECRAWL_API_KEY: "fc-test",
-        LINKUP_API_KEY: "linkup-test",
+        firecrawlApiKey: "fc-test",
+        linkupApiKey: "linkup-test",
       });
       assert.equal(result.provider, "linkup");
       assert.equal(result.results[0].content, "fallback content");
@@ -241,7 +241,7 @@ test("extractPlus empty urls returns clean error without provider calls", async 
       throw new Error("fetch should not be called");
     },
     async (calls) => {
-      const result = await extractPlus([], "firecrawl", "markdown", false, false, false, { FIRECRAWL_API_KEY: "fc-test" });
+      const result = await extractPlus([], "firecrawl", "markdown", false, false, false, { firecrawlApiKey: "fc-test" });
       assert.deepEqual(result.results, []);
       assert.equal(result.error, "No URLs provided");
       assert.equal(calls.length, 0);
@@ -256,8 +256,8 @@ test("extractPlus invalid urls return clean error without fallback", async () =>
     },
     async (calls) => {
       const result = await extractPlus(["foo-bar"], "firecrawl", "markdown", false, false, false, {
-        FIRECRAWL_API_KEY: "fc-test",
-        LINKUP_API_KEY: "linkup-test",
+        firecrawlApiKey: "fc-test",
+        linkupApiKey: "linkup-test",
       });
       assert.deepEqual(result.results, []);
       assert.match(String(result.error), /Invalid URL\(s\)/);
@@ -285,7 +285,7 @@ test("extractPlus includes requested_provider when explicit provider succeeds", 
     () => mockJsonResponse({ markdown: "linkup content" }),
     async () => {
       const result = await extractPlus(["https://example.com"], "linkup", "markdown", false, false, false, {
-        LINKUP_API_KEY: "linkup-test",
+        linkupApiKey: "linkup-test",
       });
       assert.equal(result.provider, "linkup");
       assert.equal(result.routing?.requested_provider, "linkup");
@@ -315,7 +315,7 @@ test("web_extract_plus checkFn requires extract-capable provider", () => {
   registered.clear();
   register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { firecrawlApiKey: "fc-test" } });
   assert.equal(registered.get("web_extract_plus").checkFn(), true);
-  assert.equal(hasAnyExtractProviderCredential({ FIRECRAWL_API_KEY: "fc-test" }), true);
+  assert.equal(hasAnyExtractProviderCredential({ firecrawlApiKey: "fc-test" }), true);
 });
 
 test("registered web_extract_plus execute returns JSON payload", async () => {

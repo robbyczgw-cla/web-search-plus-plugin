@@ -1,7 +1,7 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, and SearXNG.",
   "contracts": {
     "tools": [
@@ -173,70 +173,5 @@
       "description": "Optional override for persistent routing behavior. Secrets remain in plugin config; behavior lives in this JSON file.",
       "sensitive": false
     }
-  },
-  "setup": {
-    "providers": [
-      {
-        "id": "serper",
-        "envVars": [
-          "SERPER_API_KEY"
-        ]
-      },
-      {
-        "id": "brave",
-        "envVars": [
-          "BRAVE_API_KEY"
-        ]
-      },
-      {
-        "id": "tavily",
-        "envVars": [
-          "TAVILY_API_KEY"
-        ]
-      },
-      {
-        "id": "linkup",
-        "envVars": [
-          "LINKUP_API_KEY"
-        ]
-      },
-      {
-        "id": "querit",
-        "envVars": [
-          "QUERIT_API_KEY"
-        ]
-      },
-      {
-        "id": "exa",
-        "envVars": [
-          "EXA_API_KEY"
-        ]
-      },
-      {
-        "id": "firecrawl",
-        "envVars": [
-          "FIRECRAWL_API_KEY"
-        ]
-      },
-      {
-        "id": "perplexity",
-        "envVars": [
-          "PERPLEXITY_API_KEY",
-          "KILOCODE_API_KEY"
-        ]
-      },
-      {
-        "id": "you",
-        "envVars": [
-          "YOU_API_KEY"
-        ]
-      },
-      {
-        "id": "searxng",
-        "envVars": [
-          "SEARXNG_INSTANCE_URL"
-        ]
-      }
-    ]
   }
 }

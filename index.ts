@@ -4,7 +4,7 @@ import dns from "dns/promises";
 import net from "net";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { getPluginDir } from "./paths.ts";
-import { getRuntimeEnv } from "./env.ts";
+import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
 import { readJsonFile, writeJsonFile, readCachedJson } from "./storage.ts";
 import { DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
@@ -443,26 +443,26 @@ function buildAutoFallbackOrder(primary: ProviderName, availableProviders: Provi
   return unique;
 }
 
-function getApiKey(provider: ProviderName, env: Record<string, string>): string | undefined {
+function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string | undefined {
   const keyMap: Record<ProviderName, string | undefined> = {
-    serper: env.SERPER_API_KEY,
-    brave: env.BRAVE_API_KEY,
-    tavily: env.TAVILY_API_KEY,
-    querit: env.QUERIT_API_KEY,
-    exa: env.EXA_API_KEY,
-    linkup: env.LINKUP_API_KEY,
-    firecrawl: env.FIRECRAWL_API_KEY,
-    perplexity: env.KILOCODE_API_KEY || env.PERPLEXITY_API_KEY,
-    you: env.YOU_API_KEY,
-    searxng: env.SEARXNG_INSTANCE_URL,
+    serper: runtimeConfig.serperApiKey,
+    brave: runtimeConfig.braveApiKey,
+    tavily: runtimeConfig.tavilyApiKey,
+    querit: runtimeConfig.queritApiKey,
+    exa: runtimeConfig.exaApiKey,
+    linkup: runtimeConfig.linkupApiKey,
+    firecrawl: runtimeConfig.firecrawlApiKey,
+    perplexity: runtimeConfig.kilocodeApiKey || runtimeConfig.perplexityApiKey,
+    you: runtimeConfig.youApiKey,
+    searxng: runtimeConfig.searxngInstanceUrl,
   };
   return keyMap[provider];
 }
 
-function validateApiKey(provider: ProviderName, env: Record<string, string>): string {
-  const key = getApiKey(provider, env);
+function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string {
+  const key = getApiKey(provider, runtimeConfig);
   if (!key) {
-    if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (SEARXNG_INSTANCE_URL or pluginConfig.searxngInstanceUrl)");
+    if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -536,9 +536,9 @@ function normalizeAnswerFreshness(query: string, requested: AnswerFreshness = "n
   return { requested: value, applied: "none", reason: "no freshness signals detected" };
 }
 
-function preferredAnswerExtractProvider(env: Record<string, string>): "auto" | "linkup" | null {
-  if ((env.LINKUP_API_KEY || "").trim()) return "linkup";
-  if (hasAnyExtractProviderCredential(env)) return "auto";
+function preferredAnswerExtractProvider(runtimeConfig: RuntimeConfig): "auto" | "linkup" | null {
+  if ((runtimeConfig.linkupApiKey || "").trim()) return "linkup";
+  if (hasAnyExtractProviderCredential(runtimeConfig)) return "auto";
   return null;
 }
 
@@ -618,7 +618,7 @@ async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Prom
   }
 }
 
-async function validateSearxngUrl(input: string, env: Record<string, string>): Promise<string> {
+async function validateSearxngUrl(input: string, runtimeConfig: RuntimeConfig): Promise<string> {
   let u: URL;
   try {
     u = new URL(input);
@@ -631,9 +631,9 @@ async function validateSearxngUrl(input: string, env: Record<string, string>): P
   const blockedHosts = new Set(["169.254.169.254", "metadata.google.internal", "metadata.internal"]);
   if (blockedHosts.has(u.hostname)) throw new ProviderConfigError("SearXNG URL blocked: metadata endpoint");
 
-  // WARNING: Setting SEARXNG_ALLOW_PRIVATE=true disables SSRF protection for SearXNG.
+  // WARNING: Setting pluginConfig.searxngAllowPrivate=true disables SSRF protection for SearXNG.
   // Only enable on fully trusted private networks.
-  const allowPrivate = ["1", "true", "yes"].includes(String(env.SEARXNG_ALLOW_PRIVATE || "").trim().toLowerCase());
+  const allowPrivate = runtimeConfig.searxngAllowPrivate === true;
   if (!allowPrivate) {
     const records = await dns.lookup(u.hostname, { all: true, verbatim: true }).catch(() => [] as dns.LookupAddress[]);
     if (!records.length && net.isIP(u.hostname)) records.push({ address: u.hostname, family: net.isIP(u.hostname) as 4 | 6 });
@@ -1124,8 +1124,8 @@ async function searchYou(query: string, apiKey: string, maxResults: number, time
   return { provider: "you", query, results, news: news.slice(0, 5), images: [], answer, metadata: { search_uuid: data?.metadata?.search_uuid, latency: data?.metadata?.latency } };
 }
 
-async function searchSearxng(query: string, instanceUrl: string, maxResults: number, timeRange: string | undefined, env: Record<string, string>): Promise<SearchResponse> {
-  const base = await validateSearxngUrl(instanceUrl, env);
+async function searchSearxng(query: string, instanceUrl: string, maxResults: number, timeRange: string | undefined, runtimeConfig: RuntimeConfig): Promise<SearchResponse> {
+  const base = await validateSearxngUrl(instanceUrl, runtimeConfig);
   const url = new URL(`${base}/search`);
   url.searchParams.set("q", query);
   url.searchParams.set("format", "json");
@@ -1156,7 +1156,7 @@ async function executeWithRetry(fn: () => Promise<SearchResponse>): Promise<Sear
   throw lastError;
 }
 
-async function executeSearch(runtimeEnv: Record<string, string>, params: ToolParams, pluginConfig: Record<string, any> = {}): Promise<SearchExecutionResult> {
+async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, pluginConfig: Record<string, any> = {}): Promise<SearchExecutionResult> {
   try {
     const query = String(params.query || "").trim();
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
@@ -1168,10 +1168,10 @@ async function executeSearch(runtimeEnv: Record<string, string>, params: ToolPar
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
     const routingConfig = routingConfigResult.config;
-    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeEnv));
+    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider) => !routingConfig.disabled_providers.includes(provider));
     const braveOptions = {
-      safesearch: runtimeEnv.BRAVE_SAFESEARCH,
+      safesearch: runtimeConfig.braveSafesearch,
     };
 
     if (!configuredProviders.length) {
@@ -1252,7 +1252,7 @@ async function executeSearch(runtimeEnv: Record<string, string>, params: ToolPar
     const successes: Array<[string, SearchResponse]> = [];
 
     const runProvider = async (p: ProviderName): Promise<SearchResponse> => {
-      const key = validateApiKey(p, runtimeEnv);
+      const key = validateApiKey(p, runtimeConfig);
       if (p === "serper") return searchSerper(query, key, count, timeRange);
       if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
       if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
@@ -1265,7 +1265,7 @@ async function executeSearch(runtimeEnv: Record<string, string>, params: ToolPar
       if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
-      return searchSearxng(query, key, count, timeRange, runtimeEnv);
+      return searchSearxng(query, key, count, timeRange, runtimeConfig);
     };
 
     for (const p of eligibleProviders) {
@@ -1316,7 +1316,7 @@ async function executeSearch(runtimeEnv: Record<string, string>, params: ToolPar
   }
 }
 
-async function composeAnswerPayload(runtimeEnv: Record<string, string>, params: AnswerParams, pluginConfig: Record<string, any> = {}): Promise<Json> {
+async function composeAnswerPayload(runtimeConfig: RuntimeConfig, params: AnswerParams, pluginConfig: Record<string, any> = {}): Promise<Json> {
   const query = String(params.query || "").trim();
   if (!query) return { beta: true, stage: "input", error: "query is required" };
 
@@ -1330,7 +1330,7 @@ async function composeAnswerPayload(runtimeEnv: Record<string, string>, params: 
   const warnings: string[] = [];
   if (requestedExtracts > extractCap) warnings.push(`max_extracts capped at ${extractCap} to protect provider budget.`);
 
-  const searchResult = await executeSearch(runtimeEnv, {
+  const searchResult = await executeSearch(runtimeConfig, {
     query,
     provider: "auto",
     count: sourceCount,
@@ -1345,13 +1345,13 @@ async function composeAnswerPayload(runtimeEnv: Record<string, string>, params: 
   const searchPayload = searchResult.payload as SearchResponse;
   const normalizedSources = normalizeAnswerSources(searchPayload.results || [], searchPayload.provider, sourceCount);
   const urlsToExtract = normalizedSources.slice(0, extractCount).map((source) => source.url).filter(Boolean);
-  const extractProvider = preferredAnswerExtractProvider(runtimeEnv);
+  const extractProvider = preferredAnswerExtractProvider(runtimeConfig);
   let extractPayload: any = { provider: null, results: [] };
 
   if (urlsToExtract.length && !extractProvider) {
     warnings.push("No extraction-capable provider is configured, so this answer uses search snippets only. Add Linkup (preferred), Firecrawl, Tavily, Exa, or You.com for fuller cited answers.");
   } else if (urlsToExtract.length && extractProvider) {
-    extractPayload = await extractPlus(urlsToExtract, extractProvider, "markdown", false, false, false, runtimeEnv);
+    extractPayload = await extractPlus(urlsToExtract, extractProvider, "markdown", false, false, false, runtimeConfig);
     if (extractPayload?.error) warnings.push(`Extraction issue: ${extractPayload.error}`);
     const extractedByUrl = new Map<string, any>((extractPayload.results || []).map((item: any) => [item.url, item]));
     for (const source of normalizedSources.slice(0, extractCount)) {
@@ -1506,8 +1506,8 @@ export function register(api: any) {
       async execute(_id: string, params: ToolParams) {
         try {
           const pluginConfig: Record<string, any> = (api.pluginConfig ?? {}) as Record<string, any>;
-          const runtimeEnv = getRuntimeEnv(pluginConfig);
-          const result = await executeSearch(runtimeEnv, params, pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const result = await executeSearch(runtimeConfig, params, pluginConfig);
           if (!result.ok) {
             const failure = result.payload as Json;
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(failure)) }] };
@@ -1547,14 +1547,14 @@ export function register(api: any) {
       parameters: ANSWER_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig = (api.pluginConfig ?? {}) as Record<string, any>;
-        const runtimeEnv = getRuntimeEnv(pluginConfig);
-        return ["1", "true", "yes", "on"].includes(String(runtimeEnv.WSP_ENABLE_WEB_ANSWER || "").toLowerCase());
+        const runtimeConfig = getRuntimeConfig(pluginConfig);
+        return runtimeConfig.enableWebAnswer === true;
       },
       async execute(_id: string, params: AnswerParams) {
         try {
           const pluginConfig = (api.pluginConfig ?? {}) as Record<string, any>;
-          const runtimeEnv = getRuntimeEnv(pluginConfig);
-          const payload = await composeAnswerPayload(runtimeEnv, params, pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const payload = await composeAnswerPayload(runtimeConfig, params, pluginConfig);
           if (payload.error) return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
           if (typeof payload.text === "string") return { content: [{ type: "text", text: payload.text }] };
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
@@ -1574,12 +1574,12 @@ export function register(api: any) {
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
-        return hasAnyExtractProviderCredential(getRuntimeEnv(pluginConfig));
+        return hasAnyExtractProviderCredential(getRuntimeConfig(pluginConfig));
       },
       async execute(_id: string, params: any) {
         try {
           const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
-          const runtimeEnv = getRuntimeEnv(pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig);
           const result = await extractPlus(
             Array.isArray(params?.urls) ? params.urls : typeof params?.urls === "string" ? [params.urls] : [],
             params?.provider || "auto",
@@ -1587,7 +1587,7 @@ export function register(api: any) {
             Boolean(params?.include_images),
             Boolean(params?.include_raw_html),
             Boolean(params?.render_js),
-            runtimeEnv,
+            runtimeConfig,
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error: any) {

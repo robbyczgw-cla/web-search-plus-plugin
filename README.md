@@ -61,7 +61,7 @@ Compared with the built-in `web_search`, this plugin adds:
 
 ## Configuration
 
-Use explicit OpenClaw plugin config fields. The runtime keeps the OpenClaw config-field model and does **not** depend on direct `.env` / `process.env` secret reads.
+Use explicit OpenClaw plugin config fields. The runtime uses only plugin config fields for credentials.
 
 ### Search provider fields
 
@@ -145,7 +145,6 @@ Default path:
 
 - `config/routing-preferences.json` inside the plugin directory
 - override with plugin config `routingConfigPath`
-- advanced override: `WSP_ROUTING_CONFIG_PATH`
 
 Supported actions:
 
