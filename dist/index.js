@@ -142,31 +142,29 @@ function getPluginDir() {
   return process.cwd();
 }
 
-// env.ts
-var CONFIG_KEY_MAP = {
-  serperApiKey: "SERPER_API_KEY",
-  braveApiKey: "BRAVE_API_KEY",
-  braveSafesearch: "BRAVE_SAFESEARCH",
-  tavilyApiKey: "TAVILY_API_KEY",
-  linkupApiKey: "LINKUP_API_KEY",
-  queritApiKey: "QUERIT_API_KEY",
-  exaApiKey: "EXA_API_KEY",
-  firecrawlApiKey: "FIRECRAWL_API_KEY",
-  perplexityApiKey: "PERPLEXITY_API_KEY",
-  kilocodeApiKey: "KILOCODE_API_KEY",
-  youApiKey: "YOU_API_KEY",
-  searxngInstanceUrl: "SEARXNG_INSTANCE_URL",
-  searxngAllowPrivate: "SEARXNG_ALLOW_PRIVATE",
-  enableWebAnswer: "WSP_ENABLE_WEB_ANSWER"
-};
-function getRuntimeEnv(pluginConfig) {
-  const mapped = {};
-  for (const [cfgKey, envKey] of Object.entries(CONFIG_KEY_MAP)) {
-    const val = pluginConfig?.[cfgKey];
-    if (typeof val === "string" && val) mapped[envKey] = val;
-    else if (typeof val === "boolean") mapped[envKey] = String(val);
-  }
-  return mapped;
+// runtime-config.ts
+function maybeString(value) {
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : void 0;
+}
+function getRuntimeConfig(pluginConfig) {
+  return {
+    serperApiKey: maybeString(pluginConfig?.serperApiKey),
+    braveApiKey: maybeString(pluginConfig?.braveApiKey),
+    braveSafesearch: maybeString(pluginConfig?.braveSafesearch),
+    tavilyApiKey: maybeString(pluginConfig?.tavilyApiKey),
+    linkupApiKey: maybeString(pluginConfig?.linkupApiKey),
+    queritApiKey: maybeString(pluginConfig?.queritApiKey),
+    exaApiKey: maybeString(pluginConfig?.exaApiKey),
+    firecrawlApiKey: maybeString(pluginConfig?.firecrawlApiKey),
+    perplexityApiKey: maybeString(pluginConfig?.perplexityApiKey),
+    kilocodeApiKey: maybeString(pluginConfig?.kilocodeApiKey),
+    youApiKey: maybeString(pluginConfig?.youApiKey),
+    searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
+    searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0,
+    enableWebAnswer: pluginConfig?.enableWebAnswer === true ? true : void 0
+  };
 }
 
 // storage.ts
@@ -297,8 +295,8 @@ function quarantineFile(file) {
   return brokenPath;
 }
 function resolveRoutingConfigPath(pluginConfig = {}) {
-  const override = pluginConfig?.routingConfigPath || process.env.WSP_ROUTING_CONFIG_PATH;
-  return path3.resolve(String(override || path3.join(getPluginDir(), "config", "routing-preferences.json")));
+  const override = typeof pluginConfig?.routingConfigPath === "string" ? pluginConfig.routingConfigPath.trim() : "";
+  return path3.resolve(override || path3.join(getPluginDir(), "config", "routing-preferences.json"));
 }
 function validateRoutingPreferences(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -427,18 +425,18 @@ async function requestJson(url, init, timeout = 30) {
     clearTimeout(timer);
   }
 }
-function getExtractApiKey(provider, env) {
+function getExtractApiKey(provider, runtimeConfig) {
   const keyMap = {
-    firecrawl: env.FIRECRAWL_API_KEY,
-    linkup: env.LINKUP_API_KEY,
-    tavily: env.TAVILY_API_KEY,
-    exa: env.EXA_API_KEY,
-    you: env.YOU_API_KEY
+    firecrawl: runtimeConfig.firecrawlApiKey,
+    linkup: runtimeConfig.linkupApiKey,
+    tavily: runtimeConfig.tavilyApiKey,
+    exa: runtimeConfig.exaApiKey,
+    you: runtimeConfig.youApiKey
   };
   return keyMap[provider];
 }
-function hasAnyExtractProviderCredential(env) {
-  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, env)));
+function hasAnyExtractProviderCredential(runtimeConfig) {
+  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)));
 }
 async function extractFirecrawl(urls, apiKey, outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, apiUrl = "https://api.firecrawl.dev/v2/scrape", timeout = 60) {
   const formats = outputFormat === "html" ? ["html"] : ["markdown"];
@@ -593,7 +591,7 @@ async function extractYou(urls, apiKey, outputFormat = "markdown", includeImages
   });
   return { provider: "you", results };
 }
-async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, env = {}) {
+async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, runtimeConfig = {}) {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
     return {
@@ -620,7 +618,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       errors.push({ provider: currentProvider, error: `Provider ${currentProvider} does not support extraction` });
       continue;
     }
-    const providerCredential = getExtractApiKey(currentProvider, env);
+    const providerCredential = getExtractApiKey(currentProvider, runtimeConfig);
     if (!providerCredential) {
       errors.push({ provider: currentProvider, error: "missing_api_key" });
       continue;
@@ -996,25 +994,25 @@ function buildAutoFallbackOrder(primary, availableProviders, routingConfig) {
   }
   return unique;
 }
-function getApiKey(provider, env) {
+function getApiKey(provider, runtimeConfig) {
   const keyMap = {
-    serper: env.SERPER_API_KEY,
-    brave: env.BRAVE_API_KEY,
-    tavily: env.TAVILY_API_KEY,
-    querit: env.QUERIT_API_KEY,
-    exa: env.EXA_API_KEY,
-    linkup: env.LINKUP_API_KEY,
-    firecrawl: env.FIRECRAWL_API_KEY,
-    perplexity: env.KILOCODE_API_KEY || env.PERPLEXITY_API_KEY,
-    you: env.YOU_API_KEY,
-    searxng: env.SEARXNG_INSTANCE_URL
+    serper: runtimeConfig.serperApiKey,
+    brave: runtimeConfig.braveApiKey,
+    tavily: runtimeConfig.tavilyApiKey,
+    querit: runtimeConfig.queritApiKey,
+    exa: runtimeConfig.exaApiKey,
+    linkup: runtimeConfig.linkupApiKey,
+    firecrawl: runtimeConfig.firecrawlApiKey,
+    perplexity: runtimeConfig.kilocodeApiKey || runtimeConfig.perplexityApiKey,
+    you: runtimeConfig.youApiKey,
+    searxng: runtimeConfig.searxngInstanceUrl
   };
   return keyMap[provider];
 }
-function validateApiKey(provider, env) {
-  const key = getApiKey(provider, env);
+function validateApiKey(provider, runtimeConfig) {
+  const key = getApiKey(provider, runtimeConfig);
   if (!key) {
-    if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (SEARXNG_INSTANCE_URL or pluginConfig.searxngInstanceUrl)");
+    if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -1078,9 +1076,9 @@ function normalizeAnswerFreshness(query, requested = "none") {
   if (monthTerms.some((term) => q.includes(term))) return { requested: value, applied: "month", reason: "query looked time-sensitive" };
   return { requested: value, applied: "none", reason: "no freshness signals detected" };
 }
-function preferredAnswerExtractProvider(env) {
-  if ((env.LINKUP_API_KEY || "").trim()) return "linkup";
-  if (hasAnyExtractProviderCredential(env)) return "auto";
+function preferredAnswerExtractProvider(runtimeConfig) {
+  if ((runtimeConfig.linkupApiKey || "").trim()) return "linkup";
+  if (hasAnyExtractProviderCredential(runtimeConfig)) return "auto";
   return null;
 }
 function cleanAnswerEvidence(input) {
@@ -1161,7 +1159,7 @@ async function httpJson(url, init, timeoutMs = 3e4) {
     clearTimeout(timer);
   }
 }
-async function validateSearxngUrl(input, env) {
+async function validateSearxngUrl(input, runtimeConfig) {
   let u;
   try {
     u = new URL(input);
@@ -1172,7 +1170,7 @@ async function validateSearxngUrl(input, env) {
   if (!u.hostname) throw new ProviderConfigError("SearXNG URL must include a hostname");
   const blockedHosts = /* @__PURE__ */ new Set(["169.254.169.254", "metadata.google.internal", "metadata.internal"]);
   if (blockedHosts.has(u.hostname)) throw new ProviderConfigError("SearXNG URL blocked: metadata endpoint");
-  const allowPrivate = ["1", "true", "yes"].includes(String(env.SEARXNG_ALLOW_PRIVATE || "").trim().toLowerCase());
+  const allowPrivate = runtimeConfig.searxngAllowPrivate === true;
   if (!allowPrivate) {
     const records = await dns.lookup(u.hostname, { all: true, verbatim: true }).catch(() => []);
     if (!records.length && net.isIP(u.hostname)) records.push({ address: u.hostname, family: net.isIP(u.hostname) });
@@ -1886,8 +1884,8 @@ async function searchYou(query, apiKey, maxResults, timeRange) {
   const answer = results.slice(0, 3).map((r) => r.snippet).filter(Boolean).join(" ").slice(0, 1e3);
   return { provider: "you", query, results, news: news.slice(0, 5), images: [], answer, metadata: { search_uuid: data?.metadata?.search_uuid, latency: data?.metadata?.latency } };
 }
-async function searchSearxng(query, instanceUrl, maxResults, timeRange, env) {
-  const base = await validateSearxngUrl(instanceUrl, env);
+async function searchSearxng(query, instanceUrl, maxResults, timeRange, runtimeConfig) {
+  const base = await validateSearxngUrl(instanceUrl, runtimeConfig);
   const url = new URL(`${base}/search`);
   url.searchParams.set("q", query);
   url.searchParams.set("format", "json");
@@ -1916,7 +1914,7 @@ async function executeWithRetry(fn) {
   }
   throw lastError;
 }
-async function executeSearch(runtimeEnv, params, pluginConfig = {}) {
+async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
   try {
     const query = String(params.query || "").trim();
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
@@ -1927,10 +1925,10 @@ async function executeSearch(runtimeEnv, params, pluginConfig = {}) {
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : void 0;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
     const routingConfig = routingConfigResult.config;
-    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeEnv));
+    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider2) => !routingConfig.disabled_providers.includes(provider2));
     const braveOptions = {
-      safesearch: runtimeEnv.BRAVE_SAFESEARCH
+      safesearch: runtimeConfig.braveSafesearch
     };
     if (!configuredProviders.length) {
       return { ok: false, payload: { error: "Search failed: no search providers are configured" } };
@@ -2002,7 +2000,7 @@ async function executeSearch(runtimeEnv, params, pluginConfig = {}) {
     const errors = [];
     const successes = [];
     const runProvider = async (p) => {
-      const key = validateApiKey(p, runtimeEnv);
+      const key = validateApiKey(p, runtimeConfig);
       if (p === "serper") return searchSerper(query, key, count, timeRange);
       if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
       if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
@@ -2015,7 +2013,7 @@ async function executeSearch(runtimeEnv, params, pluginConfig = {}) {
       if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
-      return searchSearxng(query, key, count, timeRange, runtimeEnv);
+      return searchSearxng(query, key, count, timeRange, runtimeConfig);
     };
     for (const p of eligibleProviders) {
       try {
@@ -2060,7 +2058,7 @@ async function executeSearch(runtimeEnv, params, pluginConfig = {}) {
     return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` } };
   }
 }
-async function composeAnswerPayload(runtimeEnv, params, pluginConfig = {}) {
+async function composeAnswerPayload(runtimeConfig, params, pluginConfig = {}) {
   const query = String(params.query || "").trim();
   if (!query) return { beta: true, stage: "input", error: "query is required" };
   const mode = params.mode === "deep" ? "deep" : "quick";
@@ -2072,7 +2070,7 @@ async function composeAnswerPayload(runtimeEnv, params, pluginConfig = {}) {
   const freshness = normalizeAnswerFreshness(query, params.freshness || "none");
   const warnings = [];
   if (requestedExtracts > extractCap) warnings.push(`max_extracts capped at ${extractCap} to protect provider budget.`);
-  const searchResult = await executeSearch(runtimeEnv, {
+  const searchResult = await executeSearch(runtimeConfig, {
     query,
     provider: "auto",
     count: sourceCount,
@@ -2086,12 +2084,12 @@ async function composeAnswerPayload(runtimeEnv, params, pluginConfig = {}) {
   const searchPayload = searchResult.payload;
   const normalizedSources = normalizeAnswerSources(searchPayload.results || [], searchPayload.provider, sourceCount);
   const urlsToExtract = normalizedSources.slice(0, extractCount).map((source) => source.url).filter(Boolean);
-  const extractProvider = preferredAnswerExtractProvider(runtimeEnv);
+  const extractProvider = preferredAnswerExtractProvider(runtimeConfig);
   let extractPayload = { provider: null, results: [] };
   if (urlsToExtract.length && !extractProvider) {
     warnings.push("No extraction-capable provider is configured, so this answer uses search snippets only. Add Linkup (preferred), Firecrawl, Tavily, Exa, or You.com for fuller cited answers.");
   } else if (urlsToExtract.length && extractProvider) {
-    extractPayload = await extractPlus(urlsToExtract, extractProvider, "markdown", false, false, false, runtimeEnv);
+    extractPayload = await extractPlus(urlsToExtract, extractProvider, "markdown", false, false, false, runtimeConfig);
     if (extractPayload?.error) warnings.push(`Extraction issue: ${extractPayload.error}`);
     const extractedByUrl = new Map((extractPayload.results || []).map((item) => [item.url, item]));
     for (const source of normalizedSources.slice(0, extractCount)) {
@@ -2238,8 +2236,8 @@ function register(api) {
       async execute(_id, params) {
         try {
           const pluginConfig = api.pluginConfig ?? {};
-          const runtimeEnv = getRuntimeEnv(pluginConfig);
-          const result = await executeSearch(runtimeEnv, params, pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const result = await executeSearch(runtimeConfig, params, pluginConfig);
           if (!result.ok) {
             const failure = result.payload;
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(failure)) }] };
@@ -2275,14 +2273,14 @@ function register(api) {
       parameters: ANSWER_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig = api.pluginConfig ?? {};
-        const runtimeEnv = getRuntimeEnv(pluginConfig);
-        return ["1", "true", "yes", "on"].includes(String(runtimeEnv.WSP_ENABLE_WEB_ANSWER || "").toLowerCase());
+        const runtimeConfig = getRuntimeConfig(pluginConfig);
+        return runtimeConfig.enableWebAnswer === true;
       },
       async execute(_id, params) {
         try {
           const pluginConfig = api.pluginConfig ?? {};
-          const runtimeEnv = getRuntimeEnv(pluginConfig);
-          const payload = await composeAnswerPayload(runtimeEnv, params, pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const payload = await composeAnswerPayload(runtimeConfig, params, pluginConfig);
           if (payload.error) return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
           if (typeof payload.text === "string") return { content: [{ type: "text", text: payload.text }] };
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
@@ -2300,12 +2298,12 @@ function register(api) {
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig = api.pluginConfig ?? {};
-        return hasAnyExtractProviderCredential(getRuntimeEnv(pluginConfig));
+        return hasAnyExtractProviderCredential(getRuntimeConfig(pluginConfig));
       },
       async execute(_id, params) {
         try {
           const pluginConfig = api.pluginConfig ?? {};
-          const runtimeEnv = getRuntimeEnv(pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig);
           const result = await extractPlus(
             Array.isArray(params?.urls) ? params.urls : typeof params?.urls === "string" ? [params.urls] : [],
             params?.provider || "auto",
@@ -2313,7 +2311,7 @@ function register(api) {
             Boolean(params?.include_images),
             Boolean(params?.include_raw_html),
             Boolean(params?.render_js),
-            runtimeEnv
+            runtimeConfig
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error2) {

@@ -111,8 +111,8 @@ function quarantineFile(file: string): string | null {
 }
 
 export function resolveRoutingConfigPath(pluginConfig: Record<string, any> = {}): string {
-  const override = pluginConfig?.routingConfigPath || process.env.WSP_ROUTING_CONFIG_PATH;
-  return path.resolve(String(override || path.join(getPluginDir(), "config", "routing-preferences.json")));
+  const override = typeof pluginConfig?.routingConfigPath === "string" ? pluginConfig.routingConfigPath.trim() : "";
+  return path.resolve(override || path.join(getPluginDir(), "config", "routing-preferences.json"));
 }
 
 export function validateRoutingPreferences(raw: unknown): RoutingPreferences {

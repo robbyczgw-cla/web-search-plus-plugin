@@ -1,3 +1,5 @@
+import type { RuntimeConfig } from "./runtime-config.ts";
+
 type Json = Record<string, any>;
 
 export type ExtractProviderName = "firecrawl" | "linkup" | "tavily" | "exa" | "you";
@@ -121,19 +123,19 @@ async function requestJson(url: string, init: RequestInit, timeout = 30): Promis
   }
 }
 
-function getExtractApiKey(provider: ExtractProviderName, env: Record<string, string>): string | undefined {
+function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeConfig): string | undefined {
   const keyMap: Record<ExtractProviderName, string | undefined> = {
-    firecrawl: env.FIRECRAWL_API_KEY,
-    linkup: env.LINKUP_API_KEY,
-    tavily: env.TAVILY_API_KEY,
-    exa: env.EXA_API_KEY,
-    you: env.YOU_API_KEY,
+    firecrawl: runtimeConfig.firecrawlApiKey,
+    linkup: runtimeConfig.linkupApiKey,
+    tavily: runtimeConfig.tavilyApiKey,
+    exa: runtimeConfig.exaApiKey,
+    you: runtimeConfig.youApiKey,
   };
   return keyMap[provider];
 }
 
-export function hasAnyExtractProviderCredential(env: Record<string, string>): boolean {
-  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, env)));
+export function hasAnyExtractProviderCredential(runtimeConfig: RuntimeConfig): boolean {
+  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)));
 }
 
 export async function extractFirecrawl(
@@ -360,7 +362,7 @@ export async function extractPlus(
   includeImages = false,
   includeRawHtml = false,
   renderJs = false,
-  env: Record<string, string> = {},
+  runtimeConfig: RuntimeConfig = {},
 ): Promise<ExtractResponse> {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
@@ -394,7 +396,7 @@ export async function extractPlus(
       continue;
     }
 
-    const providerCredential = getExtractApiKey(currentProvider, env);
+    const providerCredential = getExtractApiKey(currentProvider, runtimeConfig);
     if (!providerCredential) {
       errors.push({ provider: currentProvider, error: "missing_api_key" });
       continue;

@@ -60,7 +60,7 @@ Examples:
 
 ### 2. Config
 
-The ClawPack runtime reads provider credentials from explicit OpenClaw plugin config fields only. Package metadata still declares the matching provider env names for ClawHub transparency, but the bundled runtime does not directly read `.env` or `process.env` credentials.
+The bundled runtime reads provider values from explicit OpenClaw plugin config fields and does not directly read external credential state.
 
 This keeps credential access explicit and avoids mixing plugin runtime behavior with host-wide environment state.
 
