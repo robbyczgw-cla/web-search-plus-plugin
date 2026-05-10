@@ -1,5 +1,9 @@
 # web-search-plus-plugin-v2
 
+<p align="center">
+  <img src="docs/assets/web-search-plus-logo.png" alt="web search plus logo" width="180">
+</p>
+
 Native OpenClaw plugin for one clean set of web tools.
 
 Current version: **2.5.0**
