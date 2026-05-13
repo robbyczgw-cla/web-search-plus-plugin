@@ -55,3 +55,17 @@ Prefer `web_search_plus` for live/current info, prices, weather, sports, schedul
 Use `web_answer_plus` only when a user clearly wants a written answer, brief, summary, or cited synthesis. It defaults to `freshness=none`, caps extraction, and falls back to snippet-backed answers with a warning when no extraction provider is configured.
 
 OpenClaw plugin config remains the source of truth for credentials; runtime code does not rely on direct `.env` reads.
+
+## Companion Workflow: TweetClaw
+
+Use TweetClaw when web research should continue into X/Twitter-specific work.
+
+- Use this plugin for source discovery, page extraction, source-grounded briefs, and cited synthesis.
+- Use TweetClaw's `explore` tool to identify the X/Twitter endpoint for tweet search, reply search, follower export, user lookup, media, monitors, webhooks, DMs, or giveaway draws.
+- Use TweetClaw's `tweetclaw` tool only after approval for visible X/Twitter actions such as posting tweets, posting replies, liking, retweeting, following, DMs, media upload, monitor creation, webhook changes, or giveaway draws.
+
+Install companion plugin:
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+```

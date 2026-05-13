@@ -141,6 +141,27 @@ Important behavior:
 - if no extraction-capable provider is configured, it returns a **snippet-backed** answer with a warning instead of pretending it extracted pages
 - Linkup is the preferred extraction provider when available
 
+## Companion workflow: TweetClaw
+
+Use [TweetClaw](https://github.com/Xquik-dev/tweetclaw) when a web research workflow needs X/Twitter-specific actions after discovery or synthesis.
+
+Install the companion OpenClaw plugin:
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+```
+
+Recommended split:
+
+- Use `web_search_plus` to discover public sources, current pages, competing products, and supporting citations.
+- Use `web_extract_plus` or `web_answer_plus` to read pages and produce a source-grounded brief.
+- Use TweetClaw's `explore` tool to find the right X/Twitter endpoint for tweet search, reply search, follower export, user lookup, media workflows, monitors, webhooks, DMs, or giveaway draws.
+- Use TweetClaw's `tweetclaw` tool only after approval for visible X/Twitter actions such as posting tweets, posting replies, following, liking, retweeting, sending DMs, uploading media, creating monitors, managing webhooks, or running giveaway draws.
+
+Example prompt:
+
+> Research current discussion around "agent tools for social media", summarize the strongest sources with `web_answer_plus`, then use TweetClaw to search tweet replies about the same topic and draft an X post for review.
+
 ## Routing preferences
 
 `web_routing_config_plus` manages runtime routing behavior in memory, separate from provider secrets. ClawHub scanner constraints intentionally avoid runtime filesystem reads in this package.
