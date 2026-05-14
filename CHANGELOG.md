@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.5.3] - 2026-05-14
+
+### Fixed
+- Split `perplexity` and `kilo-perplexity` into distinct providers across routing, credential validation, defaults, and request execution.
+- Route direct `perplexity` searches to `https://api.perplexity.ai/chat/completions` with model `sonar-pro`.
+- Keep `kilo-perplexity` on `https://api.kilo.ai/api/gateway/chat/completions` with model `perplexity/sonar-pro`.
+- Preserve `kilo_perplexity` as a normalization alias to `kilo-perplexity` without collapsing it into `perplexity`.
+- Add regression coverage for env-var error messages, provider routing, and routing-config persistence.
+
 ## [2.5.2] - 2026-05-09
 
 ### Security

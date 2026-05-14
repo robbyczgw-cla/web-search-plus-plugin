@@ -1,8 +1,8 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "2.5.2",
-  "description": "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity via direct API or Kilo gateway, You.com, and SearXNG.",
+  "version": "2.5.3",
+  "description": "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity direct, Kilo Perplexity gateway, You.com, and SearXNG.",
   "contracts": {
     "tools": [
       "web_search_plus",
@@ -66,11 +66,11 @@
       },
       "perplexityApiKey": {
         "type": "string",
-        "description": "Perplexity API key for answer-style search. Optional individually, but at least one provider setting in this plugin must be configured."
+        "description": "Perplexity direct API key for answer-style search via api.perplexity.ai. Optional individually, but at least one provider setting in this plugin must be configured."
       },
       "kilocodeApiKey": {
         "type": "string",
-        "description": "Kilo gateway API key for answer-style search via the Perplexity-compatible gateway route used by this plugin. Optional individually, but at least one provider setting in this plugin must be configured."
+        "description": "Kilo Perplexity gateway API key for answer-style search via api.kilo.ai. Optional individually, but at least one provider setting in this plugin must be configured."
       },
       "youApiKey": {
         "type": "string",
@@ -138,12 +138,13 @@
     "perplexityApiKey": {
       "label": "Perplexity API Key",
       "placeholder": "pplx-...",
+      "description": "Direct Perplexity provider key used for api.perplexity.ai/chat/completions.",
       "sensitive": true
     },
     "kilocodeApiKey": {
-      "label": "Kilo Gateway API Key",
+      "label": "Kilo Perplexity API Key",
       "placeholder": "...",
-      "description": "Alternative Perplexity-compatible gateway used by this plugin for answer-style web search via api.kilo.ai/api/gateway/chat/completions.",
+      "description": "Kilo Perplexity gateway key used for api.kilo.ai/api/gateway/chat/completions.",
       "sensitive": true
     },
     "youApiKey": {

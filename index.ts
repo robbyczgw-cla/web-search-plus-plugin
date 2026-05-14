@@ -11,7 +11,7 @@ const RETRY_BACKOFF_MS = [1000, 3000, 9000];
 const COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
-const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng", "kilo-perplexity", "kilo_perplexity", "auto"];
+const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "you", "searxng", "kilo_perplexity", "auto"];
 
 const PARAMETERS_SCHEMA = {
   type: "object",
@@ -111,10 +111,10 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
 };
 
 type Json = Record<string, any>;
-const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "you", "searxng"];
+const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "you", "searxng"];
 type ToolParams = {
   query: string;
-  provider?: ProviderName | "auto";
+  provider?: ProviderName | "kilo_perplexity" | "auto";
   count?: number;
   depth?: "normal" | "deep" | "deep-reasoning";
   time_range?: "hour" | "day" | "week" | "month" | "year";
@@ -440,7 +440,8 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     exa: runtimeConfig.exaApiKey,
     linkup: runtimeConfig.linkupApiKey,
     firecrawl: runtimeConfig.firecrawlApiKey,
-    perplexity: runtimeConfig.kilocodeApiKey || runtimeConfig.perplexityApiKey,
+    perplexity: runtimeConfig.perplexityApiKey,
+    "kilo-perplexity": runtimeConfig.kilocodeApiKey,
     you: runtimeConfig.youApiKey,
     searxng: runtimeConfig.searxngInstanceUrl,
   };
@@ -451,6 +452,8 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
   const key = getApiKey(provider, runtimeConfig);
   if (!key) {
     if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
+    if (provider === "perplexity") throw new ProviderConfigError("Missing API key for perplexity (PERPLEXITY_API_KEY or pluginConfig.perplexityApiKey)");
+    if (provider === "kilo-perplexity") throw new ProviderConfigError("Missing API key for kilo-perplexity (KILOCODE_API_KEY or pluginConfig.kilocodeApiKey)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -847,6 +850,7 @@ export class QueryAnalyzer {
         exa: discovery.total + (/(\bsimilar|alternatives?|examples?)\b/i.test(query) ? 1 : 0) + exaDeep.total * 0.5 + exaDeepReasoning.total * 0.5,
         firecrawl: discovery.total + research.total * 0.35 + recency.score * 0.25,
         perplexity: direct.total + localNews.total * 0.4 + recency.score * 0.55,
+        "kilo-perplexity": direct.total + localNews.total * 0.4 + recency.score * 0.55,
         you: rag.total + recency.score * 0.25,
         searxng: privacy.total,
       },
@@ -859,6 +863,7 @@ export class QueryAnalyzer {
         exa: [...discovery.matches, ...exaDeep.matches, ...exaDeepReasoning.matches],
         firecrawl: [...discovery.matches, ...research.matches],
         perplexity: direct.matches,
+        "kilo-perplexity": direct.matches,
         you: rag.matches,
         searxng: privacy.matches,
       },
@@ -1069,9 +1074,15 @@ async function searchFirecrawl(query: string, apiKey: string, maxResults: number
   return { provider: "firecrawl", query, results, images, answer: results[0]?.snippet || "", warning: data.warning, credits_used: data.creditsUsed, metadata: { id: data.id, sources: body.sources, tbs } };
 }
 
-async function searchPerplexity(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
+async function searchPerplexityCompatible(
+  provider: "perplexity" | "kilo-perplexity",
+  query: string,
+  apiKey: string,
+  maxResults: number,
+  timeRange?: string,
+): Promise<SearchResponse> {
   const body: Json = {
-    model: "perplexity/sonar-pro",
+    model: provider === "perplexity" ? "sonar-pro" : "perplexity/sonar-pro",
     messages: [
       { role: "system", content: "Answer with concise factual summary and include source URLs." },
       { role: "user", content: query },
@@ -1079,7 +1090,10 @@ async function searchPerplexity(query: string, apiKey: string, maxResults: numbe
     temperature: 0.2,
   };
   if (timeRange) body.search_recency_filter = timeRange;
-  const data = await httpJson("https://api.kilo.ai/api/gateway/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const url = provider === "perplexity"
+    ? "https://api.perplexity.ai/chat/completions"
+    : "https://api.kilo.ai/api/gateway/chat/completions";
+  const data = await httpJson(url, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const answer = String(data?.choices?.[0]?.message?.content || "").trim();
   let citations = Array.isArray(data?.citations) ? data.citations : [];
   if (!citations.length) {
@@ -1087,13 +1101,22 @@ async function searchPerplexity(query: string, apiKey: string, maxResults: numbe
     citations = [...new Set(matches)];
   }
   const results: SearchResult[] = [];
-  if (answer) results.push({ title: `Perplexity Answer: ${query.slice(0, 80)}`, url: "https://www.perplexity.ai", snippet: answer.replace(/\[\d+\]/g, "").trim().slice(0, 500), score: 1.0 });
+  const answerTitle = provider === "perplexity" ? "Perplexity Answer" : "Kilo Perplexity Answer";
+  if (answer) results.push({ title: `${answerTitle}: ${query.slice(0, 80)}`, url: "https://www.perplexity.ai", snippet: answer.replace(/\[\d+\]/g, "").trim().slice(0, 500), score: 1.0 });
   for (const [i, citation] of citations.slice(0, Math.max(0, maxResults - 1)).entries()) {
     const url = typeof citation === "string" ? citation : citation?.url || "";
     const title = typeof citation === "string" ? titleFromUrl(url) : citation?.title || titleFromUrl(url);
     results.push({ title, url, snippet: `Source cited in Perplexity answer [citation ${i + 1}]`, score: Number((0.9 - i * 0.1).toFixed(3)) });
   }
-  return { provider: "perplexity", query, results, images: [], answer, metadata: { model: body.model, usage: data.usage || {} } };
+  return { provider, query, results, images: [], answer, metadata: { model: body.model, usage: data.usage || {} } };
+}
+
+async function searchPerplexity(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
+  return searchPerplexityCompatible("perplexity", query, apiKey, maxResults, timeRange);
+}
+
+async function searchKiloPerplexity(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
+  return searchPerplexityCompatible("kilo-perplexity", query, apiKey, maxResults, timeRange);
 }
 
 async function searchYou(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
@@ -1162,19 +1185,18 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       safesearch: runtimeConfig.braveSafesearch,
     };
 
-    if (!configuredProviders.length) {
-      return { ok: false, payload: { error: "Search failed: no search providers are configured" } };
-    }
-    if (!enabledProviders.length) {
-      return { ok: false, payload: { error: "Search failed: all configured providers are disabled in routing preferences" } };
-    }
-
     let routingInfo: Json = { requested_provider: requestedProvider };
     let provider: ProviderName;
     let strictProviderMode = false;
     let exaDepthHint: "normal" | "deep" | "deep-reasoning" = "normal";
 
     if (requestedProvider === "auto") {
+      if (!configuredProviders.length) {
+        return { ok: false, payload: { error: "Search failed: no search providers are configured" } };
+      }
+      if (!enabledProviders.length) {
+        return { ok: false, payload: { error: "Search failed: all configured providers are disabled in routing preferences" } };
+      }
       if (!routingConfig.auto_routing) {
         const strictDefault = pickStrictDefaultProvider(enabledProviders, routingConfig);
         if (!strictDefault) {
@@ -1192,12 +1214,10 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     } else {
       provider = requestedProvider;
       strictProviderMode = true;
-      if (!configuredProviders.includes(provider)) {
-        return { ok: false, payload: { error: `Search failed: provider ${provider} is not configured` } };
-      }
       if (routingConfig.disabled_providers.includes(provider)) {
         return { ok: false, payload: { error: `Search failed: provider ${provider} is disabled in routing preferences` } };
       }
+      validateApiKey(provider, runtimeConfig);
       routingInfo = { requested_provider: provider, auto_routed: false, provider, fixed_provider_mode: true, reason: "explicit_provider" };
     }
 
@@ -1252,6 +1272,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       }
       if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
+      if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
       return searchSearxng(query, key, count, timeRange, runtimeConfig);
     };

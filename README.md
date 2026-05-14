@@ -6,7 +6,7 @@
 
 Native OpenClaw plugin for one clean set of web tools.
 
-Current version: **2.5.0**
+Current version: **2.5.3**
 
 It registers:
 
@@ -50,8 +50,8 @@ Compared with the built-in `web_search`, this plugin adds:
 - **Querit** — multilingual/regional AI search
 - **Linkup** — citation/source-grounded search
 - **Firecrawl** — search with scrape-friendly metadata
-- **Perplexity** — answer-style web results
-- **Kilo gateway** — Perplexity-compatible gateway route
+- **Perplexity** — direct answer-style web results via `https://api.perplexity.ai/chat/completions`
+- **Kilo Perplexity** — gateway answer-style route via `https://api.kilo.ai/api/gateway/chat/completions`
 - **You.com** — current web / RAG-style snippets
 - **SearXNG** — self-hosted metasearch
 
@@ -181,7 +181,8 @@ Typical tendencies:
 - citations / evidence → Linkup
 - semantic discovery / similar pages → Exa
 - multilingual AI search → Querit
-- answer-style results → Perplexity or Kilo gateway
+- answer-style results → Perplexity direct or Kilo Perplexity gateway
+- `provider` accepts `kilo-perplexity` and legacy alias `kilo_perplexity`
 - privacy / self-hosted → SearXNG
 
 ## Security and packaging

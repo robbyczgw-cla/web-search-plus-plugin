@@ -74,7 +74,7 @@ test("web_routing_config_plus supports set/show/reset actions", async () => {
   await tool.execute("cfg-threshold", { action: "set_confidence_threshold", confidence_threshold: 0.75 });
 
   const show = JSON.parse((await tool.execute("cfg-show", { action: "show" })).content[0].text);
-  assert.equal(show.config.default_provider, "perplexity");
+  assert.equal(show.config.default_provider, "kilo-perplexity");
   assert.equal(show.config.auto_routing, false);
   assert.deepEqual(show.config.provider_priority.slice(0, 3), ["brave", "serper", "tavily"]);
   assert.equal(show.config.fallback_provider, "serper");
@@ -84,6 +84,21 @@ test("web_routing_config_plus supports set/show/reset actions", async () => {
   const reset = JSON.parse((await tool.execute("cfg-reset", { action: "reset" })).content[0].text);
   assert.equal(reset.config.auto_routing, true);
   assert.equal(reset.backup_path, undefined);
+});
+
+test("web_routing_config_plus keeps kilo-perplexity distinct from perplexity", async () => {
+  const { file } = makeRoutingConfigPath();
+  const registered = withRegistered({ routingConfigPath: file });
+  const tool = registered.get("web_routing_config_plus");
+
+  await tool.execute("cfg-default-kilo", { action: "set_default_provider", provider: "kilo-perplexity" });
+  await tool.execute("cfg-fallback-kilo", { action: "set_fallback_provider", provider: "kilo_perplexity" });
+  await tool.execute("cfg-priority-kilo", { action: "set_provider_priority", providers: ["kilo_perplexity", "perplexity"] });
+
+  const show = JSON.parse((await tool.execute("cfg-show-kilo", { action: "show" })).content[0].text);
+  assert.equal(show.config.default_provider, "kilo-perplexity");
+  assert.equal(show.config.fallback_provider, "kilo-perplexity");
+  assert.deepEqual(show.config.provider_priority.slice(0, 2), ["kilo-perplexity", "perplexity"]);
 });
 
 test("web_search_plus uses strict default provider mode when auto routing is disabled", async () => {

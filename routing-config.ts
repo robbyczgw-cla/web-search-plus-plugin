@@ -1,6 +1,6 @@
-export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "you" | "searxng";
+export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "kilo-perplexity" | "you" | "searxng";
 
-export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "brave", "serper", "you", "searxng"];
+export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "brave", "serper", "you", "searxng"];
 
 export type RoutingPreferences = {
   version: 1;
@@ -47,7 +47,7 @@ function cloneDefaults(): RoutingPreferences {
 
 export function normalizeProviderName(value: unknown): ProviderName {
   const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
-  if (normalized === "kilo-perplexity") return "perplexity";
+  if (normalized === "kilo-perplexity") return "kilo-perplexity";
   if ((DEFAULT_PROVIDER_PRIORITY as string[]).includes(normalized)) return normalized as ProviderName;
   throw new Error(`Unknown provider: ${String(value || "")}`);
 }
