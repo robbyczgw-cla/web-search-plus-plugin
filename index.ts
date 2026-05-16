@@ -18,6 +18,11 @@ const SERPBASE_DEFAULTS = {
 const RETRY_BACKOFF_MS = [1000, 3000, 9000];
 const COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const SERPBASE_TRANSIENT_STATUS_CODES = new Set([1029, 1502, 1503, 1504]);
+const AUTO_ALLOW_DEFAULTS: Partial<Record<ProviderName, boolean>> = {
+  // SerpBase queries are retained for billing/debugging by the provider. Keep it explicit/fallback-only by default.
+  serpbase: false,
+};
 
 const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "you", "searxng", "serpbase", "kilo_perplexity", "auto"];
 
@@ -322,6 +327,19 @@ function isProviderUsable(provider: ProviderName | null, availableProviders: Pro
 
 function pickStrictDefaultProvider(availableProviders: ProviderName[], routingConfig: RoutingPreferences): ProviderName | null {
   return isProviderUsable(routingConfig.default_provider, availableProviders, routingConfig.disabled_providers) ? routingConfig.default_provider : null;
+}
+
+function filterAutoAllowedProviders(providers: ProviderName[]): ProviderName[] {
+  return providers.filter((provider) => AUTO_ALLOW_DEFAULTS[provider] !== false);
+}
+
+function buildAutoExecutionProviders(autoProviders: ProviderName[], enabledProviders: ProviderName[], routingConfig: RoutingPreferences): ProviderName[] {
+  const providers = [...autoProviders];
+  const fallback = routingConfig.fallback_provider;
+  if (isProviderUsable(fallback, enabledProviders, routingConfig.disabled_providers) && fallback && !providers.includes(fallback)) {
+    providers.push(fallback);
+  }
+  return providers;
 }
 
 function selectAutoProvider(query: string, availableProviders: ProviderName[], routingConfig: RoutingPreferences): { provider: ProviderName; routing: Json } {
@@ -804,13 +822,14 @@ async function searchSerpbase(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
-    }
+    },
+    SERPBASE_DEFAULTS.timeout * 1000
   );
 
   const status = data?.status ?? 0;
   if (status !== 0) {
     const message = data?.message || data?.error || data?.msg || "Serpbase business error";
-    throw new Error(`Serpbase error ${status}: ${message}`);
+    throw new ProviderRequestError(`Serpbase error ${status}: ${message}`, undefined, SERPBASE_TRANSIENT_STATUS_CODES.has(status));
   }
 
   const results = (data.organic || [])
@@ -1103,6 +1122,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const routingConfig = routingConfigResult.config;
     const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider) => !routingConfig.disabled_providers.includes(provider));
+    const autoAllowedProviders = filterAutoAllowedProviders(enabledProviders);
     const braveOptions = {
       safesearch: runtimeConfig.braveSafesearch,
     };
@@ -1119,6 +1139,9 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (!enabledProviders.length) {
         return { ok: false, payload: { error: "Search failed: all configured providers are disabled in routing preferences" } };
       }
+      if (routingConfig.auto_routing && !autoAllowedProviders.length) {
+        return { ok: false, payload: { error: "Search failed: no configured providers are allowed for automatic routing; choose an explicit provider or configure a fallback_provider" } };
+      }
       if (!routingConfig.auto_routing) {
         const strictDefault = pickStrictDefaultProvider(enabledProviders, routingConfig);
         if (!strictDefault) {
@@ -1128,7 +1151,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         strictProviderMode = true;
         routingInfo = { requested_provider: "auto", auto_routed: false, provider, fixed_provider_mode: true, reason: "auto_routing_disabled" };
       } else {
-        const selection = selectAutoProvider(query, enabledProviders, routingConfig);
+        const selection = selectAutoProvider(query, autoAllowedProviders, routingConfig);
         provider = selection.provider;
         routingInfo = selection.routing;
         exaDepthHint = (selection.routing.exa_depth || "normal") as "normal" | "deep" | "deep-reasoning";
@@ -1145,7 +1168,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     if (provider === "exa" && params.depth) exaDepthHint = params.depth;
 
-    const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, enabledProviders, routingConfig);
+    const autoExecutionProviders = buildAutoExecutionProviders(autoAllowedProviders, enabledProviders, routingConfig);
+    const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, autoExecutionProviders, routingConfig);
     const eligibleProviders: ProviderName[] = [];
     const cooldownSkips: Json[] = [];
     if (strictProviderMode) {
@@ -1196,7 +1220,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
-      if (p === "serpbase") return searchSerpbase(query, key, count, { country: serpbaseOptions?.country, language: serpbaseOptions?.language });
+      if (p === "serpbase") return searchSerpbase(query, key, count);
       return searchSearxng(query, key, count, timeRange, runtimeConfig);
     };
 

@@ -47,6 +47,8 @@ Extra settings:
 - `searxngAllowPrivate`
 - `routingConfigPath` (namespace only)
 
+Serpbase privacy note: `serpbaseApiKey` enables `provider: "serpbase"`, but Serpbase is not selected by default `provider: "auto"`. Use it explicitly or set it as `fallback_provider` when you accept provider-side query retention for billing/debugging.
+
 ## Usage guidance
 
 Prefer `web_search_plus` for live/current info, prices, weather, sports, schedules, and finding raw sources.

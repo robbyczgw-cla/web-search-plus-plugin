@@ -4,8 +4,9 @@
 
 ### Added
 - Serpbase provider (`serpbase`) for Google-style web search via https://api.serpbase.dev/google/search. Supports organic results, answer_box, and knowledge_graph parsing.
-- `serpbaseApiKey` config option (SERPBASE_API_KEY env alias).
-- Routing support: included in ProviderName, DEFAULT_PROVIDER_PRIORITY, normalization, and runtime credential checks.
+- `serpbaseApiKey` config option mapped to Serpbase's `X-API-Key` header.
+- Routing support: included in ProviderName, DEFAULT_PROVIDER_PRIORITY, normalization, and runtime credential checks, while keeping Serpbase explicit/fallback-only in default auto routing.
+- Regression coverage for explicit Serpbase calls, missing credentials, auto-routing exclusion, and configured Serpbase fallback.
 - Version bump to 2.7.0 (new provider feature).
 
 ### Changed

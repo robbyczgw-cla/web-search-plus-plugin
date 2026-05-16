@@ -51,7 +51,7 @@ Compared with the built-in `web_search`, this plugin adds:
 - **Perplexity** — direct answer-style web results via `https://api.perplexity.ai/chat/completions`
 - **Kilo Perplexity** — gateway answer-style route via `https://api.kilo.ai/api/gateway/chat/completions`
 - **You.com** — current web / RAG-style snippets
-- **Serpbase** — Google-style web search via api.serpbase.dev
+- **Serpbase** — Google-style web search via `api.serpbase.dev`; explicit/fallback-only in auto routing by default because provider-side query retention is used for billing/debugging
 - **SearXNG** — self-hosted metasearch
 
 ### Extraction providers
@@ -80,6 +80,8 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `kilocodeApiKey`
 - `youApiKey`
 - `searxngInstanceUrl`
+
+`serpbaseApiKey` maps to Serpbase's `X-API-Key` header. Serpbase is available through `provider: "serpbase"` and can be configured as a runtime `fallback_provider`, but it is intentionally not selected as a normal `provider: "auto"` default.
 
 ### Extra fields
 

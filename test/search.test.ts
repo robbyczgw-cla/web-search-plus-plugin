@@ -191,6 +191,124 @@ test("registered web_search_plus supports explicit provider=brave", async () => 
   );
 });
 
+test("registered web_search_plus supports explicit provider=serpbase", async () => {
+  await withMockedFetch(
+    () => mockJsonResponse({
+      status: 0,
+      organic: [{ title: "Serpbase Result", link: "https://example.com/serpbase", snippet: "Found via Serpbase" }],
+      answer_box: { answer: "Serpbase answer" },
+      related_searches: ["serpbase docs"],
+    }),
+    async (calls) => {
+      const registered = new Map<string, any>();
+      register({
+        registerTool(tool: any) { registered.set(tool.name, tool); },
+        pluginConfig: { serpbaseApiKey: "serpbase-test" },
+      });
+
+      const tool = registered.get("web_search_plus");
+      assert.ok(tool.parameters.properties.provider.enum.includes("serpbase"));
+
+      const response = await tool.execute("tool-serpbase", {
+        query: "serpbase explicit provider query",
+        provider: "serpbase",
+        count: 3,
+      });
+      const payload = JSON.parse(response.content[0].text);
+      const requestBody = parseJsonBody(calls[0].init?.body);
+
+      assert.equal(payload.provider, "serpbase");
+      assert.equal(payload.routing.provider, "serpbase");
+      assert.equal(payload.answer, "Serpbase answer");
+      assert.equal(payload.results[0].title, "Serpbase Result");
+      assert.equal(calls[0].url, "https://api.serpbase.dev/google/search");
+      assert.equal((calls[0].init?.headers as Record<string, string>)["X-API-Key"], "serpbase-test");
+      assert.equal(requestBody.q, "serpbase explicit provider query");
+      assert.equal(requestBody.hl, "en");
+      assert.equal(requestBody.gl, "us");
+    },
+  );
+});
+
+test("registered web_search_plus reports missing Serpbase credentials", async () => {
+  const registered = new Map<string, any>();
+  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: {} });
+
+  const tool = registered.get("web_search_plus");
+  const response = await tool.execute("tool-serpbase-missing-key", {
+    query: "serpbase missing key query",
+    provider: "serpbase",
+  });
+  const payload = JSON.parse(response.content[0].text);
+
+  assert.match(payload.error, /Missing API key for serpbase/);
+  clearPluginCache();
+});
+
+test("registered web_search_plus keeps Serpbase out of default auto-routing", async () => {
+  await withMockedFetch(
+    () => mockJsonResponse({
+      web: { results: [{ title: "Brave auto", url: "https://example.com/brave-auto", description: "Auto used Brave" }] },
+    }),
+    async (calls) => {
+      const registered = new Map<string, any>();
+      register({
+        registerTool(tool: any) { registered.set(tool.name, tool); },
+        pluginConfig: { braveApiKey: "brave-test", serpbaseApiKey: "serpbase-test" },
+      });
+
+      const tool = registered.get("web_search_plus");
+      const response = await tool.execute("tool-serpbase-auto-gate", {
+        query: "utterly neutral words",
+        provider: "auto",
+        count: 3,
+      });
+      const payload = JSON.parse(response.content[0].text);
+
+      assert.equal(payload.provider, "brave");
+      assert.equal(payload.routing.provider, "brave");
+      assert.match(calls[0].url, /api\.search\.brave\.com/);
+    },
+  );
+});
+
+test("registered web_search_plus allows Serpbase as explicit auto fallback", async () => {
+  await withMockedFetch(
+    (url) => {
+      if (url.includes("api.search.brave.com")) return mockJsonResponse({ error: "temporary brave failure" }, 400);
+      return mockJsonResponse({
+        status: 0,
+        organic: [{ title: "Serpbase fallback", link: "https://example.com/serpbase-fallback", snippet: "Fallback worked" }],
+      });
+    },
+    async (calls) => {
+      const registered = new Map<string, any>();
+      register({
+        registerTool(tool: any) { registered.set(tool.name, tool); },
+        pluginConfig: {
+          braveApiKey: "brave-test",
+          serpbaseApiKey: "serpbase-test",
+          routingPreferences: { fallback_provider: "serpbase" },
+        },
+      });
+
+      const tool = registered.get("web_search_plus");
+      const response = await tool.execute("tool-serpbase-fallback", {
+        query: "utterly neutral words fallback",
+        provider: "auto",
+        count: 3,
+      });
+      const payload = JSON.parse(response.content[0].text);
+
+      assert.equal(payload.provider, "serpbase");
+      assert.equal(payload.routing.fallback_used, true);
+      assert.ok(calls.length >= 2);
+      assert.match(calls[0].url, /api\.search\.brave\.com/);
+      assert.equal(calls[calls.length - 1].url, "https://api.serpbase.dev/google/search");
+    },
+  );
+});
+
 test("registered web_search_plus uses direct Perplexity API for provider=perplexity", async () => {
   await withMockedFetch(
     () => mockJsonResponse({

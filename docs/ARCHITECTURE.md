@@ -138,7 +138,7 @@ Current providers:
 - Tavily
 - Querit
 - Exa
-- Serpbase
+- Serpbase (explicit/fallback-only in auto routing by default)
 - Perplexity
 - You.com
 - SearXNG
