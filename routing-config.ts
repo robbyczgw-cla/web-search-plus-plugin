@@ -1,6 +1,6 @@
-export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "kilo-perplexity" | "you" | "searxng";
+export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "kilo-perplexity" | "you" | "searxng" | "serpbase";
 
-export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "brave", "serper", "you", "searxng"];
+export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "brave", "serper", "you", "searxng", "serpbase"];
 
 export type RoutingPreferences = {
   version: 1;

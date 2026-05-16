@@ -6,7 +6,7 @@
 
 Native OpenClaw plugin for one clean set of web tools.
 
-Current version: **2.6.0**
+Current version: **2.7.0**
 
 It registers:
 
