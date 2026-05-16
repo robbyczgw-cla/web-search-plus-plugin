@@ -35,7 +35,7 @@ export type ExtractResponse = {
   };
 };
 
-export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["firecrawl", "linkup", "tavily", "exa", "you"];
+export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "firecrawl", "you"];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],

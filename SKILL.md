@@ -1,7 +1,7 @@
 ---
 name: web-search-plus-plugin-v2
-version: 2.5.3
-description: OpenClaw plugin for multi-provider web search, extraction, runtime routing preferences, and optional beta answer synthesis. Registers `web_search_plus`, `web_extract_plus`, `web_routing_config_plus`, and gated beta `web_answer_plus`.
+version: 2.6.0
+description: OpenClaw plugin for multi-provider web search, extraction, and runtime routing preferences. Registers `web_search_plus`, `web_extract_plus`, and `web_routing_config_plus`.
 ---
 
 # Web Search Plus Plugin
@@ -12,7 +12,6 @@ Native OpenClaw plugin that gives agents one clean set of web tools.
 
 - `web_search_plus`
 - `web_extract_plus`
-- `web_answer_plus` (**beta**, gated by `enableWebAnswer`)
 - `web_routing_config_plus`
 
 ## Good starter setup
@@ -45,14 +44,11 @@ Extra settings:
 
 - `braveSafesearch`
 - `searxngAllowPrivate`
-- `enableWebAnswer`
 - `routingConfigPath` (namespace only)
 
 ## Usage guidance
 
 Prefer `web_search_plus` for live/current info, prices, weather, sports, schedules, and finding raw sources.
-
-Use `web_answer_plus` only when a user clearly wants a written answer, brief, summary, or cited synthesis. It defaults to `freshness=none`, caps extraction, and falls back to snippet-backed answers with a warning when no extraction provider is configured.
 
 OpenClaw plugin config remains the source of truth for credentials; runtime code does not rely on direct `.env` reads.
 

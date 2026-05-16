@@ -47,45 +47,6 @@ const PARAMETERS_SCHEMA = {
   },
 };
 
-const ANSWER_PARAMETERS_SCHEMA = {
-  type: "object",
-  required: ["query"],
-  properties: {
-    query: { type: "string", description: "Question or topic to answer from the web." },
-    mode: {
-      type: "string",
-      enum: ["quick", "deep"],
-      default: "quick",
-      description: "quick = fast synthesis from a few sources; deep = broader cited synthesis with a slightly larger search pass.",
-    },
-    sources: {
-      type: "number",
-      default: 3,
-      minimum: 1,
-      maximum: 10,
-      description: "Number of citation-ready sources to return.",
-    },
-    freshness: {
-      type: "string",
-      enum: ["none", "auto", "day", "week", "month", "year"],
-      default: "none",
-      description: "Optional recency control. Default none avoids accidental stale/current overfitting; set auto/day/week/month/year explicitly when needed.",
-    },
-    output: {
-      type: "string",
-      enum: ["answer", "brief", "sources", "json"],
-      default: "answer",
-      description: "Return a markdown answer, short brief, sources-only list, or structured JSON.",
-    },
-    max_extracts: {
-      type: "number",
-      minimum: 0,
-      maximum: 5,
-      description: "Advanced: number of top URLs to extract. Default 2, hard-capped at 5 for cost safety.",
-    },
-  },
-};
-
 const ROUTING_CONFIG_ACTIONS = [
   "show",
   "set_default_provider",
@@ -120,18 +81,6 @@ type ToolParams = {
   time_range?: "hour" | "day" | "week" | "month" | "year";
   include_domains?: string[];
   exclude_domains?: string[];
-};
-
-type AnswerFreshness = "none" | "auto" | "day" | "week" | "month" | "year";
-type AnswerMode = "quick" | "deep";
-type AnswerOutput = "answer" | "brief" | "sources" | "json";
-type AnswerParams = {
-  query: string;
-  mode?: AnswerMode;
-  sources?: number;
-  freshness?: AnswerFreshness;
-  output?: AnswerOutput;
-  max_extracts?: number;
 };
 
 type SearchResult = {
@@ -1542,33 +1491,6 @@ export function register(api: any) {
           return { content: [{ type: "text", text: JSON.stringify(executeRoutingConfigAction(pluginConfig, params)) }] };
         } catch (error: any) {
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };
-        }
-      },
-    },
-    { optional: true },
-  );
-
-  api.registerTool(
-    {
-      name: "web_answer_plus",
-      description:
-        "Beta: produce a written web answer or cited brief by combining web_search_plus with bounded optional extraction. Prefer web_search_plus instead for current events, sports lineups, live scores, schedules, prices, weather, and raw source discovery. Use this only when you explicitly want a written answer, summary, brief, or cited synthesis.",
-      parameters: ANSWER_PARAMETERS_SCHEMA,
-      checkFn() {
-        const pluginConfig = (api.pluginConfig ?? {}) as Record<string, any>;
-        const runtimeConfig = getRuntimeConfig(pluginConfig);
-        return runtimeConfig.enableWebAnswer === true;
-      },
-      async execute(_id: string, params: AnswerParams) {
-        try {
-          const pluginConfig = (api.pluginConfig ?? {}) as Record<string, any>;
-          const runtimeConfig = getRuntimeConfig(pluginConfig);
-          const payload = await composeAnswerPayload(runtimeConfig, params, pluginConfig);
-          if (payload.error) return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
-          if (typeof payload.text === "string") return { content: [{ type: "text", text: payload.text }] };
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
-        } catch (error: any) {
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ beta: true, error: String(error?.message || error) })) }] };
         }
       },
     },

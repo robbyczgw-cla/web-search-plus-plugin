@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.6.0] - 2026-05-16
+
+### Breaking Changes
+- Removed `web_answer_plus` tool, `enableWebAnswer` config, ANSWER_PARAMETERS_SCHEMA, and all beta answer synthesis / freshness-default-none / answer-mode code and registration. The plugin now focuses exclusively on `web_search_plus`, `web_extract_plus`, and `web_routing_config_plus`.
+- Extract fallback priority changed to Tavily → Exa → Linkup → Firecrawl → You.com (Tavily-first for reliability).
+
+### Changed
+- Version bump to 2.6.0.
+- Cleaned README, SKILL.md, docs, tests, runtime-config, openclaw.plugin.json of all answer-related references.
+
 ## [2.5.3] - 2026-05-14
 
 ### Fixed
