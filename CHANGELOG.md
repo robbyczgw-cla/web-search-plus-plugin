@@ -6,12 +6,10 @@
 - Serpbase provider (`serpbase`) for Google-style web search via https://api.serpbase.dev/google/search. Supports organic results, answer_box, and knowledge_graph parsing.
 - `serpbaseApiKey` config option (SERPBASE_API_KEY env alias).
 - Routing support: included in ProviderName, DEFAULT_PROVIDER_PRIORITY, normalization, and runtime credential checks.
-- Full test coverage for serpbase provider enum, POST request format (X-API-Key + JSON {q, hl, gl, page}), result parsing, and missing-credential messaging.
 - Version bump to 2.7.0 (new provider feature).
 
 ### Changed
 - Updated openclaw.plugin.json configSchema/uiHints/description, runtime-config.ts, routing-config.ts, README.md, SKILL.md, docs/ARCHITECTURE.md.
-- Kept web_extract_plus provider order unchanged (tavily, exa, linkup, firecrawl, you).
 
 ## [2.6.0] - 2026-05-16
 
