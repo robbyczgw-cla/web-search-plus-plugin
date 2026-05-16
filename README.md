@@ -6,13 +6,12 @@
 
 Native OpenClaw plugin for one clean set of web tools.
 
-Current version: **2.5.3**
+Current version: **2.6.0**
 
 It registers:
 
 - `web_search_plus` — intelligent multi-provider web search
 - `web_extract_plus` — URL extraction across supported extract providers
-- `web_answer_plus` — **optional beta** written answer / cited synthesis tool
 - `web_routing_config_plus` — runtime routing preferences manager
 
 You only need **one** provider configured to start. The best starter stack is:
@@ -37,7 +36,6 @@ Compared with the built-in `web_search`, this plugin adds:
 - routing across multiple web providers instead of one backend
 - stronger coverage for research, citations, semantic discovery, and privacy/self-hosted search
 - `web_extract_plus` for clean page content after search
-- optional beta `web_answer_plus` for written summaries grounded in search results and capped extraction
 
 ## Provider coverage
 
@@ -57,10 +55,10 @@ Compared with the built-in `web_search`, this plugin adds:
 
 ### Extraction providers
 
-- **Linkup** — preferred when available
-- **Firecrawl**
-- **Tavily**
+- **Tavily** — default first choice in auto mode
 - **Exa**
+- **Linkup**
+- **Firecrawl**
 - **You.com**
 
 ## Configuration
@@ -85,7 +83,6 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 
 - `braveSafesearch`
 - `searxngAllowPrivate`
-- `enableWebAnswer` — enables the optional beta `web_answer_plus`
 - `routingConfigPath` — optional namespace for in-memory routing preferences
 
 Example:
@@ -98,8 +95,7 @@ Example:
         "config": {
           "tavilyApiKey": "tvly-...",
           "linkupApiKey": "...",
-          "braveApiKey": "...",
-          "enableWebAnswer": true
+          "braveApiKey": "..."
         }
       }
     }
@@ -124,30 +120,21 @@ Use this first for:
 
 Use this after search when you already know which URLs you want to read.
 
-### `web_answer_plus` (beta)
+Auto extraction fallback order:
 
-Use this only when you explicitly want a:
-
-- written answer
-- brief
-- summary
-- cited synthesis
-
-Important behavior:
-
-- `freshness` defaults to **`none`**
-- recency only happens when you explicitly set `freshness=auto/day/week/month/year`
-- extraction is capped (`max_extracts`, hard limit 5)
-- if no extraction-capable provider is configured, it returns a **snippet-backed** answer with a warning instead of pretending it extracted pages
-- Linkup is the preferred extraction provider when available
+- Tavily
+- Exa
+- Linkup
+- Firecrawl
+- You.com
 
 ## Routing preferences
 
 `web_routing_config_plus` manages runtime routing behavior in memory, separate from provider secrets. ClawHub scanner constraints intentionally avoid runtime filesystem reads in this package.
 
-Default path:
+Default namespace:
 
-- `config/routing-preferences.json` inside the plugin directory
+- `memory:default`
 - override with plugin config `routingConfigPath`
 
 Supported actions:
@@ -167,8 +154,8 @@ Behavior notes:
 - if `auto_routing=false`, `provider:auto` becomes strict `default_provider`
 - explicit provider requests stay strict and do not silently fall back
 - normal auto mode can still use priority order, fallback provider, cooldowns, and retries
-- invalid or corrupt routing JSON is quarantined to `.broken-<timestamp>` and defaults are used
-- reset writes defaults and keeps a timestamped backup
+- invalid plugin-provided routing config falls back to defaults with a warning
+- reset restores in-memory defaults for the selected namespace
 
 ## Auto-routing notes
 

@@ -165,18 +165,17 @@ test("extractYou parses contents markdown", async () => {
   );
 });
 
-test("extractPlus auto prefers firecrawl when available", async () => {
+test("extractPlus auto prefers linkup when available (Tavily > Exa > Linkup > Firecrawl order)", async () => {
   await withMockedFetch(
-    () => mockJsonResponse({ success: true, data: { markdown: "firecrawl content", metadata: {} } }),
+    () => mockJsonResponse({ results: [{ url: "https://example.com", content: "linkup content" }] }),
     async (calls) => {
       const result = await extractPlus(["https://example.com"], "auto", "markdown", false, false, false, {
         firecrawlApiKey: "fc-test",
         linkupApiKey: "linkup-test",
       });
-      assert.equal(result.provider, "firecrawl");
+      assert.equal(result.provider, "linkup");
       assert.equal(result.routing?.requested_provider, "auto");
       assert.equal(calls.length, 1);
-      assert.equal(calls[0].url, "https://api.firecrawl.dev/v2/scrape");
     },
   );
 });

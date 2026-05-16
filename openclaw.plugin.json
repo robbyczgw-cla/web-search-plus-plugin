@@ -1,14 +1,13 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "2.5.3",
-  "description": "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity direct, Kilo Perplexity gateway, You.com, and SearXNG.",
+  "version": "2.6.0",
+  "description": "One clean set of web tools for multi-provider search and extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity direct, Kilo Perplexity gateway, You.com, and SearXNG.",
   "contracts": {
     "tools": [
       "web_search_plus",
       "web_extract_plus",
-      "web_routing_config_plus",
-      "web_answer_plus"
+      "web_routing_config_plus"
     ]
   },
   "toolMetadata": {
@@ -19,9 +18,6 @@
       "optional": true
     },
     "web_routing_config_plus": {
-      "optional": true
-    },
-    "web_answer_plus": {
       "optional": true
     }
   },
@@ -83,10 +79,6 @@
       "searxngAllowPrivate": {
         "type": "boolean",
         "description": "Optional danger flag. When true, disables SearXNG SSRF/private-network protection and should only be used on fully trusted private networks."
-      },
-      "enableWebAnswer": {
-        "type": "boolean",
-        "description": "Optional beta toggle for web_answer_plus. Leave off unless you want answer synthesis in addition to web_search_plus and web_extract_plus."
       },
       "routingConfigPath": {
         "type": "string",
@@ -161,11 +153,6 @@
     "searxngAllowPrivate": {
       "label": "Allow private-network SearXNG (danger)",
       "description": "Disables SearXNG SSRF/private-network protection. Only enable on fully trusted private networks.",
-      "sensitive": false
-    },
-    "enableWebAnswer": {
-      "label": "Enable web_answer_plus (beta)",
-      "description": "Turns on the optional beta answer-synthesis tool. Prefer web_search_plus for live/current info and raw source discovery.",
       "sensitive": false
     },
     "routingConfigPath": {
