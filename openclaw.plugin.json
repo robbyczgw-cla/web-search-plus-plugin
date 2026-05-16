@@ -1,8 +1,8 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "2.6.0",
-  "description": "One clean set of web tools for multi-provider search and extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity direct, Kilo Perplexity gateway, You.com, and SearXNG.",
+  "version": "2.7.0",
+  "description": "One clean set of web tools for multi-provider search and extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity direct, Kilo Perplexity gateway, You.com, SearXNG, and Serpbase.",
   "contracts": {
     "tools": [
       "web_search_plus",
@@ -80,6 +80,10 @@
         "type": "boolean",
         "description": "Optional danger flag. When true, disables SearXNG SSRF/private-network protection and should only be used on fully trusted private networks."
       },
+      "serpbaseApiKey": {
+        "type": "string",
+        "description": "Serpbase API key for Google-style web search via api.serpbase.dev. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
       "routingConfigPath": {
         "type": "string",
         "description": "Optional namespace for in-memory routing preferences used by web_routing_config_plus. No filesystem reads are performed at runtime."
@@ -154,6 +158,11 @@
       "label": "Allow private-network SearXNG (danger)",
       "description": "Disables SearXNG SSRF/private-network protection. Only enable on fully trusted private networks.",
       "sensitive": false
+    },
+    "serpbaseApiKey": {
+      "label": "Serpbase API Key",
+      "placeholder": "sb-...",
+      "sensitive": true
     },
     "routingConfigPath": {
       "label": "Routing preferences JSON path",

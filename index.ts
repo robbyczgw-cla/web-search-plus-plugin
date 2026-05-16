@@ -7,11 +7,19 @@ import { DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderNam
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
 
 const DEFAULT_CACHE_TTL = 3600;
+
+const SERPBASE_DEFAULTS = {
+  api_url: "https://api.serpbase.dev/google/search",
+  country: "us",
+  language: "en",
+  page: 1,
+  timeout: 30,
+};
 const RETRY_BACKOFF_MS = [1000, 3000, 9000];
 const COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
-const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "you", "searxng", "kilo_perplexity", "auto"];
+const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "you", "searxng", "serpbase", "kilo_perplexity", "auto"];
 
 const PARAMETERS_SCHEMA = {
   type: "object",
@@ -72,7 +80,7 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
 };
 
 type Json = Record<string, any>;
-const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "you", "searxng"];
+const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "you", "searxng", "serpbase"];
 type ToolParams = {
   query: string;
   provider?: ProviderName | "kilo_perplexity" | "auto";
@@ -377,6 +385,7 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     "kilo-perplexity": runtimeConfig.kilocodeApiKey,
     you: runtimeConfig.youApiKey,
     searxng: runtimeConfig.searxngInstanceUrl,
+    serpbase: runtimeConfig.serpbaseApiKey,
   };
   return keyMap[provider];
 }
@@ -387,6 +396,7 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
     if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
     if (provider === "perplexity") throw new ProviderConfigError("Missing API key for perplexity (PERPLEXITY_API_KEY or pluginConfig.perplexityApiKey)");
     if (provider === "kilo-perplexity") throw new ProviderConfigError("Missing API key for kilo-perplexity (KILOCODE_API_KEY or pluginConfig.kilocodeApiKey)");
+    if (provider === "serpbase") throw new ProviderConfigError("Missing API key for serpbase (SERPBASE_API_KEY or pluginConfig.serpbaseApiKey)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -772,6 +782,67 @@ async function searchSerper(query: string, apiKey: string, maxResults: number, t
   return { provider: "serper", query, results, images: [], answer, knowledge_graph: data.knowledgeGraph, related_searches: (data.relatedSearches || []).map((r: any) => r.query) };
 }
 
+async function searchSerpbase(
+  query: string,
+  apiKey: string,
+  maxResults: number = 5,
+  options?: { country?: string; language?: string; page?: number }
+): Promise<SearchResponse> {
+  const body = {
+    q: query,
+    hl: options?.language || SERPBASE_DEFAULTS.language,
+    gl: options?.country || SERPBASE_DEFAULTS.country,
+    page: options?.page || SERPBASE_DEFAULTS.page,
+  };
+
+  const data = await httpJson(
+    SERPBASE_DEFAULTS.api_url,
+    {
+      method: "POST",
+      headers: {
+        "X-API-Key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  const status = data?.status ?? 0;
+  if (status !== 0) {
+    const message = data?.message || data?.error || data?.msg || "Serpbase business error";
+    throw new Error(`Serpbase error ${status}: ${message}`);
+  }
+
+  const results = (data.organic || [])
+    .slice(0, maxResults)
+    .map((item: any, i: number) => ({
+      title: item.title || "",
+      url: item.link || item.url || "",
+      snippet: item.snippet || "",
+      score: Number((1 - i * 0.1).toFixed(2)),
+    }));
+
+  let answer = "";
+  if (data.answer_box) {
+    answer = data.answer_box.answer || data.answer_box.snippet || "";
+  } else if (data.knowledge_graph) {
+    answer = data.knowledge_graph.description || data.knowledge_graph.subtitle || "";
+  } else if (results.length > 0) {
+    answer = results[0].snippet;
+  }
+
+  return {
+    provider: "serpbase",
+    query,
+    results,
+    images: [],
+    answer,
+    knowledge_graph: data.knowledge_graph,
+    related_searches: (data.related_searches || []).map((r: any) => r.query || r),
+  };
+}
+
+
 export async function searchBrave(query: string, apiKey: string, maxResults: number, options?: { country?: string; search_lang?: string; safesearch?: string; time_range?: string }): Promise<SearchResponse> {
   const freshnessMap: Record<string, string> = { hour: "pd", day: "pd", week: "pw", month: "pm", year: "py" };
   const url = new URL("https://api.search.brave.com/res/v1/web/search");
@@ -1125,6 +1196,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
+      if (p === "serpbase") return searchSerpbase(query, key, count, { country: serpbaseOptions?.country, language: serpbaseOptions?.language });
       return searchSearxng(query, key, count, timeRange, runtimeConfig);
     };
 

@@ -1,6 +1,6 @@
 ---
 name: web-search-plus-plugin-v2
-version: 2.6.0
+version: 2.7.0
 description: OpenClaw plugin for multi-provider web search, extraction, and runtime routing preferences. Registers `web_search_plus`, `web_extract_plus`, and `web_routing_config_plus`.
 ---
 
@@ -38,6 +38,7 @@ Search providers:
 - `perplexityApiKey`
 - `kilocodeApiKey`
 - `youApiKey`
+- `serpbaseApiKey`
 - `searxngInstanceUrl`
 
 Extra settings:

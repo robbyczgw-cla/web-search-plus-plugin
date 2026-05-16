@@ -138,6 +138,7 @@ Current providers:
 - Tavily
 - Querit
 - Exa
+- Serpbase
 - Perplexity
 - You.com
 - SearXNG
@@ -182,7 +183,7 @@ The registered tool currently supports:
 | Parameter | Type | Notes |
 |-----------|------|-------|
 | `query` | string | Required search query |
-| `provider` | string | `serper`, `tavily`, `querit`, `exa`, `perplexity`, `you`, `searxng`, or `auto` |
+| `provider` | string | `serper`, `tavily`, `querit`, `exa`, `serpbase`, `perplexity`, `you`, `searxng`, or `auto` |
 | `count` | number | Result count, clamped to safe limits |
 | `depth` | string | Exa depth: `normal`, `deep`, `deep-reasoning` |
 | `time_range` | string | `day`, `week`, `month`, `year` where supported |

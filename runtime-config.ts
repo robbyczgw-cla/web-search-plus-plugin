@@ -12,6 +12,7 @@ export type RuntimeConfig = {
   youApiKey?: string;
   searxngInstanceUrl?: string;
   searxngAllowPrivate?: boolean;
+  serpbaseApiKey?: string;
 };
 
 function maybeString(value: unknown): string | undefined {
@@ -35,5 +36,6 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     youApiKey: maybeString(pluginConfig?.youApiKey),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : undefined,
+    serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
   };
 }

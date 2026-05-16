@@ -6,7 +6,7 @@
 
 Native OpenClaw plugin for one clean set of web tools.
 
-Current version: **2.6.0**
+Current version: **2.7.0**
 
 It registers:
 
@@ -51,6 +51,7 @@ Compared with the built-in `web_search`, this plugin adds:
 - **Perplexity** — direct answer-style web results via `https://api.perplexity.ai/chat/completions`
 - **Kilo Perplexity** — gateway answer-style route via `https://api.kilo.ai/api/gateway/chat/completions`
 - **You.com** — current web / RAG-style snippets
+- **Serpbase** — Google-style web search via api.serpbase.dev
 - **SearXNG** — self-hosted metasearch
 
 ### Extraction providers
@@ -75,6 +76,7 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `linkupApiKey`
 - `firecrawlApiKey`
 - `perplexityApiKey`
+- `serpbaseApiKey`
 - `kilocodeApiKey`
 - `youApiKey`
 - `searxngInstanceUrl`
