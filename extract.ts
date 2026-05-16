@@ -2,7 +2,7 @@ import type { RuntimeConfig } from "./runtime-config.ts";
 
 type Json = Record<string, any>;
 
-export type ExtractProviderName = "firecrawl" | "linkup" | "tavily" | "exa" | "you";
+export type ExtractProviderName = "tavily" | "exa" | "linkup" | "firecrawl" | "you";
 export type ExtractFormat = "markdown" | "html";
 
 export type ExtractImage = {
@@ -404,14 +404,14 @@ export async function extractPlus(
 
     try {
       let result: ExtractResponse;
-      if (currentProvider === "firecrawl") {
-        result = await extractFirecrawl(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
-      } else if (currentProvider === "linkup") {
-        result = await extractLinkup(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
-      } else if (currentProvider === "tavily") {
+      if (currentProvider === "tavily") {
         result = await extractTavily(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "exa") {
         result = await extractExa(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "linkup") {
+        result = await extractLinkup(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "firecrawl") {
+        result = await extractFirecrawl(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else {
         result = await extractYou(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }

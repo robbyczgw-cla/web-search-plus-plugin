@@ -101,22 +101,6 @@ type SearchResponse = {
   [key: string]: any;
 };
 
-type AnswerSource = {
-  title: string;
-  domain: string;
-  url: string;
-  published_date?: string | null;
-  source_type: string;
-  provider?: string | null;
-  extracted_status: "not_requested" | "extracted" | "failed" | "snippet_only";
-  used_in_answer: boolean;
-  citation: string;
-  snippet: string;
-  evidence?: string;
-  extraction_provider?: string;
-  extraction_error?: string;
-};
-
 type SearchExecutionResult = {
   ok: boolean;
   payload: SearchResponse | Json;
@@ -445,88 +429,6 @@ function domainFromUrl(url: string): string {
   } catch {
     return "unknown";
   }
-}
-
-function inferSourceType(url: string): string {
-  const domain = domainFromUrl(url);
-  if (["docs", "developer", "support", "help"].some((part) => domain.includes(part))) return "docs";
-  if (["wikipedia.org", "britannica.com"].some((part) => domain.includes(part))) return "reference";
-  if (["github.com", "gitlab.com"].some((part) => domain.includes(part))) return "code";
-  if (["reuters.com", "apnews.com", "bbc.com", "nytimes.com", "wsj.com"].some((part) => domain.includes(part))) return "news";
-  return "web";
-}
-
-function normalizeAnswerFreshness(query: string, requested: AnswerFreshness = "none"): { requested: AnswerFreshness; applied: "none" | "day" | "week" | "month" | "year"; reason: string } {
-  const value = requested || "none";
-  if (value !== "auto") {
-    return {
-      requested: value,
-      applied: value === "none" ? "none" : value,
-      reason: value === "none" ? "default freshness disabled" : "explicit freshness requested",
-    };
-  }
-
-  const q = query.toLowerCase();
-  const dayTerms = ["today", "right now", "breaking", "now", "heute", "gerade", "aktuell"];
-  const weekTerms = ["latest", "this week", "past week", "recent", "news", "updates", "new", "neueste", "diese woche", "nachrichten"];
-  const monthTerms = ["this month", "past month", "dieser monat", "letzter monat"];
-  if (dayTerms.some((term) => q.includes(term))) return { requested: value, applied: "day", reason: "query looked time-sensitive" };
-  if (weekTerms.some((term) => q.includes(term)) || /\b20[2-9][0-9]\b/.test(q)) return { requested: value, applied: "week", reason: "query looked time-sensitive" };
-  if (monthTerms.some((term) => q.includes(term))) return { requested: value, applied: "month", reason: "query looked time-sensitive" };
-  return { requested: value, applied: "none", reason: "no freshness signals detected" };
-}
-
-function preferredAnswerExtractProvider(runtimeConfig: RuntimeConfig): "auto" | "linkup" | null {
-  if ((runtimeConfig.linkupApiKey || "").trim()) return "linkup";
-  if (hasAnyExtractProviderCredential(runtimeConfig)) return "auto";
-  return null;
-}
-
-function cleanAnswerEvidence(input: string): string {
-  return String(input || "")
-    .replace(/!\[[^\]]*\]\(data:[^)]+\)/gi, " ")
-    .replace(/\[Reload\]\([^)]*\)/gi, " ")
-    .replace(/skip to content/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeAnswerSources(results: SearchResult[], provider?: string, limit = 3): AnswerSource[] {
-  return results.slice(0, limit).map((item) => {
-    const url = String(item.url || "");
-    const domain = domainFromUrl(url);
-    const publishedDate = item.date || item.published_date || item.age || null;
-    const title = String(item.title || titleFromUrl(url));
-    return {
-      title,
-      domain,
-      url,
-      published_date: publishedDate,
-      source_type: inferSourceType(url),
-      provider: item.provider || provider || null,
-      extracted_status: "not_requested",
-      used_in_answer: true,
-      citation: `[${title} (${domain}${publishedDate ? `, ${publishedDate}` : ""})](${url})`,
-      snippet: cleanAnswerEvidence(String(item.snippet || "")),
-    };
-  });
-}
-
-function buildAnswerText(query: string, sources: AnswerSource[], warnings: string[], snippetOnly: boolean): string {
-  const intro = snippetOnly ? `Snippet-backed brief for: ${query}` : `Source-backed brief for: ${query}`;
-  const bullets = sources.map((source, index) => `- [${index + 1}] ${source.title} — ${source.evidence || source.snippet || "No usable evidence captured."}`).join("\n");
-  const warningText = warnings.length ? `\n\nWarnings:\n${warnings.map((item) => `- ${item}`).join("\n")}` : "";
-  const citations = sources.length ? `\n\nCitations:\n${sources.map((source) => `- ${source.citation}`).join("\n")}` : "";
-  return `${intro}\n\n${bullets || "- No sources found."}${warningText}${citations}`.trim();
-}
-
-function formatAnswerBrief(payload: Json): string {
-  const warnings = Array.isArray(payload.warnings) && payload.warnings.length
-    ? `\n**Warnings:**\n${payload.warnings.map((item: string) => `- ${item}`).join("\n")}`
-    : "";
-  return `**Answer**\n${payload.answer}\n\n**Freshness:** ${payload.freshness?.applied || "none"}${warnings}`.trim();
 }
 
 async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Promise<any> {
@@ -1274,112 +1176,6 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
   }
 }
 
-async function composeAnswerPayload(runtimeConfig: RuntimeConfig, params: AnswerParams, pluginConfig: Record<string, any> = {}): Promise<Json> {
-  const query = String(params.query || "").trim();
-  if (!query) return { beta: true, stage: "input", error: "query is required" };
-
-  const mode: AnswerMode = params.mode === "deep" ? "deep" : "quick";
-  const output: AnswerOutput = ["answer", "brief", "sources", "json"].includes(String(params.output || "")) ? params.output as AnswerOutput : "answer";
-  const sourceCount = Math.max(1, Math.min(10, Math.floor(Number(params.sources || (mode === "deep" ? 6 : 3)))));
-  const requestedExtracts = params.max_extracts == null ? 2 : Math.max(0, Math.floor(Number(params.max_extracts)));
-  const extractCap = 5;
-  const extractCount = Math.min(requestedExtracts, extractCap, sourceCount);
-  const freshness = normalizeAnswerFreshness(query, (params.freshness || "none") as AnswerFreshness);
-  const warnings: string[] = [];
-  if (requestedExtracts > extractCap) warnings.push(`max_extracts capped at ${extractCap} to protect provider budget.`);
-
-  const searchResult = await executeSearch(runtimeConfig, {
-    query,
-    provider: "auto",
-    count: sourceCount,
-    depth: mode === "deep" ? "deep" : "normal",
-    time_range: freshness.applied === "none" ? undefined : freshness.applied,
-  }, pluginConfig);
-  if (!searchResult.ok) {
-    const failure = searchResult.payload as Json;
-    return { beta: true, stage: "search", query, mode, output, freshness, warnings, ...failure };
-  }
-
-  const searchPayload = searchResult.payload as SearchResponse;
-  const normalizedSources = normalizeAnswerSources(searchPayload.results || [], searchPayload.provider, sourceCount);
-  const urlsToExtract = normalizedSources.slice(0, extractCount).map((source) => source.url).filter(Boolean);
-  const extractProvider = preferredAnswerExtractProvider(runtimeConfig);
-  let extractPayload: any = { provider: null, results: [] };
-
-  if (urlsToExtract.length && !extractProvider) {
-    warnings.push("No extraction-capable provider is configured, so this answer uses search snippets only. Add Linkup (preferred), Firecrawl, Tavily, Exa, or You.com for fuller cited answers.");
-  } else if (urlsToExtract.length && extractProvider) {
-    extractPayload = await extractPlus(urlsToExtract, extractProvider, "markdown", false, false, false, runtimeConfig);
-    if (extractPayload?.error) warnings.push(`Extraction issue: ${extractPayload.error}`);
-    const extractedByUrl = new Map<string, any>((extractPayload.results || []).map((item: any) => [item.url, item]));
-    for (const source of normalizedSources.slice(0, extractCount)) {
-      const extracted = extractedByUrl.get(source.url);
-      if (extracted?.content) {
-        source.evidence = cleanAnswerEvidence(String(extracted.content).slice(0, 500));
-        source.extracted_status = "extracted";
-        source.extraction_provider = extracted.provider || extractPayload.provider || undefined;
-      } else if (extracted?.error) {
-        source.extracted_status = "failed";
-        source.extraction_error = String(extracted.error);
-        source.evidence = source.snippet;
-        warnings.push(`Extraction failed for ${source.url}: ${source.extraction_error}`);
-      }
-    }
-  }
-
-  for (const source of normalizedSources) {
-    if (!source.evidence) {
-      source.evidence = source.snippet;
-      if (source.extracted_status === "not_requested") {
-        source.extracted_status = urlsToExtract.includes(source.url) && extractProvider ? "failed" : "snippet_only";
-      }
-    }
-  }
-
-  const extractedCount = normalizedSources.filter((source) => source.extracted_status === "extracted").length;
-  const snippetOnly = extractedCount === 0;
-  const answer = buildAnswerText(query, normalizedSources, warnings, snippetOnly);
-  const confidence = normalizedSources.length >= 3 && extractedCount > 0 ? "high" : normalizedSources.length >= 2 ? "medium" : "low";
-  const payload = {
-    beta: true,
-    query,
-    mode,
-    output,
-    answer,
-    freshness,
-    confidence,
-    confidence_reason: {
-      sources: normalizedSources.length,
-      extracted_sources: extractedCount,
-      snippet_only: snippetOnly,
-    },
-    warnings,
-    provider: searchPayload.provider,
-    routing: searchPayload.routing,
-    sources: normalizedSources,
-    search_results_considered: normalizedSources.length,
-    extraction: {
-      provider: extractProvider,
-      actual_provider: extractPayload?.provider || null,
-      requested_urls: urlsToExtract,
-      attempted: urlsToExtract.length > 0 && !!extractProvider,
-      successful: extractedCount,
-      snippet_only: snippetOnly,
-    },
-    cost_estimate: {
-      extract_provider: extractProvider,
-      extracts_requested: urlsToExtract.length,
-      extracts_completed: extractedCount,
-      extract_cap: extractCap,
-    },
-  };
-
-  if (output === "json") return payload;
-  if (output === "sources") return { text: normalizedSources.map((source) => `- ${source.citation}`).join("\n") || "- No sources found." };
-  if (output === "brief") return { text: formatAnswerBrief(payload) };
-  return { text: answer };
-}
-
 function routingConfigStatus(loadResult: ReturnType<typeof loadRoutingPreferences>) {
   return sanitizeOutput({
     config_path: loadResult.path,
@@ -1533,6 +1329,6 @@ export function register(api: any) {
 export default definePluginEntry({
   id: "web-search-plus-plugin-v2",
   name: "Web Search Plus",
-  description: "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis.",
+  description: "One clean set of web tools for multi-provider search and extraction.",
   register,
 });

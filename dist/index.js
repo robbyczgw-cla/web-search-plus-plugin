@@ -150,8 +150,7 @@ function getRuntimeConfig(pluginConfig) {
     kilocodeApiKey: maybeString(pluginConfig?.kilocodeApiKey),
     youApiKey: maybeString(pluginConfig?.youApiKey),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
-    searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0,
-    enableWebAnswer: pluginConfig?.enableWebAnswer === true ? true : void 0
+    searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0
   };
 }
 
@@ -277,7 +276,7 @@ function resetRoutingPreferences(pluginConfig = {}) {
 }
 
 // extract.ts
-var EXTRACT_PROVIDER_PRIORITY = ["firecrawl", "linkup", "tavily", "exa", "you"];
+var EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "firecrawl", "you"];
 var EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -551,14 +550,14 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
     }
     try {
       let result;
-      if (currentProvider === "firecrawl") {
-        result = await extractFirecrawl(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
-      } else if (currentProvider === "linkup") {
-        result = await extractLinkup(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
-      } else if (currentProvider === "tavily") {
+      if (currentProvider === "tavily") {
         result = await extractTavily(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "exa") {
         result = await extractExa(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "linkup") {
+        result = await extractLinkup(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "firecrawl") {
+        result = await extractFirecrawl(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else {
         result = await extractYou(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }
@@ -626,44 +625,6 @@ var PARAMETERS_SCHEMA = {
       type: "array",
       items: { type: "string" },
       description: "Exclude results from these domains (Tavily, Linkup, Querit, Exa, Firecrawl where supported)."
-    }
-  }
-};
-var ANSWER_PARAMETERS_SCHEMA = {
-  type: "object",
-  required: ["query"],
-  properties: {
-    query: { type: "string", description: "Question or topic to answer from the web." },
-    mode: {
-      type: "string",
-      enum: ["quick", "deep"],
-      default: "quick",
-      description: "quick = fast synthesis from a few sources; deep = broader cited synthesis with a slightly larger search pass."
-    },
-    sources: {
-      type: "number",
-      default: 3,
-      minimum: 1,
-      maximum: 10,
-      description: "Number of citation-ready sources to return."
-    },
-    freshness: {
-      type: "string",
-      enum: ["none", "auto", "day", "week", "month", "year"],
-      default: "none",
-      description: "Optional recency control. Default none avoids accidental stale/current overfitting; set auto/day/week/month/year explicitly when needed."
-    },
-    output: {
-      type: "string",
-      enum: ["answer", "brief", "sources", "json"],
-      default: "answer",
-      description: "Return a markdown answer, short brief, sources-only list, or structured JSON."
-    },
-    max_extracts: {
-      type: "number",
-      minimum: 0,
-      maximum: 5,
-      description: "Advanced: number of top URLs to extract. Default 2, hard-capped at 5 for cost safety."
     }
   }
 };
@@ -969,91 +930,6 @@ function titleFromUrl2(url) {
   } catch {
     return url.slice(0, 80);
   }
-}
-function domainFromUrl(url) {
-  try {
-    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
-  } catch {
-    return "unknown";
-  }
-}
-function inferSourceType(url) {
-  const domain = domainFromUrl(url);
-  if (["docs", "developer", "support", "help"].some((part) => domain.includes(part))) return "docs";
-  if (["wikipedia.org", "britannica.com"].some((part) => domain.includes(part))) return "reference";
-  if (["github.com", "gitlab.com"].some((part) => domain.includes(part))) return "code";
-  if (["reuters.com", "apnews.com", "bbc.com", "nytimes.com", "wsj.com"].some((part) => domain.includes(part))) return "news";
-  return "web";
-}
-function normalizeAnswerFreshness(query, requested = "none") {
-  const value = requested || "none";
-  if (value !== "auto") {
-    return {
-      requested: value,
-      applied: value === "none" ? "none" : value,
-      reason: value === "none" ? "default freshness disabled" : "explicit freshness requested"
-    };
-  }
-  const q = query.toLowerCase();
-  const dayTerms = ["today", "right now", "breaking", "now", "heute", "gerade", "aktuell"];
-  const weekTerms = ["latest", "this week", "past week", "recent", "news", "updates", "new", "neueste", "diese woche", "nachrichten"];
-  const monthTerms = ["this month", "past month", "dieser monat", "letzter monat"];
-  if (dayTerms.some((term) => q.includes(term))) return { requested: value, applied: "day", reason: "query looked time-sensitive" };
-  if (weekTerms.some((term) => q.includes(term)) || /\b20[2-9][0-9]\b/.test(q)) return { requested: value, applied: "week", reason: "query looked time-sensitive" };
-  if (monthTerms.some((term) => q.includes(term))) return { requested: value, applied: "month", reason: "query looked time-sensitive" };
-  return { requested: value, applied: "none", reason: "no freshness signals detected" };
-}
-function preferredAnswerExtractProvider(runtimeConfig) {
-  if ((runtimeConfig.linkupApiKey || "").trim()) return "linkup";
-  if (hasAnyExtractProviderCredential(runtimeConfig)) return "auto";
-  return null;
-}
-function cleanAnswerEvidence(input) {
-  return String(input || "").replace(/!\[[^\]]*\]\(data:[^)]+\)/gi, " ").replace(/\[Reload\]\([^)]*\)/gi, " ").replace(/skip to content/gi, " ").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
-}
-function normalizeAnswerSources(results, provider, limit = 3) {
-  return results.slice(0, limit).map((item) => {
-    const url = String(item.url || "");
-    const domain = domainFromUrl(url);
-    const publishedDate = item.date || item.published_date || item.age || null;
-    const title = String(item.title || titleFromUrl2(url));
-    return {
-      title,
-      domain,
-      url,
-      published_date: publishedDate,
-      source_type: inferSourceType(url),
-      provider: item.provider || provider || null,
-      extracted_status: "not_requested",
-      used_in_answer: true,
-      citation: `[${title} (${domain}${publishedDate ? `, ${publishedDate}` : ""})](${url})`,
-      snippet: cleanAnswerEvidence(String(item.snippet || ""))
-    };
-  });
-}
-function buildAnswerText(query, sources, warnings, snippetOnly) {
-  const intro = snippetOnly ? `Snippet-backed brief for: ${query}` : `Source-backed brief for: ${query}`;
-  const bullets = sources.map((source, index) => `- [${index + 1}] ${source.title} \u2014 ${source.evidence || source.snippet || "No usable evidence captured."}`).join("\n");
-  const warningText = warnings.length ? `
-
-Warnings:
-${warnings.map((item) => `- ${item}`).join("\n")}` : "";
-  const citations = sources.length ? `
-
-Citations:
-${sources.map((source) => `- ${source.citation}`).join("\n")}` : "";
-  return `${intro}
-
-${bullets || "- No sources found."}${warningText}${citations}`.trim();
-}
-function formatAnswerBrief(payload) {
-  const warnings = Array.isArray(payload.warnings) && payload.warnings.length ? `
-**Warnings:**
-${payload.warnings.map((item) => `- ${item}`).join("\n")}` : "";
-  return `**Answer**
-${payload.answer}
-
-**Freshness:** ${payload.freshness?.applied || "none"}${warnings}`.trim();
 }
 async function httpJson(url, init, timeoutMs = 3e4) {
   const controller = new AbortController();
@@ -1994,104 +1870,6 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` } };
   }
 }
-async function composeAnswerPayload(runtimeConfig, params, pluginConfig = {}) {
-  const query = String(params.query || "").trim();
-  if (!query) return { beta: true, stage: "input", error: "query is required" };
-  const mode = params.mode === "deep" ? "deep" : "quick";
-  const output = ["answer", "brief", "sources", "json"].includes(String(params.output || "")) ? params.output : "answer";
-  const sourceCount = Math.max(1, Math.min(10, Math.floor(Number(params.sources || (mode === "deep" ? 6 : 3)))));
-  const requestedExtracts = params.max_extracts == null ? 2 : Math.max(0, Math.floor(Number(params.max_extracts)));
-  const extractCap = 5;
-  const extractCount = Math.min(requestedExtracts, extractCap, sourceCount);
-  const freshness = normalizeAnswerFreshness(query, params.freshness || "none");
-  const warnings = [];
-  if (requestedExtracts > extractCap) warnings.push(`max_extracts capped at ${extractCap} to protect provider budget.`);
-  const searchResult = await executeSearch(runtimeConfig, {
-    query,
-    provider: "auto",
-    count: sourceCount,
-    depth: mode === "deep" ? "deep" : "normal",
-    time_range: freshness.applied === "none" ? void 0 : freshness.applied
-  }, pluginConfig);
-  if (!searchResult.ok) {
-    const failure = searchResult.payload;
-    return { beta: true, stage: "search", query, mode, output, freshness, warnings, ...failure };
-  }
-  const searchPayload = searchResult.payload;
-  const normalizedSources = normalizeAnswerSources(searchPayload.results || [], searchPayload.provider, sourceCount);
-  const urlsToExtract = normalizedSources.slice(0, extractCount).map((source) => source.url).filter(Boolean);
-  const extractProvider = preferredAnswerExtractProvider(runtimeConfig);
-  let extractPayload = { provider: null, results: [] };
-  if (urlsToExtract.length && !extractProvider) {
-    warnings.push("No extraction-capable provider is configured, so this answer uses search snippets only. Add Linkup (preferred), Firecrawl, Tavily, Exa, or You.com for fuller cited answers.");
-  } else if (urlsToExtract.length && extractProvider) {
-    extractPayload = await extractPlus(urlsToExtract, extractProvider, "markdown", false, false, false, runtimeConfig);
-    if (extractPayload?.error) warnings.push(`Extraction issue: ${extractPayload.error}`);
-    const extractedByUrl = new Map((extractPayload.results || []).map((item) => [item.url, item]));
-    for (const source of normalizedSources.slice(0, extractCount)) {
-      const extracted = extractedByUrl.get(source.url);
-      if (extracted?.content) {
-        source.evidence = cleanAnswerEvidence(String(extracted.content).slice(0, 500));
-        source.extracted_status = "extracted";
-        source.extraction_provider = extracted.provider || extractPayload.provider || void 0;
-      } else if (extracted?.error) {
-        source.extracted_status = "failed";
-        source.extraction_error = String(extracted.error);
-        source.evidence = source.snippet;
-        warnings.push(`Extraction failed for ${source.url}: ${source.extraction_error}`);
-      }
-    }
-  }
-  for (const source of normalizedSources) {
-    if (!source.evidence) {
-      source.evidence = source.snippet;
-      if (source.extracted_status === "not_requested") {
-        source.extracted_status = urlsToExtract.includes(source.url) && extractProvider ? "failed" : "snippet_only";
-      }
-    }
-  }
-  const extractedCount = normalizedSources.filter((source) => source.extracted_status === "extracted").length;
-  const snippetOnly = extractedCount === 0;
-  const answer = buildAnswerText(query, normalizedSources, warnings, snippetOnly);
-  const confidence = normalizedSources.length >= 3 && extractedCount > 0 ? "high" : normalizedSources.length >= 2 ? "medium" : "low";
-  const payload = {
-    beta: true,
-    query,
-    mode,
-    output,
-    answer,
-    freshness,
-    confidence,
-    confidence_reason: {
-      sources: normalizedSources.length,
-      extracted_sources: extractedCount,
-      snippet_only: snippetOnly
-    },
-    warnings,
-    provider: searchPayload.provider,
-    routing: searchPayload.routing,
-    sources: normalizedSources,
-    search_results_considered: normalizedSources.length,
-    extraction: {
-      provider: extractProvider,
-      actual_provider: extractPayload?.provider || null,
-      requested_urls: urlsToExtract,
-      attempted: urlsToExtract.length > 0 && !!extractProvider,
-      successful: extractedCount,
-      snippet_only: snippetOnly
-    },
-    cost_estimate: {
-      extract_provider: extractProvider,
-      extracts_requested: urlsToExtract.length,
-      extracts_completed: extractedCount,
-      extract_cap: extractCap
-    }
-  };
-  if (output === "json") return payload;
-  if (output === "sources") return { text: normalizedSources.map((source) => `- ${source.citation}`).join("\n") || "- No sources found." };
-  if (output === "brief") return { text: formatAnswerBrief(payload) };
-  return { text: answer };
-}
 function routingConfigStatus(loadResult) {
   return sanitizeOutput({
     config_path: loadResult.path,
@@ -2204,31 +1982,6 @@ function register(api) {
   );
   api.registerTool(
     {
-      name: "web_answer_plus",
-      description: "Beta: produce a written web answer or cited brief by combining web_search_plus with bounded optional extraction. Prefer web_search_plus instead for current events, sports lineups, live scores, schedules, prices, weather, and raw source discovery. Use this only when you explicitly want a written answer, summary, brief, or cited synthesis.",
-      parameters: ANSWER_PARAMETERS_SCHEMA,
-      checkFn() {
-        const pluginConfig = api.pluginConfig ?? {};
-        const runtimeConfig = getRuntimeConfig(pluginConfig);
-        return runtimeConfig.enableWebAnswer === true;
-      },
-      async execute(_id, params) {
-        try {
-          const pluginConfig = api.pluginConfig ?? {};
-          const runtimeConfig = getRuntimeConfig(pluginConfig);
-          const payload = await composeAnswerPayload(runtimeConfig, params, pluginConfig);
-          if (payload.error) return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
-          if (typeof payload.text === "string") return { content: [{ type: "text", text: payload.text }] };
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(payload)) }] };
-        } catch (error2) {
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ beta: true, error: String(error2?.message || error2) })) }] };
-        }
-      }
-    },
-    { optional: true }
-  );
-  api.registerTool(
-    {
       name: "web_extract_plus",
       description: "Extract URL content with automatic fallback across Firecrawl, Linkup, Tavily, Exa, and You.com, with per-URL errors and unified output.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
@@ -2261,7 +2014,7 @@ function register(api) {
 var index_default = definePluginEntry({
   id: "web-search-plus-plugin-v2",
   name: "Web Search Plus",
-  description: "One clean set of web tools for multi-provider search, extraction, and optional beta answer synthesis.",
+  description: "One clean set of web tools for multi-provider search and extraction.",
   register
 });
 export {
