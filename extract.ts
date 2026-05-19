@@ -2,7 +2,7 @@ import type { RuntimeConfig } from "./runtime-config.ts";
 
 type Json = Record<string, any>;
 
-export type ExtractProviderName = "tavily" | "exa" | "linkup" | "firecrawl" | "you";
+export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you";
 export type ExtractFormat = "markdown" | "html";
 
 export type ExtractImage = {
@@ -35,7 +35,7 @@ export type ExtractResponse = {
   };
 };
 
-export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "firecrawl", "you"];
+export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you"];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -43,7 +43,7 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "you"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you"],
       description: "Force a provider, or use auto fallback routing (default: auto)",
     },
     format: {
@@ -130,6 +130,7 @@ function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeC
     tavily: runtimeConfig.tavilyApiKey,
     exa: runtimeConfig.exaApiKey,
     you: runtimeConfig.youApiKey,
+    parallel: runtimeConfig.parallelApiKey,
   };
   return keyMap[provider];
 }
@@ -320,6 +321,41 @@ export async function extractExa(
   return { provider: "exa", results };
 }
 
+export async function extractParallel(
+  urls: string[],
+  apiKey: string,
+  outputFormat: ExtractFormat = "markdown",
+  _includeImages = false,
+  includeRawHtml = false,
+  _renderJs = false,
+  apiUrl = "https://api.parallel.ai/v1beta/tasks/extract",
+  timeout = 30,
+): Promise<ExtractResponse> {
+  const data = await requestJson(apiUrl, {
+    method: "POST",
+    headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      urls,
+      max_chars_total: 20000,
+      advanced_settings: { full_content: { max_chars_per_result: 8000 } },
+    }),
+  }, timeout);
+
+  const rawItems = Array.isArray(data?.results) ? data.results : Array.isArray(data?.data) ? data.data : [];
+  const results = rawItems.map((item: any) => {
+    const url = String(item?.url || item?.source_url || "");
+    const excerpts = Array.isArray(item?.excerpts) ? item.excerpts : Array.isArray(item?.snippets) ? item.snippets : [];
+    const markdown = String(item?.markdown || item?.content || item?.text || excerpts.join("\n\n") || "");
+    const html = String(item?.html || item?.raw_html || "");
+    const content = outputFormat === "html" ? html || markdown : markdown || html;
+    return normalizeExtractResult("parallel", url, String(item?.title || ""), content, content, {
+      raw_html: includeRawHtml ? html || undefined : undefined,
+      metadata: { search_id: data?.search_id, session_id: data?.session_id },
+    });
+  });
+  return { provider: "parallel", results };
+}
+
 export async function extractYou(
   urls: string[],
   apiKey: string,
@@ -410,6 +446,8 @@ export async function extractPlus(
         result = await extractExa(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "linkup") {
         result = await extractLinkup(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "parallel") {
+        result = await extractParallel(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "firecrawl") {
         result = await extractFirecrawl(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else {
