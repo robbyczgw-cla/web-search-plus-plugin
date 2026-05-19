@@ -1,15 +1,18 @@
-export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "kilo-perplexity" | "you" | "searxng";
+export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "kilo-perplexity" | "you" | "searxng" | "parallel" | "serpbase";
 
-export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "brave", "serper", "you", "searxng"];
+export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng"];
+
+export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["brave", "serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
 
 export type RoutingPreferences = {
-  version: 1;
+  version: 2;
   auto_routing: boolean;
   default_provider: ProviderName | null;
   provider_priority: ProviderName[];
   fallback_provider: ProviderName | null;
   disabled_providers: ProviderName[];
   confidence_threshold: number;
+  auto_allow: Record<ProviderName, boolean>;
 };
 
 export type RoutingConfigLoadResult = {
@@ -22,13 +25,14 @@ export type RoutingConfigLoadResult = {
 };
 
 export const DEFAULT_ROUTING_PREFERENCES: RoutingPreferences = {
-  version: 1,
+  version: 2,
   auto_routing: true,
   default_provider: null,
   provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
   fallback_provider: null,
   disabled_providers: [],
   confidence_threshold: 0.4,
+  auto_allow: Object.fromEntries(DEFAULT_PROVIDER_PRIORITY.map((provider) => [provider, !GUARDED_AUTO_PROVIDERS.includes(provider)])) as Record<ProviderName, boolean>,
 };
 
 const memoryRoutingPreferences = new Map<string, RoutingPreferences>();
@@ -38,6 +42,7 @@ function cloneConfig(config: RoutingPreferences): RoutingPreferences {
     ...config,
     provider_priority: [...config.provider_priority],
     disabled_providers: [...config.disabled_providers],
+    auto_allow: { ...config.auto_allow },
   };
 }
 
@@ -86,6 +91,16 @@ function normalizePriority(values: unknown): ProviderName[] {
   return completed;
 }
 
+function normalizeAutoAllow(value: unknown): Record<ProviderName, boolean> {
+  const defaults = { ...DEFAULT_ROUTING_PREFERENCES.auto_allow };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaults;
+  for (const [rawProvider, rawAllowed] of Object.entries(value as Record<string, unknown>)) {
+    const provider = normalizeProviderName(rawProvider);
+    defaults[provider] = rawAllowed === true;
+  }
+  return defaults;
+}
+
 function normalizeThreshold(value: unknown): number {
   const threshold = Number(value);
   if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
@@ -113,6 +128,7 @@ export function validateRoutingPreferences(raw: unknown): RoutingPreferences {
   config.fallback_provider = input.fallback_provider == null ? config.fallback_provider : normalizeOptionalProvider(input.fallback_provider);
   config.disabled_providers = input.disabled_providers == null ? config.disabled_providers : normalizeProviderList(input.disabled_providers);
   config.confidence_threshold = input.confidence_threshold == null ? config.confidence_threshold : normalizeThreshold(input.confidence_threshold);
+  config.auto_allow = input.auto_allow == null ? config.auto_allow : normalizeAutoAllow(input.auto_allow);
   return config;
 }
 
