@@ -149,28 +149,33 @@ function getRuntimeConfig(pluginConfig) {
     perplexityApiKey: maybeString(pluginConfig?.perplexityApiKey),
     kilocodeApiKey: maybeString(pluginConfig?.kilocodeApiKey),
     youApiKey: maybeString(pluginConfig?.youApiKey),
+    parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
+    serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0
   };
 }
 
 // routing-config.ts
-var DEFAULT_PROVIDER_PRIORITY = ["tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "brave", "serper", "you", "searxng"];
+var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng"];
+var GUARDED_AUTO_PROVIDERS = ["brave", "serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
 var DEFAULT_ROUTING_PREFERENCES = {
-  version: 1,
+  version: 2,
   auto_routing: true,
   default_provider: null,
   provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
   fallback_provider: null,
   disabled_providers: [],
-  confidence_threshold: 0.4
+  confidence_threshold: 0.4,
+  auto_allow: Object.fromEntries(DEFAULT_PROVIDER_PRIORITY.map((provider) => [provider, !GUARDED_AUTO_PROVIDERS.includes(provider)]))
 };
 var memoryRoutingPreferences = /* @__PURE__ */ new Map();
 function cloneConfig(config) {
   return {
     ...config,
     provider_priority: [...config.provider_priority],
-    disabled_providers: [...config.disabled_providers]
+    disabled_providers: [...config.disabled_providers],
+    auto_allow: { ...config.auto_allow }
   };
 }
 function cloneDefaults() {
@@ -213,6 +218,15 @@ function normalizePriority(values) {
   }
   return completed;
 }
+function normalizeAutoAllow(value) {
+  const defaults = { ...DEFAULT_ROUTING_PREFERENCES.auto_allow };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaults;
+  for (const [rawProvider, rawAllowed] of Object.entries(value)) {
+    const provider = normalizeProviderName(rawProvider);
+    defaults[provider] = rawAllowed === true;
+  }
+  return defaults;
+}
 function normalizeThreshold(value) {
   const threshold = Number(value);
   if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
@@ -236,6 +250,7 @@ function validateRoutingPreferences(raw) {
   config.fallback_provider = input.fallback_provider == null ? config.fallback_provider : normalizeOptionalProvider(input.fallback_provider);
   config.disabled_providers = input.disabled_providers == null ? config.disabled_providers : normalizeProviderList(input.disabled_providers);
   config.confidence_threshold = input.confidence_threshold == null ? config.confidence_threshold : normalizeThreshold(input.confidence_threshold);
+  config.auto_allow = input.auto_allow == null ? config.auto_allow : normalizeAutoAllow(input.auto_allow);
   return config;
 }
 function loadRoutingPreferences(pluginConfig = {}) {
@@ -276,7 +291,7 @@ function resetRoutingPreferences(pluginConfig = {}) {
 }
 
 // extract.ts
-var EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "firecrawl", "you"];
+var EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you"];
 var EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -284,7 +299,7 @@ var EXTRACT_PARAMETERS_SCHEMA = {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "you"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you"],
       description: "Force a provider, or use auto fallback routing (default: auto)"
     },
     format: {
@@ -356,7 +371,8 @@ function getExtractApiKey(provider, runtimeConfig) {
     linkup: runtimeConfig.linkupApiKey,
     tavily: runtimeConfig.tavilyApiKey,
     exa: runtimeConfig.exaApiKey,
-    you: runtimeConfig.youApiKey
+    you: runtimeConfig.youApiKey,
+    parallel: runtimeConfig.parallelApiKey
   };
   return keyMap[provider];
 }
@@ -493,6 +509,30 @@ async function extractExa(urls, apiKey, outputFormat = "markdown", includeImages
   });
   return { provider: "exa", results };
 }
+async function extractParallel(urls, apiKey, outputFormat = "markdown", _includeImages = false, includeRawHtml = false, _renderJs = false, apiUrl = "https://api.parallel.ai/v1beta/tasks/extract", timeout = 30) {
+  const data = await requestJson(apiUrl, {
+    method: "POST",
+    headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      urls,
+      max_chars_total: 2e4,
+      advanced_settings: { full_content: { max_chars_per_result: 8e3 } }
+    })
+  }, timeout);
+  const rawItems = Array.isArray(data?.results) ? data.results : Array.isArray(data?.data) ? data.data : [];
+  const results = rawItems.map((item) => {
+    const url = String(item?.url || item?.source_url || "");
+    const excerpts = Array.isArray(item?.excerpts) ? item.excerpts : Array.isArray(item?.snippets) ? item.snippets : [];
+    const markdown = String(item?.markdown || item?.content || item?.text || excerpts.join("\n\n") || "");
+    const html = String(item?.html || item?.raw_html || "");
+    const content = outputFormat === "html" ? html || markdown : markdown || html;
+    return normalizeExtractResult("parallel", url, String(item?.title || ""), content, content, {
+      raw_html: includeRawHtml ? html || void 0 : void 0,
+      metadata: { search_id: data?.search_id, session_id: data?.session_id }
+    });
+  });
+  return { provider: "parallel", results };
+}
 async function extractYou(urls, apiKey, outputFormat = "markdown", includeImages = false, includeRawHtml = false, _renderJs = false, apiUrl = "https://ydc-index.io/v1/contents", timeout = 30) {
   void includeImages;
   const formats = [outputFormat === "html" ? "html" : "markdown"];
@@ -556,6 +596,8 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         result = await extractExa(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "linkup") {
         result = await extractLinkup(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "parallel") {
+        result = await extractParallel(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "firecrawl") {
         result = await extractFirecrawl(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else {
@@ -594,7 +636,7 @@ var DEFAULT_CACHE_TTL = 3600;
 var RETRY_BACKOFF_MS = [1e3, 3e3, 9e3];
 var COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 var TRANSIENT_HTTP_CODES = /* @__PURE__ */ new Set([408, 425, 429, 500, 502, 503, 504]);
-var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "you", "searxng", "kilo_perplexity", "auto"];
+var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "kilo_perplexity", "auto"];
 var PARAMETERS_SCHEMA = {
   type: "object",
   required: ["query"],
@@ -625,7 +667,8 @@ var PARAMETERS_SCHEMA = {
       type: "array",
       items: { type: "string" },
       description: "Exclude results from these domains (Tavily, Linkup, Querit, Exa, Firecrawl where supported)."
-    }
+    },
+    quality_report: { type: "boolean", description: "Attach routing decision, provider score, result-quality, and fallback diagnostics." }
   }
 };
 var ROUTING_CONFIG_ACTIONS = [
@@ -650,7 +693,7 @@ var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     confidence_threshold: { type: "number", minimum: 0, maximum: 1 }
   }
 };
-var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "perplexity", "kilo-perplexity", "you", "searxng"];
+var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng"];
 var ProviderConfigError = class extends Error {
 };
 var ProviderRequestError = class extends Error {
@@ -838,7 +881,9 @@ function pickStrictDefaultProvider(availableProviders, routingConfig) {
   return isProviderUsable(routingConfig.default_provider, availableProviders, routingConfig.disabled_providers) ? routingConfig.default_provider : null;
 }
 function selectAutoProvider(query, availableProviders, routingConfig) {
-  const orderedProviders = orderProvidersByPreference(availableProviders, routingConfig);
+  const autoExcluded = availableProviders.filter((provider2) => routingConfig.auto_allow?.[provider2] === false);
+  const autoProviders = availableProviders.filter((provider2) => routingConfig.auto_allow?.[provider2] !== false);
+  const orderedProviders = orderProvidersByPreference(autoProviders.length ? autoProviders : availableProviders, routingConfig);
   const analyzer = new QueryAnalyzer();
   const analysis = analyzer.route(query, orderedProviders);
   let provider = analysis.provider;
@@ -859,7 +904,12 @@ function selectAutoProvider(query, availableProviders, routingConfig) {
       confidence_level: analysis.confidence >= routingConfig.confidence_threshold ? analysis.confidence_level : "low",
       reason,
       confidence_threshold: routingConfig.confidence_threshold,
-      exa_depth: analysis.exa_depth
+      exa_depth: analysis.exa_depth,
+      routing_policy: analysis.routing_policy,
+      language_hint: analysis.analysis_summary?.language_hint,
+      routing_class: analysis.analysis_summary?.routing_class,
+      scores: analysis.scores,
+      auto_allow_excluded: autoExcluded
     }
   };
 }
@@ -891,7 +941,9 @@ function getApiKey(provider, runtimeConfig) {
     perplexity: runtimeConfig.perplexityApiKey,
     "kilo-perplexity": runtimeConfig.kilocodeApiKey,
     you: runtimeConfig.youApiKey,
-    searxng: runtimeConfig.searxngInstanceUrl
+    searxng: runtimeConfig.searxngInstanceUrl,
+    parallel: runtimeConfig.parallelApiKey,
+    serpbase: runtimeConfig.serpbaseApiKey
   };
   return keyMap[provider];
 }
@@ -1387,6 +1439,56 @@ var QueryAnalyzer = class {
     if (clauseMarkers > 0) complexityScore += clauseMarkers * 0.5;
     return { word_count: wordCount, question_words: questionWords, clause_markers: clauseMarkers, complexity_score: complexityScore, is_complex: complexityScore > 2 };
   }
+  detectLanguageHint(query) {
+    if (/[äöüß]|\b(was|wer|wie|wann|wo|warum|aktuell|preis|kaufen)\b/i.test(query)) return "de";
+    if (/\b(arxiv|paper|github|npm|python|api|docs|cve)\b/i.test(query)) return "en";
+    return "en";
+  }
+  detectRoutingClass(query) {
+    const q = query.toLowerCase();
+    if (/\b(arxiv|paper|papers|doi|academic|literature review|research paper)\b/.test(q)) return "academic/arxiv";
+    if (/\b(github|api docs?|sdk|package docs?|npm|pypi|readme)\b/.test(q)) return "docs/api";
+    if (/\b(cve|security advisory|vulnerability|patch notes|vendor advisory)\b/.test(q)) return "security/cve";
+    if (/\b(reddit|hacker news|hn|community discussion|forum)\b/.test(q)) return "community/reddit";
+    if (/\b(regulation|regulatory|official|policy|pdf|government|eu commission)\b/.test(q)) return "official/regulatory";
+    if (/\b(annual report|investor relations|10-k|earnings|sec filing|ir)\b/.test(q)) return "finance/IR";
+    if (/\b(weather|temperature|forecast|rain|snow)\b/.test(q)) return "weather/factual";
+    if (/\b(similar|alternatives?|companies like|tools like|oss|open source discovery)\b/.test(q)) return "oss-discovery";
+    if (/\b(summarize|synthesis|briefing|answer|explain)\b/.test(q)) return "answer/synthesis";
+    if (/\b(buy|price|preis|kaufen|shop|shopping|near me|graz|austria|österreich)\b/.test(q)) return "local/shopping";
+    if (/\b(latest|current|aktuell|aktuelle|news|nachrichten|today|heute|multilingual|deutsch|english|spanish)\b/.test(q)) return "multilingual/current";
+    return "general";
+  }
+  applyRoutingV2Boosts(query, scores, matches) {
+    const routingClass = this.detectRoutingClass(query);
+    const boost = (provider, amount, label) => {
+      scores[provider] = (scores[provider] || 0) + amount;
+      (matches[provider] ||= []).push({ pattern: `routing_v2:${routingClass}`, matched: label, weight: amount });
+    };
+    if (routingClass === "academic/arxiv") boost("exa", 8, "arXiv/academic intent");
+    else if (routingClass === "docs/api") {
+      boost("exa", 5, "docs/API intent");
+      boost("firecrawl", 4, "docs/API scrape intent");
+    } else if (routingClass === "security/cve") boost("firecrawl", 7, "vendor/CVE source intent");
+    else if (routingClass === "community/reddit") {
+      boost("serper", 9, "community intent");
+      boost("brave", 8, "community intent");
+    } else if (routingClass === "official/regulatory") boost("linkup", 7, "official/regulatory grounding");
+    else if (routingClass === "finance/IR") {
+      boost("linkup", 5, "finance IR grounding");
+      boost("tavily", 4, "finance research");
+    } else if (routingClass === "weather/factual") boost("you", 10, "snippet-first factual intent");
+    else if (routingClass === "oss-discovery") boost("exa", 6, "similar-page discovery");
+    else if (routingClass === "answer/synthesis") {
+      boost("exa", 3, "synthesis intent without answer tool");
+      boost("tavily", 3, "synthesis research");
+    } else if (routingClass === "local/shopping") boost("serper", 12, "local/shopping intent");
+    else if (routingClass === "multilingual/current") {
+      boost("querit", 5, "multilingual/current intent");
+      boost("brave", 4, "current web intent");
+    }
+    return routingClass;
+  }
   detectRecencyIntent(query) {
     const patterns = [
       [/\b(latest|newest|recent|current)\b/i, 2.5],
@@ -1426,40 +1528,49 @@ var QueryAnalyzer = class {
       research.matches.push({ pattern: "query_complexity", matched: `complex query (${complexity.word_count} words)`, weight: complexity.complexity_score });
     }
     const recency = this.detectRecencyIntent(query);
+    const providerScores = {
+      serper: shopping.total + localNews.total + recency.score * 0.35,
+      brave: shopping.total + localNews.total + recency.score * 0.35,
+      tavily: research.total + (complexity.is_complex ? 0 : complexity.complexity_score) + recency.score * 0.2,
+      linkup: linkupSource.total + rag.total * 0.7 + research.total * 0.45 + recency.score * 0.35,
+      querit: research.total * 0.65 + rag.total * 0.35 + recency.score * 0.45,
+      exa: discovery.total + (/(\bsimilar|alternatives?|examples?)\b/i.test(query) ? 1 : 0) + exaDeep.total * 0.5 + exaDeepReasoning.total * 0.5,
+      firecrawl: discovery.total + research.total * 0.35 + recency.score * 0.25,
+      parallel: research.total * 0.5 + discovery.total * 0.5,
+      serpbase: shopping.total + localNews.total + recency.score * 0.35,
+      perplexity: direct.total + localNews.total * 0.4 + recency.score * 0.55,
+      "kilo-perplexity": direct.total + localNews.total * 0.4 + recency.score * 0.55,
+      you: rag.total + recency.score * 0.25,
+      searxng: privacy.total
+    };
+    const providerMatches = {
+      serper: [...shopping.matches, ...localNews.matches],
+      brave: [...shopping.matches, ...localNews.matches],
+      tavily: research.matches,
+      linkup: [...linkupSource.matches, ...rag.matches, ...research.matches],
+      querit: research.matches,
+      exa: [...discovery.matches, ...exaDeep.matches, ...exaDeepReasoning.matches],
+      firecrawl: [...discovery.matches, ...research.matches],
+      parallel: [...research.matches, ...discovery.matches],
+      serpbase: [...shopping.matches, ...localNews.matches],
+      perplexity: direct.matches,
+      "kilo-perplexity": direct.matches,
+      you: rag.matches,
+      searxng: privacy.matches
+    };
+    const routingClass = this.applyRoutingV2Boosts(query, providerScores, providerMatches);
     return {
       detected_url: detectedUrl,
+      language_hint: this.detectLanguageHint(query),
+      routing_class: routingClass,
       complexity,
       recency_focused: recency.is_recency_focused,
       recency_score: recency.score,
       linkup_source_score: linkupSource.total,
       exa_deep_score: exaDeep.total,
       exa_deep_reasoning_score: exaDeepReasoning.total,
-      provider_scores: {
-        serper: shopping.total + localNews.total + recency.score * 0.35,
-        brave: shopping.total + localNews.total + recency.score * 0.35,
-        tavily: research.total + (complexity.is_complex ? 0 : complexity.complexity_score) + recency.score * 0.2,
-        linkup: linkupSource.total + rag.total * 0.7 + research.total * 0.45 + recency.score * 0.35,
-        querit: research.total * 0.65 + rag.total * 0.35 + recency.score * 0.45,
-        exa: discovery.total + (/(\bsimilar|alternatives?|examples?)\b/i.test(query) ? 1 : 0) + exaDeep.total * 0.5 + exaDeepReasoning.total * 0.5,
-        firecrawl: discovery.total + research.total * 0.35 + recency.score * 0.25,
-        perplexity: direct.total + localNews.total * 0.4 + recency.score * 0.55,
-        "kilo-perplexity": direct.total + localNews.total * 0.4 + recency.score * 0.55,
-        you: rag.total + recency.score * 0.25,
-        searxng: privacy.total
-      },
-      provider_matches: {
-        serper: [...shopping.matches, ...localNews.matches],
-        brave: [...shopping.matches, ...localNews.matches],
-        tavily: research.matches,
-        linkup: [...linkupSource.matches, ...rag.matches, ...research.matches],
-        querit: research.matches,
-        exa: [...discovery.matches, ...exaDeep.matches, ...exaDeepReasoning.matches],
-        firecrawl: [...discovery.matches, ...research.matches],
-        perplexity: direct.matches,
-        "kilo-perplexity": direct.matches,
-        you: rag.matches,
-        searxng: privacy.matches
-      }
+      provider_scores: providerScores,
+      provider_matches: providerMatches
     };
   }
   route(query, availableProviders) {
@@ -1492,7 +1603,11 @@ var QueryAnalyzer = class {
       exa_depth: exaDepth,
       scores: Object.fromEntries(providers.map((p) => [p, Number((available[p] || 0).toFixed(2))])),
       top_signals: (analysis.provider_matches[winner] || []).sort((a, b) => b.weight - a.weight).slice(0, 5).map((s) => ({ matched: s.matched, weight: s.weight })),
+      routing_policy: "routing-v2",
       analysis_summary: {
+        language_hint: analysis.language_hint,
+        routing_class: analysis.routing_class,
+        answer_mode_recommended: analysis.routing_class === "answer/synthesis",
         query_length: query.trim().split(/\s+/).filter(Boolean).length,
         is_complex: analysis.complexity.is_complex,
         has_url: !!analysis.detected_url,
@@ -1648,6 +1763,51 @@ async function searchFirecrawl(query, apiKey, maxResults, timeRange, includeDoma
   const images = (responseData.images || []).map((image) => image.imageUrl).filter(Boolean);
   return { provider: "firecrawl", query, results, images, answer: results[0]?.snippet || "", warning: data.warning, credits_used: data.creditsUsed, metadata: { id: data.id, sources: body.sources, tbs } };
 }
+function stripTrackingParams(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(utm_|fbclid$|gclid$|mc_cid$|mc_eid$)/i.test(key)) url.searchParams.delete(key);
+    }
+    return url.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+async function searchSerpBase(query, apiKey, maxResults, timeRange) {
+  const url = new URL("https://api.serpbase.com/search");
+  url.searchParams.set("api_key", apiKey);
+  url.searchParams.set("q", query);
+  url.searchParams.set("num", String(maxResults));
+  if (timeRange) url.searchParams.set("time_range", timeRange);
+  const data = await httpJson(url.toString(), { method: "GET", headers: { Accept: "application/json" } });
+  if (data?.status != null && Number(data.status) !== 0) {
+    throw new ProviderRequestError(String(data?.error || data?.message || `SerpBase request failed with status=${data.status}`));
+  }
+  const organic = data.organic_results || data.organic || data.results || [];
+  const results = organic.slice(0, maxResults).map((item, i) => ({
+    title: item.title || "",
+    url: stripTrackingParams(item.link || item.url || ""),
+    snippet: item.snippet || item.description || "",
+    score: Number((1 - i * 0.05).toFixed(3)),
+    position: item.position
+  }));
+  return { provider: "serpbase", query, results, images: [], answer: data?.answer_box?.answer || data?.knowledge_graph?.description || results[0]?.snippet || "", knowledge_graph: data?.knowledge_graph, related_searches: (data.related_searches || []).map((r) => typeof r === "string" ? r : r.query).filter(Boolean), metadata: { session_id: data.session_id } };
+}
+async function searchParallel(query, apiKey, maxResults, includeDomains, excludeDomains) {
+  const searchQuery = [query, ...(includeDomains || []).map((domain) => `site:${domain}`), ...(excludeDomains || []).map((domain) => `-site:${domain}`)].join(" ").trim();
+  const data = await httpJson("https://api.parallel.ai/v1beta/search", {
+    method: "POST",
+    headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ objective: query, search_queries: [searchQuery] })
+  }, 3e4);
+  const raw = data.results || data.search_results || data.data || [];
+  const results = raw.slice(0, maxResults).map((item, i) => {
+    const excerpts = Array.isArray(item.excerpts) ? item.excerpts : Array.isArray(item.snippets) ? item.snippets : [];
+    return { title: item.title || titleFromUrl2(item.url || ""), url: item.url || item.link || "", snippet: excerpts.length ? excerpts.join(" ... ") : item.snippet || item.description || "", score: Number((1 - i * 0.05).toFixed(3)) };
+  });
+  return { provider: "parallel", query, results, images: [], answer: results[0]?.snippet || "", metadata: { search_id: data.search_id, session_id: data.session_id } };
+}
 async function searchPerplexityCompatible(provider, query, apiKey, maxResults, timeRange) {
   const body = {
     model: provider === "perplexity" ? "sonar-pro" : "perplexity/sonar-pro",
@@ -1726,6 +1886,32 @@ async function executeWithRetry(fn) {
     }
   }
   throw lastError;
+}
+function hostnameOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+function buildQualityReport(result, routingInfo, errors, cooldownSkips, providersConsidered) {
+  const results = Array.isArray(result.results) ? result.results : [];
+  const domains = [...new Set(results.map((r) => hostnameOf(r.url)).filter(Boolean))];
+  const thinSnippetCount = results.filter((r) => String(r.snippet || "").length < 40).length;
+  const extractReasons = [];
+  if ((routingInfo.confidence_level || "") === "low") extractReasons.push("low_routing_confidence");
+  if (results.length < 3) extractReasons.push("few_results");
+  if (domains.length <= 1 && results.length > 1) extractReasons.push("low_domain_diversity");
+  if (thinSnippetCount >= Math.ceil(Math.max(1, results.length) / 2)) extractReasons.push("thin_snippets");
+  const dedupCount = Number((result.metadata || {}).dedup_count || 0);
+  if (dedupCount > 0) extractReasons.push("duplicates_removed");
+  return {
+    routing_decision: { provider: result.provider, requested_provider: routingInfo.requested_provider, routing_policy: routingInfo.routing_policy || "routing-v2", routing_class: routingInfo.routing_class, language_hint: routingInfo.language_hint, confidence_level: routingInfo.confidence_level, reason: routingInfo.reason, scores: routingInfo.scores || {} },
+    result_quality: { result_count: results.length, domain_count: domains.length, domains, domain_diversity: results.length ? Number((domains.length / results.length).toFixed(3)) : 0, thin_snippet_count: thinSnippetCount, dedup_count: dedupCount },
+    fallback_chain: { providers_considered: providersConsidered, provider_errors: errors, cooldown_skips: cooldownSkips },
+    extract_recommended: extractReasons.length > 0,
+    extract_reasons: extractReasons
+  };
 }
 async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
   try {
@@ -1822,6 +2008,8 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
       }
       if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
+      if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
@@ -1864,6 +2052,9 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     if (!result.metadata) result.metadata = {};
     if (result.deduplicated == null) result.deduplicated = false;
     if (result.metadata.dedup_count == null) result.metadata.dedup_count = 0;
+    if (params.quality_report) {
+      result.quality_report = buildQualityReport(result, routingInfo, errors, cooldownSkips, providersToTry);
+    }
     cachePut(query, successfulProvider, count, result, cacheContext);
     return { ok: true, payload: sanitizeOutput(result) };
   } catch (error2) {
