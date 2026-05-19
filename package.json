@@ -1,7 +1,7 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "2.6.0",
-  "description": "OpenClaw plugin: one clean set of web tools for multi-provider search and extraction across Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Perplexity direct, Kilo Perplexity gateway, You.com, and SearXNG.",
+  "version": "3.0.0",
+  "description": "OpenClaw plugin: one clean set of web tools for Routing v2 multi-provider search and Tavily-first extraction across Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, Perplexity direct, Kilo Perplexity gateway, You.com, and SearXNG.",
   "type": "module",
   "main": "index.ts",
   "scripts": {
@@ -30,7 +30,11 @@
     "routing-config.ts",
     "runtime-config.ts",
     "openclaw.plugin.json",
-    "dist/index.js"
+    "dist/index.js",
+    "bin/web-search-plus-setup.mjs",
+    "SKILL.md",
+    "README.md",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "openclaw",
@@ -48,7 +52,11 @@
     "you",
     "searxng",
     "web-search",
-    "auto-routing"
+    "auto-routing",
+    "parallel",
+    "serpbase",
+    "routing-v2",
+    "quality-report"
   ],
   "peerDependencies": {
     "openclaw": ">=2026.3.22"
@@ -61,5 +69,8 @@
   "license": "MIT",
   "devDependencies": {
     "esbuild": "^0.25.0"
+  },
+  "bin": {
+    "web-search-plus-setup": "./bin/web-search-plus-setup.mjs"
   }
 }
