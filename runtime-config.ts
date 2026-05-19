@@ -10,6 +10,8 @@ export type RuntimeConfig = {
   perplexityApiKey?: string;
   kilocodeApiKey?: string;
   youApiKey?: string;
+  parallelApiKey?: string;
+  serpbaseApiKey?: string;
   searxngInstanceUrl?: string;
   searxngAllowPrivate?: boolean;
 };
@@ -33,6 +35,8 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     perplexityApiKey: maybeString(pluginConfig?.perplexityApiKey),
     kilocodeApiKey: maybeString(pluginConfig?.kilocodeApiKey),
     youApiKey: maybeString(pluginConfig?.youApiKey),
+    parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
+    serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : undefined,
   };
