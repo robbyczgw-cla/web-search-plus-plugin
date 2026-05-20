@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.0.0] - 2026-05-19
+
+### Breaking Changes
+- Removed the `web_answer_plus` surface for good. Migration: call `web_search_plus` for source discovery and `web_extract_plus` for the URLs that need full-text grounding. The plugin surface is now `web_search_plus`, `web_extract_plus`, and `web_routing_config_plus` only.
+- Routing preferences moved to schema version 2 with guarded-provider `auto_allow` flags. Existing in-memory preferences reset to conservative defaults when invalid.
+
+### Added
+- Added Routing v2 class-aware routing with diagnostics for `language_hint`, `routing_class`, and `routing_policy`.
+- Added Parallel and SerpBase providers. Both are explicit-call capable and guarded out of auto routing unless allowed.
+- Added optional `quality_report` diagnostics with provider scores, result-quality hints, and fallback-chain visibility.
+- Added onboarding CLI: `web-search-plus-setup status`, `list providers`, `list presets`, `setup`, and `config`.
+- Added Parallel extraction support.
+
+### Changed
+- Auto extraction fallback is now Tavily → Exa → Linkup → Parallel → Firecrawl → You.com.
+- Updated README and SKILL.md for the two-primary-tool surface and v3 migration.
+
 ## [2.6.0] - 2026-05-16
 
 ### Breaking Changes

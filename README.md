@@ -6,19 +6,15 @@
 
 Native OpenClaw plugin for one clean set of web tools.
 
-Current version: **2.6.0**
+Current version: **3.0.0**
 
 It registers:
 
-- `web_search_plus` — intelligent multi-provider web search
-- `web_extract_plus` — URL extraction across supported extract providers
-- `web_routing_config_plus` — runtime routing preferences manager
+- `web_search_plus` — Routing v2 intelligent multi-provider web search
+- `web_extract_plus` — Tavily-first URL extraction across supported providers
+- `web_routing_config_plus` — in-memory runtime routing preferences manager
 
-You only need **one** provider configured to start. The best starter stack is:
-
-- **Tavily** for research search
-- **Linkup** for source-grounded search and preferred extraction
-- **Brave** for broad/current web fallback
+`web_answer_plus` is removed in v3.0.0. Use search plus extraction; fewer tools, less mush.
 
 ## Install
 
@@ -29,37 +25,56 @@ openclaw plugins install clawhub:web-search-plus-plugin-v2
 ClawHub: <https://clawhub.ai/plugins/web-search-plus-plugin-v2>
 Source: <https://github.com/robbyczgw-cla/web-search-plus-plugin>
 
-## What this gives you
+## Quick setup
 
-Compared with the built-in `web_search`, this plugin adds:
+You only need **one** provider configured to start. The recommended starter stack is:
 
-- routing across multiple web providers instead of one backend
-- stronger coverage for research, citations, semantic discovery, and privacy/self-hosted search
-- `web_extract_plus` for clean page content after search
+- **You.com** for fast snippets / factual queries
+- **Serper** for Google-style local, shopping, and community search
+- **Linkup** for source-grounded search and citations
+
+Onboarding CLI:
+
+```bash
+web-search-plus-setup status --config ./web-search-plus-plugin.config.json
+web-search-plus-setup list providers
+web-search-plus-setup list presets
+web-search-plus-setup setup --preset starter --config ./web-search-plus-plugin.config.json
+web-search-plus-setup config --config ./web-search-plus-plugin.config.json --set routingConfigPath=memory:default
+```
+
+Runtime credentials still come from explicit OpenClaw plugin config fields. The CLI writes a JSON helper file for setup/onboarding, not runtime secret discovery.
 
 ## Provider coverage
 
 ### Search providers
 
 - **Serper** — Google-style web/news/shopping/local
-- **Brave** — broad current web and fallback
+- **Brave** — broad current web and fallback; guarded in auto routing
 - **Tavily** — research-oriented search
-- **Exa** — semantic discovery, similar-page, deep search
-- **Querit** — multilingual/regional AI search
+- **Exa** — semantic discovery, similar-page, docs/API, arXiv, deep search
+- **Querit** — multilingual/current AI search; guarded in auto routing
 - **Linkup** — citation/source-grounded search
-- **Firecrawl** — search with scrape-friendly metadata
-- **Perplexity** — direct answer-style web results via `https://api.perplexity.ai/chat/completions`
-- **Kilo Perplexity** — gateway answer-style route via `https://api.kilo.ai/api/gateway/chat/completions`
+- **Firecrawl** — search with scrape-friendly metadata and vendor/source pages
+- **Parallel** — search and extraction; guarded in auto routing
+- **SerpBase** — Google-style alternate search; guarded in auto routing
+- **Perplexity** — direct answer-style web results via `https://api.perplexity.ai/chat/completions`; guarded in auto routing
+- **Kilo Perplexity** — gateway route via `https://api.kilo.ai/api/gateway/chat/completions`; guarded in auto routing
 - **You.com** — current web / RAG-style snippets
 - **SearXNG** — self-hosted metasearch
 
 ### Extraction providers
 
-- **Tavily** — default first choice in auto mode
-- **Exa**
-- **Linkup**
-- **Firecrawl**
-- **You.com**
+Auto fallback order:
+
+- Tavily
+- Exa
+- Linkup
+- Parallel
+- Firecrawl
+- You.com
+
+Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net.
 
 ## Configuration
 
@@ -74,6 +89,8 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `queritApiKey`
 - `linkupApiKey`
 - `firecrawlApiKey`
+- `parallelApiKey`
+- `serpbaseApiKey`
 - `perplexityApiKey`
 - `kilocodeApiKey`
 - `youApiKey`
@@ -93,9 +110,9 @@ Example:
     "entries": {
       "web-search-plus-plugin-v2": {
         "config": {
-          "tavilyApiKey": "tvly-...",
-          "linkupApiKey": "...",
-          "braveApiKey": "..."
+          "youApiKey": "...",
+          "serperApiKey": "...",
+          "linkupApiKey": "..."
         }
       }
     }
@@ -103,39 +120,32 @@ Example:
 }
 ```
 
-## Tool guidance
+## Routing v2
 
-### `web_search_plus`
+`web_search_plus(provider="auto")` uses class-aware benchmarked routing. Diagnostics expose `language_hint`, `routing_class`, and `routing_policy` on every response.
 
-Use this first for:
+Classes:
 
-- current events
-- sports lineups, scores, schedules
-- prices and shopping checks
-- weather
-- raw source discovery
-- quick direct web lookups
+- multilingual/current → Querit/Brave when allowed
+- local/shopping → Serper
+- docs/api → Exa/Firecrawl
+- academic/arxiv → Exa
+- community/reddit → Serper/Brave
+- security/cve → Firecrawl for vendor/source pages
+- official/regulatory → Linkup
+- finance/IR → Linkup/Tavily
+- weather/factual → You.com snippet-first
+- oss-discovery → Exa similar-page discovery
+- answer/synthesis → flags `answer_mode_recommended`; it does **not** resurrect `web_answer_plus`
 
-### `web_extract_plus`
+Default conservative auto pool: You.com, Serper, Exa, Firecrawl, Tavily, Linkup.
+Guarded providers require `auto_allow=true` in routing preferences: Brave, SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity.
 
-Use this after search when you already know which URLs you want to read.
-
-Auto extraction fallback order:
-
-- Tavily
-- Exa
-- Linkup
-- Firecrawl
-- You.com
+Pass `quality_report: true` to receive routing scores, result-quality hints, and fallback-chain diagnostics.
 
 ## Routing preferences
 
 `web_routing_config_plus` manages runtime routing behavior in memory, separate from provider secrets. ClawHub scanner constraints intentionally avoid runtime filesystem reads in this package.
-
-Default namespace:
-
-- `memory:default`
-- override with plugin config `routingConfigPath`
 
 Supported actions:
 
@@ -156,29 +166,6 @@ Behavior notes:
 - normal auto mode can still use priority order, fallback provider, cooldowns, and retries
 - invalid plugin-provided routing config falls back to defaults with a warning
 - reset restores in-memory defaults for the selected namespace
-
-## Auto-routing notes
-
-`web_search_plus` picks from the providers you actually configured and falls back if the first auto-selected choice fails or is cooling down.
-
-Typical tendencies:
-
-- shopping / local / broad web → Serper or Brave
-- research / explanation → Tavily
-- citations / evidence → Linkup
-- semantic discovery / similar pages → Exa
-- multilingual AI search → Querit
-- answer-style results → Perplexity direct or Kilo Perplexity gateway
-- `provider` accepts `kilo-perplexity` and legacy alias `kilo_perplexity`
-- privacy / self-hosted → SearXNG
-
-## Security and packaging
-
-- missing provider credentials are skipped
-- SearXNG private-network protection stays on by default
-- `searxngAllowPrivate=true` disables that protection only for trusted setups
-- package artifact ships runtime files only
-- no secrets are persisted by routing preferences or runtime cache
 
 ## Verification
 
