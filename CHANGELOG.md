@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.1.0] - 2026-06-10
+
+Feature sync with the Hermes Web Search Plus stack (hermes-web-search-plus v2.3.x–v2.4.0), adapted for the in-process OpenClaw runtime.
+
+### Added
+- Research mode: `web_search_plus(mode="research")` queries up to 3 providers concurrently, deduplicates results across them, and extracts the top sources into `source_summaries` for grounding. New parameters: `mode`, `research_providers`, `research_extract_count` (default 3, max 5), and `research_time_budget` (seconds, default 55). Provider searches run concurrently so wall-clock cost tracks the slowest provider; result ordering stays deterministic by submission order. Failures surface as `routing.provider_errors` / `routing.extraction_error` diagnostics instead of failing the call.
+- Canonical-source intent reranking for authority-sensitive routing classes (`official/vendor-release`, `docs/api`, `official/regulatory`, `finance/IR`, `security/cve`): primary sources (vendor blogs, official docs, regulators, IR/SEC pages, NVD/CVE records) now outrank mirrors such as YouTube, Medium, and Reddit. Reorderings are reported via `metadata.intent_rerank`.
+- `authority_signals` in quality reports: canonical domain hits, demoted domain hits, top domain, and whether the top result is a primary source.
+- New `official/vendor-release` routing class for vendor announcement queries (Anthropic, OpenAI, Mistral, Google, Meta, NVIDIA, Apple, Microsoft), routed toward You.com/Linkup/Exa.
+
+### Improved
+- Provider retry backoff now adds bounded random jitter (`RETRY_JITTER_FRACTION = 0.5`) so repeated or concurrent retries against a recovering provider no longer synchronize into bursts.
+
+### Internal
+- Split research orchestration into `research.ts` and rerank/authority helpers into `quality.ts`, mirroring the Hermes module layout. Cross-provider deduplication moved to `research.ts` (still re-exported from `index.ts`).
+- Hermes v2.4.0's in-process execution and provider-health locking changes are not applicable here: the OpenClaw plugin already runs in-process on a single-threaded runtime.
+
+### Tests
+- Added research-mode coverage (provider selection, deterministic out-of-order completion ordering, cross-provider dedup, time-budget gating, extraction-error handling, end-to-end tool execution) and quality coverage (rerank behavior, authority signals, routing-class mapping, retry jitter bounds, end-to-end rerank with quality report).
+
 ## [3.0.0] - 2026-05-19
 
 ### Breaking Changes

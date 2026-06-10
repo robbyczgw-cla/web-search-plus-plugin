@@ -1,7 +1,7 @@
 ---
 name: web-search-plus-plugin-v2
-version: 3.0.0
-description: OpenClaw plugin for Routing v2 multi-provider web search, Tavily-first extraction, quality reports, onboarding CLI, and runtime routing preferences. Registers `web_search_plus`, `web_extract_plus`, and `web_routing_config_plus`.
+version: 3.1.0
+description: OpenClaw plugin for Routing v2 multi-provider web search, research mode, canonical-source reranking, Tavily-first extraction, quality reports, onboarding CLI, and runtime routing preferences. Registers `web_search_plus`, `web_extract_plus`, and `web_routing_config_plus`.
 ---
 
 # Web Search Plus Plugin
@@ -56,16 +56,22 @@ Extra settings:
 
 ## Routing v2
 
-Auto routing is class-aware and benchmark-backed. Key classes: multilingual/current, local/shopping, docs/api, academic/arxiv, community/reddit, security/cve, official/regulatory, finance/IR, weather/factual, oss-discovery, and answer/synthesis.
+Auto routing is class-aware and benchmark-backed. Key classes: multilingual/current, local/shopping, docs/api, academic/arxiv, community/reddit, security/cve, official/vendor-release, official/regulatory, finance/IR, weather/factual, oss-discovery, and answer/synthesis.
 
 Default auto pool: You.com, Serper, Exa, Firecrawl, Tavily, Linkup.
 Guarded providers require `auto_allow[provider]=true` for auto routing: Brave, SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity.
 
-Every search routing object exposes `language_hint`, `routing_class`, and `routing_policy`. Pass `quality_report: true` for provider scores, result quality hints, and fallback diagnostics.
+Every search routing object exposes `language_hint`, `routing_class`, and `routing_policy`. Pass `quality_report: true` for provider scores, result quality hints, fallback diagnostics, and `authority_signals` (canonical/demoted domain hits and primary-source top-result flag).
+
+For canonical-source classes (official/vendor-release, docs/api, official/regulatory, finance/IR, security/cve), auto-routed results are reranked so primary sources outrank mirrors; reorderings are reported in `metadata.intent_rerank`.
+
+## Research mode
+
+`web_search_plus(mode="research")` queries up to 3 providers concurrently, deduplicates across them, and extracts the top `research_extract_count` URLs (default 3) into `source_summaries` for grounding. Use `research_providers` to pick providers explicitly and `research_time_budget` (seconds, default 55) to cap wall-clock cost. Failures are best-effort diagnostics, not hard errors.
 
 ## Usage guidance
 
-Prefer `web_search_plus` for live/current info, prices, weather, sports, schedules, and finding raw sources. Use `web_extract_plus` once URLs are known.
+Prefer `web_search_plus` for live/current info, prices, weather, sports, schedules, and finding raw sources. Use `mode="research"` for grounding-heavy questions that benefit from multiple providers plus extracted full text. Use `web_extract_plus` once URLs are known.
 
 OpenClaw plugin config remains the source of truth for credentials; runtime code does not rely on direct `.env` reads.
 
