@@ -6,11 +6,11 @@
 
 Native OpenClaw plugin for one clean set of web tools.
 
-Current version: **3.0.0**
+Current version: **3.1.0**
 
 It registers:
 
-- `web_search_plus` — Routing v2 intelligent multi-provider web search
+- `web_search_plus` — Routing v2 intelligent multi-provider web search with research mode and canonical-source reranking
 - `web_extract_plus` — Tavily-first URL extraction across supported providers
 - `web_routing_config_plus` — in-memory runtime routing preferences manager
 
@@ -132,6 +132,7 @@ Classes:
 - academic/arxiv → Exa
 - community/reddit → Serper/Brave
 - security/cve → Firecrawl for vendor/source pages
+- official/vendor-release → You.com/Linkup for vendor announcements (Anthropic, OpenAI, Mistral, …)
 - official/regulatory → Linkup
 - finance/IR → Linkup/Tavily
 - weather/factual → You.com snippet-first
@@ -141,7 +142,31 @@ Classes:
 Default conservative auto pool: You.com, Serper, Exa, Firecrawl, Tavily, Linkup.
 Guarded providers require `auto_allow=true` in routing preferences: Brave, SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity.
 
-Pass `quality_report: true` to receive routing scores, result-quality hints, and fallback-chain diagnostics.
+Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, and `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source) for canonical-source routing classes.
+
+### Canonical-source reranking
+
+For routing classes where source authority beats snippet luck (`official/vendor-release`, `docs/api`, `official/regulatory`, `finance/IR`, `security/cve`), auto-routed results are reranked so primary sources (vendor blogs, official docs, regulators, IR pages, NVD/CVE records) outrank mirrors like YouTube, Medium, or Reddit. When the order changes, `metadata.intent_rerank` reports the routing class and the top domain before/after.
+
+## Research mode
+
+`web_search_plus(mode="research")` runs a compact multi-provider sweep for grounding-heavy questions:
+
+1. Picks up to 3 configured, auto-allowed providers (primary route first, then Linkup/Tavily/Exa/Firecrawl/… by preference), or uses an explicit `research_providers` list.
+2. Queries them **concurrently** — wall-clock cost tracks the slowest provider, not the sum. Result ordering stays deterministic regardless of which provider finishes first.
+3. Deduplicates results across providers.
+4. Extracts the top `research_extract_count` URLs (default 3, max 5) via `web_extract_plus` auto fallback into `source_summaries`.
+
+Research mode is best-effort: provider or extraction failures produce diagnostics in `routing.provider_errors` / `routing.extraction_error` instead of failing the whole call. A `research_time_budget` (seconds, default 55) gates which providers launch and whether extraction runs. Quality reports are always attached.
+
+```json
+{
+  "query": "What changed in the EU AI Act enforcement timeline?",
+  "mode": "research",
+  "research_extract_count": 3,
+  "research_time_budget": 55
+}
+```
 
 ## Routing preferences
 

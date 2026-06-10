@@ -5,9 +5,17 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
+import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
+import { buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
+
+export { deduplicateResultsAcrossProviders } from "./research.ts";
+export { CANONICAL_DOMAIN_RULES, buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
 
 const DEFAULT_CACHE_TTL = 3600;
 const RETRY_BACKOFF_MS = [1000, 3000, 9000];
+export const RETRY_JITTER_FRACTION = 0.5;
+const DEFAULT_RESEARCH_EXTRACT_COUNT = 3;
+const DEFAULT_RESEARCH_TIME_BUDGET_SECONDS = 55;
 const COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -44,7 +52,19 @@ const PARAMETERS_SCHEMA = {
       items: { type: "string" },
       description: "Exclude results from these domains (Tavily, Linkup, Querit, Exa, Firecrawl where supported).",
     },
-    quality_report: { type: "boolean", description: "Attach routing decision, provider score, result-quality, and fallback diagnostics." },
+    quality_report: { type: "boolean", description: "Attach routing decision, provider score, result-quality, authority-signal, and fallback diagnostics." },
+    mode: {
+      type: "string",
+      enum: ["normal", "research"],
+      description: "normal routes to a single provider; research queries up to 3 providers concurrently, deduplicates, and extracts top sources for grounding.",
+    },
+    research_providers: {
+      type: "array",
+      items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") },
+      description: "Explicit provider list for mode=research. Defaults to an auto-selected compact set.",
+    },
+    research_extract_count: { type: "number", description: "Number of top research-mode URLs to extract for grounding (default: 3, max: 5)." },
+    research_time_budget: { type: "number", description: "Best-effort wall-clock budget in seconds for research mode; skips remaining providers and extraction when exhausted (default: 55)." },
   },
 };
 
@@ -83,6 +103,10 @@ type ToolParams = {
   include_domains?: string[];
   exclude_domains?: string[];
   quality_report?: boolean;
+  mode?: "normal" | "research";
+  research_providers?: string[];
+  research_extract_count?: number;
+  research_time_budget?: number;
 };
 
 type SearchResult = {
@@ -248,36 +272,6 @@ function resetProviderHealth(provider: string): void {
 export function __resetRuntimeStateForTests(): void {
   memoryCache.clear();
   for (const key of Object.keys(providerHealthState)) delete providerHealthState[key];
-}
-
-function normalizeResultUrl(url: string): string {
-  try {
-    const u = new URL(url.trim());
-    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
-    const pathname = u.pathname.replace(/\/$/, "");
-    return `${host}${pathname}`;
-  } catch {
-    return url.trim().toLowerCase();
-  }
-}
-
-export function deduplicateResultsAcrossProviders(resultsByProvider: Array<[string, SearchResponse]>, maxResults: number): { results: SearchResult[]; dedupCount: number } {
-  const deduped: SearchResult[] = [];
-  const seen = new Set<string>();
-  let dedupCount = 0;
-  for (const [provider, data] of resultsByProvider) {
-    for (const item of data.results || []) {
-      const norm = normalizeResultUrl(item.url || "");
-      if (norm && seen.has(norm)) {
-        dedupCount += 1;
-        continue;
-      }
-      if (norm) seen.add(norm);
-      deduped.push({ ...item, provider: item.provider || provider });
-      if (deduped.length >= maxResults) return { results: deduped, dedupCount };
-    }
-  }
-  return { results: deduped, dedupCount };
 }
 
 export function chooseTieWinner(query: string, winners: ProviderName[], priority: ProviderName[]): ProviderName {
@@ -668,6 +662,7 @@ export class QueryAnalyzer {
     if (/\b(github|api docs?|sdk|package docs?|npm|pypi|readme)\b/.test(q)) return "docs/api";
     if (/\b(cve|security advisory|vulnerability|patch notes|vendor advisory)\b/.test(q)) return "security/cve";
     if (/\b(reddit|hacker news|hn|community discussion|forum)\b/.test(q)) return "community/reddit";
+    if (/\b(official|release|announcement|launch|changelog|release notes?)\b/.test(q) && /\b(mistral|anthropic|openai|google|meta|nvidia|apple|microsoft|claude|gemini|llama)\b/.test(q)) return "official/vendor-release";
     if (/\b(regulation|regulatory|official|policy|pdf|government|eu commission)\b/.test(q)) return "official/regulatory";
     if (/\b(annual report|investor relations|10-k|earnings|sec filing|ir)\b/.test(q)) return "finance/IR";
     if (/\b(weather|temperature|forecast|rain|snow)\b/.test(q)) return "weather/factual";
@@ -684,6 +679,7 @@ export class QueryAnalyzer {
     else if (routingClass === "docs/api") { boost("exa", 5, "docs/API intent"); boost("firecrawl", 4, "docs/API scrape intent"); }
     else if (routingClass === "security/cve") boost("firecrawl", 7, "vendor/CVE source intent");
     else if (routingClass === "community/reddit") { boost("serper", 9, "community intent"); boost("brave", 8, "community intent"); }
+    else if (routingClass === "official/vendor-release") { boost("you", 9, "official vendor announcement intent"); boost("linkup", 7, "primary-source grounding"); boost("exa", 5, "vendor blog discovery"); }
     else if (routingClass === "official/regulatory") boost("linkup", 7, "official/regulatory grounding");
     else if (routingClass === "finance/IR") { boost("linkup", 5, "finance IR grounding"); boost("tavily", 4, "finance research"); }
     else if (routingClass === "weather/factual") boost("you", 10, "snippet-first factual intent");
@@ -1113,6 +1109,13 @@ async function searchSearxng(query: string, instanceUrl: string, maxResults: num
   return { provider: "searxng", query, results, images: [], answer, suggestions: data.suggestions || [], corrections: data.corrections || [], metadata: { number_of_results: data.number_of_results, engines_used: [...enginesUsed], instance_url: base } };
 }
 
+// Bounded random jitter keeps concurrent or repeated retries against a recovering
+// provider from synchronizing into bursts.
+export function computeRetryDelayMs(attempt: number): number {
+  const base = RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)];
+  return base + Math.random() * base * RETRY_JITTER_FRACTION;
+}
+
 async function executeWithRetry(fn: () => Promise<SearchResponse>): Promise<SearchResponse> {
   let lastError: any;
   for (let attempt = 0; attempt < RETRY_BACKOFF_MS.length; attempt += 1) {
@@ -1121,7 +1124,7 @@ async function executeWithRetry(fn: () => Promise<SearchResponse>): Promise<Sear
     } catch (error: any) {
       lastError = error;
       if (!(error instanceof ProviderRequestError) || !error.transient || error.statusCode === 401 || error.statusCode === 403) break;
-      if (attempt < RETRY_BACKOFF_MS.length - 1) await sleep(RETRY_BACKOFF_MS[attempt]);
+      if (attempt < RETRY_BACKOFF_MS.length - 1) await sleep(computeRetryDelayMs(attempt));
     }
   }
   throw lastError;
@@ -1142,12 +1145,14 @@ function buildQualityReport(result: SearchResponse, routingInfo: Json, errors: J
   if (thinSnippetCount >= Math.ceil(Math.max(1, results.length) / 2)) extractReasons.push("thin_snippets");
   const dedupCount = Number((result.metadata || {}).dedup_count || 0);
   if (dedupCount > 0) extractReasons.push("duplicates_removed");
+  const routingClass = routingInfo.routing_class ? String(routingInfo.routing_class) : null;
   return {
     routing_decision: { provider: result.provider, requested_provider: routingInfo.requested_provider, routing_policy: routingInfo.routing_policy || "routing-v2", routing_class: routingInfo.routing_class, language_hint: routingInfo.language_hint, confidence_level: routingInfo.confidence_level, reason: routingInfo.reason, scores: routingInfo.scores || {} },
     result_quality: { result_count: results.length, domain_count: domains.length, domains, domain_diversity: results.length ? Number((domains.length / results.length).toFixed(3)) : 0, thin_snippet_count: thinSnippetCount, dedup_count: dedupCount },
     fallback_chain: { providers_considered: providersConsidered, provider_errors: errors, cooldown_skips: cooldownSkips },
     extract_recommended: extractReasons.length > 0,
     extract_reasons: extractReasons,
+    authority_signals: routingClass ? buildAuthoritySignals(routingClass, results) : null,
   };
 }
 
@@ -1221,6 +1226,77 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (!eligibleProviders.length) eligibleProviders.push(provider);
     }
 
+    const runProvider = async (p: ProviderName): Promise<SearchResponse> => {
+      const key = validateApiKey(p, runtimeConfig);
+      if (p === "serper") return searchSerper(query, key, count, timeRange);
+      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
+      if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
+      if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
+      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "exa") {
+        const exaDepth = (params.depth || exaDepthHint || "normal") as "normal" | "deep" | "deep-reasoning";
+        return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
+      }
+      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
+      if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
+      if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
+      if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
+      if (p === "you") return searchYou(query, key, count, timeRange);
+      return searchSearxng(query, key, count, timeRange, runtimeConfig);
+    };
+
+    if (params.mode === "research") {
+      const providerEligibleForResearch = (p: ProviderName) =>
+        !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && !!getApiKey(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
+      const availableResearchProviders = new Set<ProviderName>(configuredProviders.filter(providerEligibleForResearch));
+      if (getApiKey(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
+        availableResearchProviders.add(provider);
+      }
+      let researchProviders: ProviderName[];
+      if (Array.isArray(params.research_providers) && params.research_providers.length) {
+        researchProviders = [...new Set(params.research_providers.map((value) => normalizeProviderName(value)))].filter(providerEligibleForResearch);
+      } else {
+        researchProviders = selectResearchProviders(
+          provider,
+          routingConfig.provider_priority?.length ? routingConfig.provider_priority : DEFAULT_PROVIDER_PRIORITY,
+          availableResearchProviders,
+          3,
+        );
+      }
+      if (!researchProviders.length) {
+        return { ok: false, payload: sanitizeOutput({ error: "No configured providers available for research mode", provider, query, routing: routingInfo, cooldown_skips: cooldownSkips }) };
+      }
+
+      const researchExtractCount = Math.max(0, Math.min(5, Math.floor(Number(params.research_extract_count ?? DEFAULT_RESEARCH_EXTRACT_COUNT))));
+      const researchTimeBudget = Number(params.research_time_budget ?? DEFAULT_RESEARCH_TIME_BUDGET_SECONDS);
+      const result = await runResearchMode({
+        query,
+        researchProviders,
+        executeSearch: async (p) => {
+          try {
+            const response = await executeWithRetry(() => runProvider(p as ProviderName));
+            resetProviderHealth(p);
+            return response;
+          } catch (error: any) {
+            markProviderFailure(p, String(error?.message || error));
+            throw error;
+          }
+        },
+        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig),
+        maxResults: count,
+        maxExtractUrls: researchExtractCount,
+        timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
+      });
+
+      routingInfo = { ...routingInfo, mode: "research", provider: "research" };
+      if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
+      if (routingConfigResult.warning) routingInfo.config_warning = routingConfigResult.warning;
+      result.routing = { ...result.routing, ...routingInfo };
+      result.quality_report = buildQualityReport(result as SearchResponse, routingInfo, result.routing.provider_errors || [], cooldownSkips, researchProviders);
+      return { ok: true, payload: sanitizeOutput(result) };
+    }
+
     const cacheContext = {
       time_range: timeRange,
       include_domains: includeDomains ? [...includeDomains].sort() : null,
@@ -1242,26 +1318,6 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     const errors: Json[] = [];
     const successes: Array<[string, SearchResponse]> = [];
-
-    const runProvider = async (p: ProviderName): Promise<SearchResponse> => {
-      const key = validateApiKey(p, runtimeConfig);
-      if (p === "serper") return searchSerper(query, key, count, timeRange);
-      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
-      if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
-      if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
-      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
-      if (p === "exa") {
-        const exaDepth = (params.depth || exaDepthHint || "normal") as "normal" | "deep" | "deep-reasoning";
-        return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
-      }
-      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
-      if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
-      if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
-      if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
-      if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
-      if (p === "you") return searchYou(query, key, count, timeRange);
-      return searchSearxng(query, key, count, timeRange, runtimeConfig);
-    };
 
     for (const p of eligibleProviders) {
       try {
@@ -1298,6 +1354,14 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     }
     if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
     if (routingConfigResult.warning) routingInfo.config_warning = routingConfigResult.warning;
+
+    const routingClass = String(routingInfo.routing_class || "general");
+    if (Array.isArray(result.results)) {
+      const rerank = rerankResultsForIntent(query, routingClass, result.results);
+      result.results = rerank.results as SearchResult[];
+      if (rerank.metadata.reranked) result.metadata = { ...(result.metadata || {}), intent_rerank: rerank.metadata };
+    }
+
     result.routing = routingInfo;
     result.cached = false;
     if (!(result as any).metadata) result.metadata = {};
@@ -1394,7 +1458,7 @@ export function register(api: any) {
     {
       name: "web_search_plus",
       description:
-        "Search the web with intelligent multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity, You.com, and SearXNG. Auto-selects the best provider, caches results, retries transient failures, and falls back across providers.",
+        "Search the web with intelligent multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity, You.com, and SearXNG. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id: string, params: ToolParams) {
         try {

@@ -151,7 +151,7 @@ Each adapter is responsible for:
 
 ### 9. Retry / Fallback
 
-When a request fails transiently, the plugin retries with exponential backoff.
+When a request fails transiently, the plugin retries with exponential backoff plus bounded random jitter (up to 50% of the base delay) so concurrent retries against a recovering provider do not synchronize into bursts.
 
 If a provider still fails:
 - the failure is recorded in provider health state
@@ -162,9 +162,17 @@ If a provider still fails:
 
 ### 10. Dedup
 
-When fallback or merged responses produce overlapping links, the plugin deduplicates results across providers before returning them.
+When fallback or merged responses produce overlapping links, the plugin deduplicates results across providers before returning them (shared helper in `research.ts`).
 
 This keeps output compact and avoids repeated URLs in the final tool result.
+
+### 10b. Quality: rerank + authority signals (`quality.ts`)
+
+For authority-sensitive routing classes (`official/vendor-release`, `docs/api`, `official/regulatory`, `finance/IR`, `security/cve`), auto-routed results pass through a small canonical-source reranker before caching: canonical domains are boosted, mirror/repost domains demoted, and any reordering is reported in `metadata.intent_rerank`. Quality reports include `authority_signals` (canonical domain hits, demoted domain hits, primary-source top-result flag) built from the same rules.
+
+### 10c. Research mode (`research.ts`)
+
+`mode="research"` orchestrates a compact multi-provider sweep: up to 3 configured, auto-allowed providers are queried **concurrently** (deterministic ordering by submission order), results are deduplicated, and the top URLs are extracted via the `extract.ts` auto fallback chain into `source_summaries`. An optional wall-clock time budget gates provider launches and extraction. Failures are collected as diagnostics (`routing.provider_errors`, `routing.extraction_error`) rather than failing the call, and a quality report is always attached. Research responses are not cached.
 
 ### 11. Plugin Entry
 
@@ -188,6 +196,11 @@ The registered tool currently supports:
 | `time_range` | string | `day`, `week`, `month`, `year` where supported |
 | `include_domains` | string[] | Provider-specific domain allowlist |
 | `exclude_domains` | string[] | Provider-specific domain denylist |
+| `quality_report` | boolean | Attach routing/result-quality/authority diagnostics |
+| `mode` | string | `normal` (default) or `research` multi-provider + extraction |
+| `research_providers` | string[] | Explicit provider list for research mode |
+| `research_extract_count` | number | Top research URLs to extract (default 3, max 5) |
+| `research_time_budget` | number | Best-effort research wall-clock budget in seconds (default 55) |
 
 ## Data Flow
 
@@ -208,7 +221,12 @@ The registered tool currently supports:
 
 ```
 web-search-plus-plugin/
-├── index.ts                 # Entire runtime: tool registration + search engine
+├── index.ts                 # Runtime core: tool registration + search engine
+├── extract.ts               # Extraction providers + auto fallback chain
+├── research.ts              # Research-mode orchestration + cross-provider dedup
+├── quality.ts               # Canonical-source rerank + authority signals
+├── routing-config.ts        # Routing preferences (in-memory, schema v2)
+├── runtime-config.ts        # Plugin config → runtime config mapping
 ├── openclaw.plugin.json     # Plugin metadata
 ├── package.json             # npm package config
 ├── .gitignore
