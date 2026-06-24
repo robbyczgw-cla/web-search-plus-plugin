@@ -403,7 +403,7 @@ export async function extractKeenable(
   timeout = 30,
 ): Promise<ExtractResponse> {
   const authenticated = apiKey !== KEENABLE_PUBLIC_SENTINEL;
-  const headers = authenticated ? { "X-API-Key": apiKey } : {};
+  const headers = { "X-Keenable-Title": "openclaw-web-search-plus", ...(authenticated ? { "X-API-Key": apiKey } : {}) };
   const results: ExtractResult[] = [];
   for (const url of urls) {
     try {

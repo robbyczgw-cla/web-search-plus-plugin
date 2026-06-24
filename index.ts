@@ -1120,7 +1120,7 @@ export async function searchKeenable(query: string, apiKey: string, maxResults: 
   if (includeDomains?.length) body.site = includeDomains[0];
   const data = await httpJson(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...(authenticated ? { "X-API-Key": apiKey } : {}) },
+    headers: { "Content-Type": "application/json", "X-Keenable-Title": "openclaw-web-search-plus", ...(authenticated ? { "X-API-Key": apiKey } : {}) },
     body: JSON.stringify(body),
   });
   const results = (data.results || []).slice(0, maxResults).map((item: any) => ({

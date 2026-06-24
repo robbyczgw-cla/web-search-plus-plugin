@@ -181,6 +181,7 @@ test("searchKeenable uses keyless public endpoint and maps results", async () =>
       assert.equal(result.results[0].url, "https://example.com/keenable");
       assert.equal(calls[0].url, "https://api.keenable.ai/v1/search/public");
       assert.equal((calls[0].init?.headers as Record<string, string>)["X-API-Key"], undefined);
+      assert.equal((calls[0].init?.headers as Record<string, string>)["X-Keenable-Title"], "openclaw-web-search-plus");
       const body = parseJsonBody(calls[0].init?.body);
       assert.equal(body.published_after, "7d");
       assert.equal(body.site, "example.com");

@@ -245,6 +245,7 @@ test("extractKeenable fetches keyless via public endpoint", async () => {
       assert.equal(result.results[0].title, "Example");
       assert.match(calls[0].url, /^https:\/\/api\.keenable\.ai\/v1\/fetch\/public\?url=/);
       assert.equal((calls[0].init?.headers as Record<string, string>)["X-API-Key"], undefined);
+      assert.equal((calls[0].init?.headers as Record<string, string>)["X-Keenable-Title"], "openclaw-web-search-plus");
     },
   );
 });
