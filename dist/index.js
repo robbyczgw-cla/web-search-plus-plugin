@@ -131,6 +131,7 @@ function definePluginEntry({ id, name, description, kind, configSchema = emptyPl
 }
 
 // runtime-config.ts
+var KEENABLE_PUBLIC_SENTINEL = "keenable:public";
 function maybeString(value) {
   if (typeof value !== "string") return void 0;
   const trimmed = value.trim();
@@ -151,13 +152,14 @@ function getRuntimeConfig(pluginConfig) {
     youApiKey: maybeString(pluginConfig?.youApiKey),
     parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
     serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
+    keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0
   };
 }
 
 // routing-config.ts
-var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng"];
+var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng", "keenable"];
 var GUARDED_AUTO_PROVIDERS = ["brave", "serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 2,
@@ -291,7 +293,7 @@ function resetRoutingPreferences(pluginConfig = {}) {
 }
 
 // extract.ts
-var EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you"];
+var EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable"];
 var EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -299,7 +301,7 @@ var EXTRACT_PARAMETERS_SCHEMA = {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable"],
       description: "Force a provider, or use auto fallback routing (default: auto)"
     },
     format: {
@@ -372,7 +374,8 @@ function getExtractApiKey(provider, runtimeConfig) {
     tavily: runtimeConfig.tavilyApiKey,
     exa: runtimeConfig.exaApiKey,
     you: runtimeConfig.youApiKey,
-    parallel: runtimeConfig.parallelApiKey
+    parallel: runtimeConfig.parallelApiKey,
+    keenable: runtimeConfig.keenableApiKey || KEENABLE_PUBLIC_SENTINEL
   };
   return keyMap[provider];
 }
@@ -556,6 +559,24 @@ async function extractYou(urls, apiKey, outputFormat = "markdown", includeImages
   });
   return { provider: "you", results };
 }
+async function extractKeenable(urls, apiKey, _outputFormat = "markdown", _includeImages = false, _includeRawHtml = false, _renderJs = false, apiBase = "https://api.keenable.ai/v1/fetch", timeout = 30) {
+  const authenticated = apiKey !== KEENABLE_PUBLIC_SENTINEL;
+  const headers = authenticated ? { "X-API-Key": apiKey } : {};
+  const results = [];
+  for (const url of urls) {
+    try {
+      const endpoint = `${apiBase}${authenticated ? "" : "/public"}?url=${encodeURIComponent(url)}`;
+      const data = await requestJson(endpoint, { method: "GET", headers }, timeout);
+      const content = String(data?.content || "");
+      results.push(normalizeExtractResult("keenable", String(data?.url || url), String(data?.title || ""), content, content, {
+        metadata: data?.author || data?.description ? { author: data.author, description: data.description } : void 0
+      }));
+    } catch (error2) {
+      results.push(normalizeExtractResult("keenable", url, "", "", void 0, { error: String(error2?.message || error2) }));
+    }
+  }
+  return { provider: "keenable", results };
+}
 async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, runtimeConfig = {}) {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
@@ -600,6 +621,8 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         result = await extractParallel(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "firecrawl") {
         result = await extractFirecrawl(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "keenable") {
+        result = await extractKeenable(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else {
         result = await extractYou(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }
@@ -864,7 +887,7 @@ var DEFAULT_RESEARCH_EXTRACT_COUNT = 3;
 var DEFAULT_RESEARCH_TIME_BUDGET_SECONDS = 55;
 var COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 var TRANSIENT_HTTP_CODES = /* @__PURE__ */ new Set([408, 425, 429, 500, 502, 503, 504]);
-var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "kilo_perplexity", "auto"];
+var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable", "kilo_perplexity", "auto"];
 var PARAMETERS_SCHEMA = {
   type: "object",
   required: ["query"],
@@ -933,7 +956,7 @@ var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     confidence_threshold: { type: "number", minimum: 0, maximum: 1 }
   }
 };
-var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng"];
+var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable"];
 var ProviderConfigError = class extends Error {
 };
 var ProviderRequestError = class extends Error {
@@ -1155,7 +1178,8 @@ function getApiKey(provider, runtimeConfig) {
     you: runtimeConfig.youApiKey,
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
-    serpbase: runtimeConfig.serpbaseApiKey
+    serpbase: runtimeConfig.serpbaseApiKey,
+    keenable: runtimeConfig.keenableApiKey || KEENABLE_PUBLIC_SENTINEL
   };
   return keyMap[provider];
 }
@@ -2091,6 +2115,27 @@ async function searchSearxng(query, instanceUrl, maxResults, timeRange, runtimeC
   const answer = Array.isArray(data.answers) && data.answers[0] ? String(data.answers[0]) : Array.isArray(data.infoboxes) && data.infoboxes[0] ? String(data.infoboxes[0].content || data.infoboxes[0].infobox || "") : results[0]?.snippet || "";
   return { provider: "searxng", query, results, images: [], answer, suggestions: data.suggestions || [], corrections: data.corrections || [], metadata: { number_of_results: data.number_of_results, engines_used: [...enginesUsed], instance_url: base } };
 }
+var KEENABLE_TIME_RANGE = { hour: "1h", day: "1d", week: "7d", month: "1mo", year: "1y" };
+async function searchKeenable(query, apiKey, maxResults, timeRange, includeDomains) {
+  const authenticated = apiKey !== KEENABLE_PUBLIC_SENTINEL;
+  const url = `https://api.keenable.ai/v1/search${authenticated ? "" : "/public"}`;
+  const body = { query };
+  if (timeRange && KEENABLE_TIME_RANGE[timeRange]) body.published_after = KEENABLE_TIME_RANGE[timeRange];
+  if (includeDomains?.length) body.site = includeDomains[0];
+  const data = await httpJson(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authenticated ? { "X-API-Key": apiKey } : {} },
+    body: JSON.stringify(body)
+  });
+  const results = (data.results || []).slice(0, maxResults).map((item) => ({
+    title: item.title || titleFromUrl2(item.url || ""),
+    url: item.url || "",
+    snippet: item.snippet || item.description || "",
+    published_at: item.published_at,
+    acquired_at: item.acquired_at
+  }));
+  return { provider: "keenable", query, results, images: [], answer: results[0]?.snippet || "" };
+}
 function computeRetryDelayMs(attempt) {
   const base = RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)];
   return base + Math.random() * base * RETRY_JITTER_FRACTION;
@@ -2217,6 +2262,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
+      if (p === "keenable") return searchKeenable(query, key, count, timeRange, includeDomains);
       return searchSearxng(query, key, count, timeRange, runtimeConfig);
     };
     if (params.mode === "research") {
@@ -2497,5 +2543,6 @@ export {
   index_default as default,
   register,
   rerankResultsForIntent,
-  searchBrave
+  searchBrave,
+  searchKeenable
 };

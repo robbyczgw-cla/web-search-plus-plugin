@@ -2,7 +2,7 @@
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
   "version": "3.1.0",
-  "description": "One clean set of web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, Perplexity direct, Kilo Perplexity gateway, You.com, and SearXNG.",
+  "description": "One clean set of web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, Perplexity direct, Kilo Perplexity gateway, You.com, SearXNG, and Keenable.",
   "contracts": {
     "tools": [
       "web_search_plus",
@@ -91,6 +91,10 @@
       "serpbaseApiKey": {
         "type": "string",
         "description": "SerpBase API key for guarded Google-style alternate search. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      "keenableApiKey": {
+        "type": "string",
+        "description": "Optional Keenable API key. Keenable search and extraction work without a key via public endpoints; a key raises rate limits."
       }
     }
   },
@@ -177,6 +181,12 @@
     "serpbaseApiKey": {
       "label": "SerpBase API Key",
       "placeholder": "sb-...",
+      "sensitive": true
+    },
+    "keenableApiKey": {
+      "label": "Keenable API Key",
+      "placeholder": "keen_...",
+      "description": "Optional. Keenable works keyless via public endpoints; a key raises rate limits.",
       "sensitive": true
     }
   }

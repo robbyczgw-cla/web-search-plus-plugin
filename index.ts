@@ -2,7 +2,7 @@ import crypto from "crypto";
 import dns from "dns/promises";
 import net from "net";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
+import { getRuntimeConfig, KEENABLE_PUBLIC_SENTINEL, type RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
@@ -19,7 +19,7 @@ const DEFAULT_RESEARCH_TIME_BUDGET_SECONDS = 55;
 const COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
-const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "kilo_perplexity", "auto"];
+const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable", "kilo_perplexity", "auto"];
 
 const PARAMETERS_SCHEMA = {
   type: "object",
@@ -93,7 +93,7 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
 };
 
 type Json = Record<string, any>;
-const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng"];
+const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable"];
 type ToolParams = {
   query: string;
   provider?: ProviderName | "kilo_perplexity" | "auto";
@@ -382,6 +382,7 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
+    keenable: runtimeConfig.keenableApiKey || KEENABLE_PUBLIC_SENTINEL,
   };
   return keyMap[provider];
 }
@@ -1109,6 +1110,29 @@ async function searchSearxng(query: string, instanceUrl: string, maxResults: num
   return { provider: "searxng", query, results, images: [], answer, suggestions: data.suggestions || [], corrections: data.corrections || [], metadata: { number_of_results: data.number_of_results, engines_used: [...enginesUsed], instance_url: base } };
 }
 
+const KEENABLE_TIME_RANGE: Record<string, string> = { hour: "1h", day: "1d", week: "7d", month: "1mo", year: "1y" };
+
+export async function searchKeenable(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[]): Promise<SearchResponse> {
+  const authenticated = apiKey !== KEENABLE_PUBLIC_SENTINEL;
+  const url = `https://api.keenable.ai/v1/search${authenticated ? "" : "/public"}`;
+  const body: Json = { query };
+  if (timeRange && KEENABLE_TIME_RANGE[timeRange]) body.published_after = KEENABLE_TIME_RANGE[timeRange];
+  if (includeDomains?.length) body.site = includeDomains[0]; // Keenable filters to a single site.
+  const data = await httpJson(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(authenticated ? { "X-API-Key": apiKey } : {}) },
+    body: JSON.stringify(body),
+  });
+  const results = (data.results || []).slice(0, maxResults).map((item: any) => ({
+    title: item.title || titleFromUrl(item.url || ""),
+    url: item.url || "",
+    snippet: item.snippet || item.description || "",
+    published_at: item.published_at,
+    acquired_at: item.acquired_at,
+  }));
+  return { provider: "keenable", query, results, images: [], answer: results[0]?.snippet || "" };
+}
+
 // Bounded random jitter keeps concurrent or repeated retries against a recovering
 // provider from synchronizing into bursts.
 export function computeRetryDelayMs(attempt: number): number {
@@ -1243,6 +1267,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
+      if (p === "keenable") return searchKeenable(query, key, count, timeRange, includeDomains);
       return searchSearxng(query, key, count, timeRange, runtimeConfig);
     };
 

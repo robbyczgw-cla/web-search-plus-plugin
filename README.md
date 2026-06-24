@@ -62,6 +62,7 @@ Runtime credentials still come from explicit OpenClaw plugin config fields. The 
 - **Kilo Perplexity** — gateway route via `https://api.kilo.ai/api/gateway/chat/completions`; guarded in auto routing
 - **You.com** — current web / RAG-style snippets
 - **SearXNG** — self-hosted metasearch
+- **Keenable** — independent web index; works keyless, optional key raises limits
 
 ### Extraction providers
 
@@ -73,6 +74,7 @@ Auto fallback order:
 - Parallel
 - Firecrawl
 - You.com
+- Keenable (keyless fallback)
 
 Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net.
 
@@ -95,6 +97,7 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `kilocodeApiKey`
 - `youApiKey`
 - `searxngInstanceUrl`
+- `keenableApiKey` (optional — Keenable works keyless without it)
 
 ### Extra fields
 

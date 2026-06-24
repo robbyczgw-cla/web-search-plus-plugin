@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Keenable as a search and extraction provider. It uses Keenable's independent web index and works keyless via the `/v1/search/public` and `/v1/fetch/public` endpoints; setting `keenableApiKey` switches to the authenticated endpoints (with an `X-API-Key` header) for higher rate limits. Available via `provider="keenable"` and as the lowest-priority auto-routing/extraction fallback, so it never displaces a configured keyed provider.
+
 ## [3.1.0] - 2026-06-10
 
 Feature sync with the Hermes Web Search Plus stack (hermes-web-search-plus v2.3.x–v2.4.0), adapted for the in-process OpenClaw runtime.

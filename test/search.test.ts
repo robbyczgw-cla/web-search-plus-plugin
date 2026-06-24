@@ -7,6 +7,7 @@ import {
   deduplicateResultsAcrossProviders,
   register,
   searchBrave,
+  searchKeenable,
   __resetRuntimeStateForTests,
 } from "../index.ts";
 import { __resetRoutingPreferencesForTests } from "../routing-config.ts";
@@ -157,6 +158,68 @@ test("searchBrave parses Brave web results and request params", async () => {
       assert.match(calls[0].url, /safesearch=off/);
       assert.match(calls[0].url, /freshness=pw/);
       assert.equal((calls[0].init?.headers as Record<string, string>)["X-Subscription-Token"], "brave-test");
+    },
+  );
+});
+
+test("searchKeenable uses keyless public endpoint and maps results", async () => {
+  await withMockedFetch(
+    () => mockJsonResponse({
+      results: [{
+        title: "Keenable Result",
+        url: "https://example.com/keenable",
+        description: "Description text",
+        snippet: "Snippet text",
+        published_at: "2026-01-01",
+        acquired_at: "2026-01-02",
+      }],
+    }),
+    async (calls) => {
+      const result = await searchKeenable("rust async patterns", "keenable:public", 3, "week", ["example.com"]);
+      assert.equal(result.provider, "keenable");
+      assert.equal(result.results[0].snippet, "Snippet text");
+      assert.equal(result.results[0].url, "https://example.com/keenable");
+      assert.equal(calls[0].url, "https://api.keenable.ai/v1/search/public");
+      assert.equal((calls[0].init?.headers as Record<string, string>)["X-API-Key"], undefined);
+      const body = parseJsonBody(calls[0].init?.body);
+      assert.equal(body.published_after, "7d");
+      assert.equal(body.site, "example.com");
+    },
+  );
+});
+
+test("searchKeenable uses authenticated endpoint when a key is set, with description fallback", async () => {
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ title: "Keyed", url: "https://example.com/keyed", description: "Only description" }] }),
+    async (calls) => {
+      const result = await searchKeenable("query", "keen_secret", 5);
+      assert.equal(result.results[0].snippet, "Only description");
+      assert.equal(calls[0].url, "https://api.keenable.ai/v1/search");
+      assert.equal((calls[0].init?.headers as Record<string, string>)["X-API-Key"], "keen_secret");
+    },
+  );
+});
+
+test("registered web_search_plus runs keenable keyless with no plugin config", async () => {
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ title: "Keyless", url: "https://example.com/keyless", snippet: "found" }] }),
+    async (calls) => {
+      const registered = new Map<string, any>();
+      register({
+        registerTool(tool: any) { registered.set(tool.name, tool); },
+        pluginConfig: {},
+      });
+
+      const tool = registered.get("web_search_plus");
+      assert.ok(tool.parameters.properties.provider.enum.includes("keenable"));
+
+      const response = await tool.execute("tool-keenable", { query: "keyless search query", provider: "keenable", count: 3 });
+      const payload = JSON.parse(response.content[0].text);
+
+      assert.equal(payload.provider, "keenable");
+      assert.equal(payload.routing.provider, "keenable");
+      assert.equal(payload.results[0].title, "Keyless");
+      assert.equal(calls[0].url, "https://api.keenable.ai/v1/search/public");
     },
   );
 });

@@ -1,3 +1,7 @@
+// Keenable works keyless via its /public endpoints; this sentinel stands in as
+// its "key" so it counts as configured when no real key is set.
+export const KEENABLE_PUBLIC_SENTINEL = "keenable:public";
+
 export type RuntimeConfig = {
   serperApiKey?: string;
   braveApiKey?: string;
@@ -12,6 +16,7 @@ export type RuntimeConfig = {
   youApiKey?: string;
   parallelApiKey?: string;
   serpbaseApiKey?: string;
+  keenableApiKey?: string;
   searxngInstanceUrl?: string;
   searxngAllowPrivate?: boolean;
 };
@@ -37,6 +42,7 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     youApiKey: maybeString(pluginConfig?.youApiKey),
     parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
     serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
+    keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : undefined,
   };

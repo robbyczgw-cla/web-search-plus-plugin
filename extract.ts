@@ -1,8 +1,8 @@
-import type { RuntimeConfig } from "./runtime-config.ts";
+import { KEENABLE_PUBLIC_SENTINEL, type RuntimeConfig } from "./runtime-config.ts";
 
 type Json = Record<string, any>;
 
-export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you";
+export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable";
 export type ExtractFormat = "markdown" | "html";
 
 export type ExtractImage = {
@@ -35,7 +35,8 @@ export type ExtractResponse = {
   };
 };
 
-export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you"];
+// keenable needs no key; keep it last so it only runs when keyed providers are absent or fail.
+export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable"];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -43,7 +44,7 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable"],
       description: "Force a provider, or use auto fallback routing (default: auto)",
     },
     format: {
@@ -131,6 +132,7 @@ function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeC
     exa: runtimeConfig.exaApiKey,
     you: runtimeConfig.youApiKey,
     parallel: runtimeConfig.parallelApiKey,
+    keenable: runtimeConfig.keenableApiKey || KEENABLE_PUBLIC_SENTINEL,
   };
   return keyMap[provider];
 }
@@ -391,6 +393,34 @@ export async function extractYou(
   return { provider: "you", results };
 }
 
+export async function extractKeenable(
+  urls: string[],
+  apiKey: string,
+  _outputFormat: ExtractFormat = "markdown",
+  _includeImages = false,
+  _includeRawHtml = false,
+  _renderJs = false,
+  apiBase = "https://api.keenable.ai/v1/fetch",
+  timeout = 30,
+): Promise<ExtractResponse> {
+  const authenticated = apiKey !== KEENABLE_PUBLIC_SENTINEL;
+  const headers = authenticated ? { "X-API-Key": apiKey } : {};
+  const results: ExtractResult[] = [];
+  for (const url of urls) {
+    try {
+      const endpoint = `${apiBase}${authenticated ? "" : "/public"}?url=${encodeURIComponent(url)}`;
+      const data = await requestJson(endpoint, { method: "GET", headers }, timeout);
+      const content = String(data?.content || "");
+      results.push(normalizeExtractResult("keenable", String(data?.url || url), String(data?.title || ""), content, content, {
+        metadata: data?.author || data?.description ? { author: data.author, description: data.description } : undefined,
+      }));
+    } catch (error: any) {
+      results.push(normalizeExtractResult("keenable", url, "", "", undefined, { error: String(error?.message || error) }));
+    }
+  }
+  return { provider: "keenable", results };
+}
+
 export async function extractPlus(
   urls: string[],
   provider: ExtractProviderName | "auto" = "auto",
@@ -450,6 +480,8 @@ export async function extractPlus(
         result = await extractParallel(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "firecrawl") {
         result = await extractFirecrawl(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "keenable") {
+        result = await extractKeenable(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else {
         result = await extractYou(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }

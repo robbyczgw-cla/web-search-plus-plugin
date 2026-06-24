@@ -6,6 +6,7 @@ import {
   extractTavily,
   extractExa,
   extractYou,
+  extractKeenable,
   extractPlus,
   hasAnyExtractProviderCredential,
 } from "../extract.ts";
@@ -234,6 +235,43 @@ test("extractPlus falls back when primary returns only errors", async () => {
   );
 });
 
+test("extractKeenable fetches keyless via public endpoint", async () => {
+  await withMockedFetch(
+    () => mockJsonResponse({ url: "https://example.com", title: "Example", content: "# Page\nbody" }),
+    async (calls) => {
+      const result = await extractKeenable(["https://example.com"], "keenable:public");
+      assert.equal(result.provider, "keenable");
+      assert.equal(result.results[0].content, "# Page\nbody");
+      assert.equal(result.results[0].title, "Example");
+      assert.match(calls[0].url, /^https:\/\/api\.keenable\.ai\/v1\/fetch\/public\?url=/);
+      assert.equal((calls[0].init?.headers as Record<string, string>)["X-API-Key"], undefined);
+    },
+  );
+});
+
+test("extractKeenable uses authenticated endpoint and X-API-Key when keyed", async () => {
+  await withMockedFetch(
+    () => mockJsonResponse({ url: "https://example.com", title: "Example", content: "body" }),
+    async (calls) => {
+      await extractKeenable(["https://example.com"], "keen_secret");
+      assert.match(calls[0].url, /^https:\/\/api\.keenable\.ai\/v1\/fetch\?url=/);
+      assert.equal((calls[0].init?.headers as Record<string, string>)["X-API-Key"], "keen_secret");
+    },
+  );
+});
+
+test("extractPlus falls back to keyless keenable when no extract key is set", async () => {
+  await withMockedFetch(
+    () => mockJsonResponse({ url: "https://example.com", title: "Example", content: "keenable body" }),
+    async () => {
+      const result = await extractPlus(["https://example.com"], "auto", "markdown", false, false, false, {});
+      assert.equal(result.provider, "keenable");
+      assert.equal(result.results[0].content, "keenable body");
+      assert.equal(result.routing?.provider, "keenable");
+    },
+  );
+});
+
 test("extractPlus empty urls returns clean error without provider calls", async () => {
   await withMockedFetch(
     () => {
@@ -306,15 +344,16 @@ test("register exposes web_extract_plus tool", () => {
   assert.ok(schema.properties.provider.enum.includes("you"));
 });
 
-test("web_extract_plus checkFn requires extract-capable provider", () => {
+test("web_extract_plus is always extract-capable via keyless keenable", () => {
   const registered = new Map<string, any>();
-  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { serperApiKey: "serper-test" } });
-  assert.equal(registered.get("web_extract_plus").checkFn(), false);
+  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: {} });
+  assert.equal(registered.get("web_extract_plus").checkFn(), true);
 
   registered.clear();
   register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { firecrawlApiKey: "fc-test" } });
   assert.equal(registered.get("web_extract_plus").checkFn(), true);
   assert.equal(hasAnyExtractProviderCredential({ firecrawlApiKey: "fc-test" }), true);
+  assert.equal(hasAnyExtractProviderCredential({}), true);
 });
 
 test("registered web_extract_plus execute returns JSON payload", async () => {
