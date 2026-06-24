@@ -1117,7 +1117,7 @@ export async function searchKeenable(query: string, apiKey: string, maxResults: 
   const url = `https://api.keenable.ai/v1/search${authenticated ? "" : "/public"}`;
   const body: Json = { query };
   if (timeRange && KEENABLE_TIME_RANGE[timeRange]) body.published_after = KEENABLE_TIME_RANGE[timeRange];
-  if (includeDomains?.length) body.site = includeDomains[0]; // Keenable filters to a single site.
+  if (includeDomains?.length) body.site = includeDomains[0];
   const data = await httpJson(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(authenticated ? { "X-API-Key": apiKey } : {}) },

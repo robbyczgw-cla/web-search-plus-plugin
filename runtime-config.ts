@@ -1,5 +1,3 @@
-// Keenable works keyless via its /public endpoints; this sentinel stands in as
-// its "key" so it counts as configured when no real key is set.
 export const KEENABLE_PUBLIC_SENTINEL = "keenable:public";
 
 export type RuntimeConfig = {

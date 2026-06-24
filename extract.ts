@@ -35,7 +35,6 @@ export type ExtractResponse = {
   };
 };
 
-// keenable needs no key; keep it last so it only runs when keyed providers are absent or fail.
 export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable"];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",

@@ -1,6 +1,5 @@
 export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "kilo-perplexity" | "you" | "searxng" | "parallel" | "serpbase" | "keenable";
 
-// keenable needs no key; keep it last so it never outranks a configured provider in auto routing.
 export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng", "keenable"];
 
 export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["brave", "serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
