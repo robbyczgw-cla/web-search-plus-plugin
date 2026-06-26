@@ -11,6 +11,7 @@ import {
   __resetRuntimeStateForTests,
 } from "../index.ts";
 import { __resetRoutingPreferencesForTests } from "../routing-config.ts";
+import { getRuntimeConfig, isTruthy, keenablePublicAllowed } from "../runtime-config.ts";
 
 type MockFetchCall = { url: string; init?: RequestInit };
 
@@ -175,7 +176,7 @@ test("searchKeenable uses keyless public endpoint and maps results", async () =>
       }],
     }),
     async (calls) => {
-      const result = await searchKeenable("rust async patterns", "keenable:public", 3, "week", ["example.com"]);
+      const result = await searchKeenable("rust async patterns", undefined, 3, "week", ["example.com"], true);
       assert.equal(result.provider, "keenable");
       assert.equal(result.results[0].snippet, "Snippet text");
       assert.equal(result.results[0].url, "https://example.com/keenable");
@@ -201,14 +202,40 @@ test("searchKeenable uses authenticated endpoint when a key is set, with descrip
   );
 });
 
-test("registered web_search_plus runs keenable keyless with no plugin config", async () => {
+test("searchKeenable: a present key wins even when public is enabled", async () => {
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ title: "Keyed", url: "https://example.com/keyed", snippet: "s" }] }),
+    async (calls) => {
+      await searchKeenable("query", "keen_secret", 5, undefined, undefined, true);
+      assert.equal(calls[0].url, "https://api.keenable.ai/v1/search");
+      assert.equal((calls[0].init?.headers as Record<string, string>)["X-API-Key"], "keen_secret");
+    },
+  );
+});
+
+test("searchKeenable throws without a key or public opt-in", async () => {
+  await assert.rejects(() => searchKeenable("query", undefined, 5), /API key or an enabled public endpoint/);
+});
+
+test("keenable public opt-in uses strict truthiness", () => {
+  for (const v of ["1", "true", "TRUE", "yes", "On", true]) {
+    assert.equal(isTruthy(v), true, String(v));
+    assert.equal(keenablePublicAllowed(getRuntimeConfig({ keenableAllowPublic: v })), true, String(v));
+  }
+  for (const v of ["0", "false", "no", "off", "", "2", "enabled", false, null, undefined]) {
+    assert.equal(isTruthy(v), false, String(v));
+    assert.equal(keenablePublicAllowed(getRuntimeConfig({ keenableAllowPublic: v })), false, String(v));
+  }
+});
+
+test("registered web_search_plus runs keenable keyless when public is opted in", async () => {
   await withMockedFetch(
     () => mockJsonResponse({ results: [{ title: "Keyless", url: "https://example.com/keyless", snippet: "found" }] }),
     async (calls) => {
       const registered = new Map<string, any>();
       register({
         registerTool(tool: any) { registered.set(tool.name, tool); },
-        pluginConfig: {},
+        pluginConfig: { keenableAllowPublic: true },
       });
 
       const tool = registered.get("web_search_plus");
@@ -223,6 +250,17 @@ test("registered web_search_plus runs keenable keyless with no plugin config", a
       assert.equal(calls[0].url, "https://api.keenable.ai/v1/search/public");
     },
   );
+});
+
+test("web_search_plus reports no providers when keenable public is not opted in", async () => {
+  const registered = new Map<string, any>();
+  register({
+    registerTool(tool: any) { registered.set(tool.name, tool); },
+    pluginConfig: {},
+  });
+  const response = await registered.get("web_search_plus").execute("tool-noprov", { query: "anything" });
+  const payload = JSON.parse(response.content[0].text);
+  assert.match(payload.error, /no search providers are configured/);
 });
 
 test("registered web_search_plus supports explicit provider=brave", async () => {

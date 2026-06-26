@@ -3,7 +3,7 @@ import crypto from "crypto";
 import dns from "dns/promises";
 import net from "net";
 
-// node_modules/openclaw/dist/plugin-cache-primitives-BXH3UUqE.js
+// ../../../node_modules/openclaw/dist/plugin-cache-primitives-BXH3UUqE.js
 var PluginLruCache = class {
   #defaultMaxEntries;
   #maxEntries;
@@ -57,19 +57,19 @@ function normalizeMaxEntries(value, fallback) {
   return Math.max(1, Math.floor(value));
 }
 
-// node_modules/openclaw/dist/ansi-Dqm1lzVL.js
+// ../../../node_modules/openclaw/dist/ansi-Dqm1lzVL.js
 var ANSI_CSI_PATTERN = "\\x1b\\[[\\x20-\\x3f]*[\\x40-\\x7e]";
 var OSC8_PATTERN = "\\x1b\\]8;;.*?(?:\\x1b\\\\|\\x07)|\\x1b\\]8;;(?:\\x1b\\\\|\\x07)";
 var ANSI_CSI_REGEX = new RegExp(ANSI_CSI_PATTERN, "g");
 var OSC8_REGEX = new RegExp(OSC8_PATTERN, "g");
 var graphemeSegmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter(void 0, { granularity: "grapheme" }) : null;
 
-// node_modules/openclaw/dist/schema-validator-CwMY3Tzl.js
+// ../../../node_modules/openclaw/dist/schema-validator-CwMY3Tzl.js
 import { createRequire } from "node:module";
 var require2 = createRequire(import.meta.url);
 var schemaCache = new PluginLruCache(512);
 
-// node_modules/openclaw/dist/config-schema-Crc2mMHj.js
+// ../../../node_modules/openclaw/dist/config-schema-Crc2mMHj.js
 function error(message) {
   return {
     success: false,
@@ -101,7 +101,7 @@ function emptyPluginConfigSchema() {
   };
 }
 
-// node_modules/openclaw/dist/plugin-entry-DmhVEOw1.js
+// ../../../node_modules/openclaw/dist/plugin-entry-DmhVEOw1.js
 function createCachedLazyValueGetter(value, fallback) {
   let resolved = false;
   let cached;
@@ -131,7 +131,12 @@ function definePluginEntry({ id, name, description, kind, configSchema = emptyPl
 }
 
 // runtime-config.ts
-var KEENABLE_PUBLIC_SENTINEL = "keenable:public";
+var TRUTHY_VALUES = /* @__PURE__ */ new Set(["1", "true", "yes", "on"]);
+function isTruthy(value) {
+  if (typeof value === "boolean") return value;
+  if (value == null) return false;
+  return TRUTHY_VALUES.has(String(value).trim().replace(/^['"]|['"]$/g, "").toLowerCase());
+}
 function maybeString(value) {
   if (typeof value !== "string") return void 0;
   const trimmed = value.trim();
@@ -153,9 +158,33 @@ function getRuntimeConfig(pluginConfig) {
     parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
     serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
     keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
+    keenableAllowPublic: isTruthy(pluginConfig?.keenableAllowPublic),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0
   };
+}
+function keenablePublicAllowed(runtimeConfig) {
+  return Boolean(runtimeConfig.keenableAllowPublic);
+}
+var keenablePublicWarned = false;
+function warnKeenablePublicOnce() {
+  if (keenablePublicWarned) return;
+  keenablePublicWarned = true;
+  console.warn(JSON.stringify({
+    warning: "Keenable keyless public endpoint in use: queries and fetched URLs are sent to an unauthenticated shared service (https://keenable.ai) with no SLA. Set keenableApiKey for the authenticated endpoint."
+  }));
+}
+function keenableEndpoint(apiUrl, apiKey, isPublic) {
+  const headers = { "X-Keenable-Title": "openclaw-web-search-plus" };
+  if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+    return { url: apiUrl, headers };
+  }
+  if (isPublic) {
+    warnKeenablePublicOnce();
+    return { url: `${apiUrl}/public`, headers };
+  }
+  throw new Error("Keenable requires an API key or an enabled public endpoint");
 }
 
 // routing-config.ts
@@ -375,12 +404,16 @@ function getExtractApiKey(provider, runtimeConfig) {
     exa: runtimeConfig.exaApiKey,
     you: runtimeConfig.youApiKey,
     parallel: runtimeConfig.parallelApiKey,
-    keenable: runtimeConfig.keenableApiKey || KEENABLE_PUBLIC_SENTINEL
+    keenable: runtimeConfig.keenableApiKey
   };
   return keyMap[provider];
 }
+function extractProviderConfigured(provider, runtimeConfig) {
+  if (getExtractApiKey(provider, runtimeConfig)) return true;
+  return provider === "keenable" && keenablePublicAllowed(runtimeConfig);
+}
 function hasAnyExtractProviderCredential(runtimeConfig) {
-  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)));
+  return EXTRACT_PROVIDER_PRIORITY.some((provider) => extractProviderConfigured(provider, runtimeConfig));
 }
 async function extractFirecrawl(urls, apiKey, outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, apiUrl = "https://api.firecrawl.dev/v2/scrape", timeout = 60) {
   const formats = outputFormat === "html" ? ["html"] : ["markdown"];
@@ -559,13 +592,12 @@ async function extractYou(urls, apiKey, outputFormat = "markdown", includeImages
   });
   return { provider: "you", results };
 }
-async function extractKeenable(urls, apiKey, _outputFormat = "markdown", _includeImages = false, _includeRawHtml = false, _renderJs = false, apiBase = "https://api.keenable.ai/v1/fetch", timeout = 30) {
-  const authenticated = apiKey !== KEENABLE_PUBLIC_SENTINEL;
-  const headers = { "X-Keenable-Title": "openclaw-web-search-plus", ...authenticated ? { "X-API-Key": apiKey } : {} };
+async function extractKeenable(urls, apiKey, _outputFormat = "markdown", _includeImages = false, _includeRawHtml = false, _renderJs = false, isPublic = false, apiBase = "https://api.keenable.ai/v1/fetch", timeout = 30) {
+  const { url: base, headers } = keenableEndpoint(apiBase, apiKey, isPublic);
   const results = [];
   for (const url of urls) {
     try {
-      const endpoint = `${apiBase}${authenticated ? "" : "/public"}?url=${encodeURIComponent(url)}`;
+      const endpoint = `${base}?url=${encodeURIComponent(url)}`;
       const data = await requestJson(endpoint, { method: "GET", headers }, timeout);
       const content = String(data?.content || "");
       results.push(normalizeExtractResult("keenable", String(data?.url || url), String(data?.title || ""), content, content, {
@@ -604,8 +636,9 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       errors.push({ provider: currentProvider, error: `Provider ${currentProvider} does not support extraction` });
       continue;
     }
+    const keenablePublic = currentProvider === "keenable" && keenablePublicAllowed(runtimeConfig);
     const providerCredential = getExtractApiKey(currentProvider, runtimeConfig);
-    if (!providerCredential) {
+    if (!providerCredential && !keenablePublic) {
       errors.push({ provider: currentProvider, error: "missing_api_key" });
       continue;
     }
@@ -622,7 +655,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       } else if (currentProvider === "firecrawl") {
         result = await extractFirecrawl(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "keenable") {
-        result = await extractKeenable(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractKeenable(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keenablePublic);
       } else {
         result = await extractYou(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }
@@ -1179,13 +1212,18 @@ function getApiKey(provider, runtimeConfig) {
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
-    keenable: runtimeConfig.keenableApiKey || KEENABLE_PUBLIC_SENTINEL
+    keenable: runtimeConfig.keenableApiKey
   };
   return keyMap[provider];
+}
+function providerConfigured(provider, runtimeConfig) {
+  if (getApiKey(provider, runtimeConfig)) return true;
+  return provider === "keenable" && keenablePublicAllowed(runtimeConfig);
 }
 function validateApiKey(provider, runtimeConfig) {
   const key = getApiKey(provider, runtimeConfig);
   if (!key) {
+    if (provider === "keenable" && keenablePublicAllowed(runtimeConfig)) return "";
     if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
     if (provider === "perplexity") throw new ProviderConfigError("Missing API key for perplexity (PERPLEXITY_API_KEY or pluginConfig.perplexityApiKey)");
     if (provider === "kilo-perplexity") throw new ProviderConfigError("Missing API key for kilo-perplexity (KILOCODE_API_KEY or pluginConfig.kilocodeApiKey)");
@@ -2116,15 +2154,14 @@ async function searchSearxng(query, instanceUrl, maxResults, timeRange, runtimeC
   return { provider: "searxng", query, results, images: [], answer, suggestions: data.suggestions || [], corrections: data.corrections || [], metadata: { number_of_results: data.number_of_results, engines_used: [...enginesUsed], instance_url: base } };
 }
 var KEENABLE_TIME_RANGE = { hour: "1h", day: "1d", week: "7d", month: "1mo", year: "1y" };
-async function searchKeenable(query, apiKey, maxResults, timeRange, includeDomains) {
-  const authenticated = apiKey !== KEENABLE_PUBLIC_SENTINEL;
-  const url = `https://api.keenable.ai/v1/search${authenticated ? "" : "/public"}`;
+async function searchKeenable(query, apiKey, maxResults, timeRange, includeDomains, isPublic = false) {
+  const { url, headers } = keenableEndpoint("https://api.keenable.ai/v1/search", apiKey, isPublic);
   const body = { query };
   if (timeRange && KEENABLE_TIME_RANGE[timeRange]) body.published_after = KEENABLE_TIME_RANGE[timeRange];
   if (includeDomains?.length) body.site = includeDomains[0];
   const data = await httpJson(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Keenable-Title": "openclaw-web-search-plus", ...authenticated ? { "X-API-Key": apiKey } : {} },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body)
   });
   const results = (data.results || []).slice(0, maxResults).map((item) => ({
@@ -2192,7 +2229,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : void 0;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
     const routingConfig = routingConfigResult.config;
-    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeConfig));
+    const configuredProviders = ALL_PROVIDERS.filter((p) => providerConfigured(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider2) => !routingConfig.disabled_providers.includes(provider2));
     const braveOptions = {
       safesearch: runtimeConfig.braveSafesearch
@@ -2262,13 +2299,13 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
-      if (p === "keenable") return searchKeenable(query, key, count, timeRange, includeDomains);
+      if (p === "keenable") return searchKeenable(query, key || void 0, count, timeRange, includeDomains, keenablePublicAllowed(runtimeConfig));
       return searchSearxng(query, key, count, timeRange, runtimeConfig);
     };
     if (params.mode === "research") {
-      const providerEligibleForResearch = (p) => !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && !!getApiKey(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
+      const providerEligibleForResearch = (p) => !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && providerConfigured(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
       const availableResearchProviders = new Set(configuredProviders.filter(providerEligibleForResearch));
-      if (getApiKey(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
+      if (providerConfigured(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
         availableResearchProviders.add(provider);
       }
       let researchProviders;

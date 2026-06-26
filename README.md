@@ -62,7 +62,7 @@ Runtime credentials still come from explicit OpenClaw plugin config fields. The 
 - **Kilo Perplexity** — gateway route via `https://api.kilo.ai/api/gateway/chat/completions`; guarded in auto routing
 - **You.com** — current web / RAG-style snippets
 - **SearXNG** — self-hosted metasearch
-- **Keenable** — independent web index; works keyless, optional key raises limits
+- **Keenable** — independent web index; key via `keenableApiKey`, or an opt-in keyless public tier (off by default)
 
 ### Extraction providers
 
@@ -74,9 +74,9 @@ Auto fallback order:
 - Parallel
 - Firecrawl
 - You.com
-- Keenable (keyless fallback)
+- Keenable (lowest-priority fallback, only when configured)
 
-Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net.
+Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net. Keenable runs last and only when it is configured — a `keenableApiKey`, or the opt-in keyless public tier (off by default) — so it never displaces a configured keyed provider.
 
 ## Configuration
 
@@ -97,13 +97,19 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `kilocodeApiKey`
 - `youApiKey`
 - `searxngInstanceUrl`
-- `keenableApiKey` (optional — Keenable works keyless without it)
+- `keenableApiKey`
+- `keenableAllowPublic` (optional — opt into Keenable's keyless public tier, off by default)
 
 ### Extra fields
 
 - `braveSafesearch`
 - `searxngAllowPrivate`
+- `keenableAllowPublic`
 - `routingConfigPath` — optional namespace for in-memory routing preferences
+
+### Keenable keyless public access
+
+Keenable also exposes keyless `/public` endpoints, but they are **opt-in and off by default**. With `keenableApiKey` set, requests always use the authenticated endpoints. Without a key, Keenable is treated as unconfigured (it won't auto-route, fall back, or enable `web_extract_plus`) unless you set `keenableAllowPublic: true` (or `KEENABLE_ALLOW_PUBLIC=1`). When enabled, queries and fetched URLs are sent to an **unauthenticated** public service with **per-IP** limits and **no SLA** — roughly **1,000 requests/hour** and **10 requests/second** — so treat it as a best-effort last resort. The first request that uses the public endpoint logs a one-time warning so the egress is visible.
 
 Example:
 

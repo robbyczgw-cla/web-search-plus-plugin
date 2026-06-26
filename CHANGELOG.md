@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- Keenable as a search and extraction provider. It uses Keenable's independent web index and works keyless via the `/v1/search/public` and `/v1/fetch/public` endpoints; setting `keenableApiKey` switches to the authenticated endpoints (with an `X-API-Key` header) for higher rate limits. Available via `provider="keenable"` and as the lowest-priority auto-routing/extraction fallback, so it never displaces a configured keyed provider.
+- Keenable as a search and extraction provider, using Keenable's independent web index. Setting `keenableApiKey` uses the authenticated endpoints (with an `X-API-Key` header). It can also run keyless against the `/v1/search/public` and `/v1/fetch/public` endpoints, but this is **opt-in and off by default** — enable it with `keenableAllowPublic: true` (or `KEENABLE_ALLOW_PUBLIC=1`), since the public tier routes queries and fetched URLs to an unauthenticated service (~1000 req/hour, 10 req/sec per-IP limits, no SLA) and emits a one-time warning when first used. Once configured (keyed or opted-in), Keenable is available via `provider="keenable"` and as the lowest-priority auto-routing/extraction fallback, so it never displaces a configured keyed provider, and `web_extract_plus` is available only when at least one extraction provider is configured.
 
 ## [3.1.0] - 2026-06-10
 

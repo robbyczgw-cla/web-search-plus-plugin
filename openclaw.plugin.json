@@ -94,7 +94,11 @@
       },
       "keenableApiKey": {
         "type": "string",
-        "description": "Optional Keenable API key. Keenable search and extraction work without a key via public endpoints; a key raises rate limits."
+        "description": "Keenable API key for search and extraction (sent as an X-API-Key header). Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      "keenableAllowPublic": {
+        "type": "boolean",
+        "description": "Opt into Keenable's keyless public endpoints (off by default). When enabled and no key is set, queries and fetched URLs are sent to an unauthenticated service (~1000 req/hour, 10 req/sec per-IP limits, no SLA). A key always wins over this."
       }
     }
   },
@@ -186,8 +190,12 @@
     "keenableApiKey": {
       "label": "Keenable API Key",
       "placeholder": "keen_...",
-      "description": "Optional. Keenable works keyless via public endpoints; a key raises rate limits.",
+      "description": "Keenable search + extraction. Sent as an X-API-Key header.",
       "sensitive": true
+    },
+    "keenableAllowPublic": {
+      "label": "Keenable keyless public access",
+      "description": "Opt into Keenable's keyless public endpoints (off by default). Sends queries and fetched URLs to an unauthenticated service with per-IP limits and no SLA."
     }
   }
 }

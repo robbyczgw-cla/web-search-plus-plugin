@@ -1,4 +1,4 @@
-import { KEENABLE_PUBLIC_SENTINEL, type RuntimeConfig } from "./runtime-config.ts";
+import { keenableEndpoint, keenablePublicAllowed, type RuntimeConfig } from "./runtime-config.ts";
 
 type Json = Record<string, any>;
 
@@ -131,13 +131,18 @@ function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeC
     exa: runtimeConfig.exaApiKey,
     you: runtimeConfig.youApiKey,
     parallel: runtimeConfig.parallelApiKey,
-    keenable: runtimeConfig.keenableApiKey || KEENABLE_PUBLIC_SENTINEL,
+    keenable: runtimeConfig.keenableApiKey,
   };
   return keyMap[provider];
 }
 
+function extractProviderConfigured(provider: ExtractProviderName, runtimeConfig: RuntimeConfig): boolean {
+  if (getExtractApiKey(provider, runtimeConfig)) return true;
+  return provider === "keenable" && keenablePublicAllowed(runtimeConfig);
+}
+
 export function hasAnyExtractProviderCredential(runtimeConfig: RuntimeConfig): boolean {
-  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)));
+  return EXTRACT_PROVIDER_PRIORITY.some((provider) => extractProviderConfigured(provider, runtimeConfig));
 }
 
 export async function extractFirecrawl(
@@ -394,20 +399,20 @@ export async function extractYou(
 
 export async function extractKeenable(
   urls: string[],
-  apiKey: string,
+  apiKey: string | undefined,
   _outputFormat: ExtractFormat = "markdown",
   _includeImages = false,
   _includeRawHtml = false,
   _renderJs = false,
+  isPublic = false,
   apiBase = "https://api.keenable.ai/v1/fetch",
   timeout = 30,
 ): Promise<ExtractResponse> {
-  const authenticated = apiKey !== KEENABLE_PUBLIC_SENTINEL;
-  const headers = { "X-Keenable-Title": "openclaw-web-search-plus", ...(authenticated ? { "X-API-Key": apiKey } : {}) };
+  const { url: base, headers } = keenableEndpoint(apiBase, apiKey, isPublic);
   const results: ExtractResult[] = [];
   for (const url of urls) {
     try {
-      const endpoint = `${apiBase}${authenticated ? "" : "/public"}?url=${encodeURIComponent(url)}`;
+      const endpoint = `${base}?url=${encodeURIComponent(url)}`;
       const data = await requestJson(endpoint, { method: "GET", headers }, timeout);
       const content = String(data?.content || "");
       results.push(normalizeExtractResult("keenable", String(data?.url || url), String(data?.title || ""), content, content, {
@@ -461,8 +466,9 @@ export async function extractPlus(
       continue;
     }
 
+    const keenablePublic = currentProvider === "keenable" && keenablePublicAllowed(runtimeConfig);
     const providerCredential = getExtractApiKey(currentProvider, runtimeConfig);
-    if (!providerCredential) {
+    if (!providerCredential && !keenablePublic) {
       errors.push({ provider: currentProvider, error: "missing_api_key" });
       continue;
     }
@@ -480,7 +486,7 @@ export async function extractPlus(
       } else if (currentProvider === "firecrawl") {
         result = await extractFirecrawl(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "keenable") {
-        result = await extractKeenable(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractKeenable(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keenablePublic);
       } else {
         result = await extractYou(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }

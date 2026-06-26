@@ -2,7 +2,7 @@ import crypto from "crypto";
 import dns from "dns/promises";
 import net from "net";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { getRuntimeConfig, KEENABLE_PUBLIC_SENTINEL, type RuntimeConfig } from "./runtime-config.ts";
+import { getRuntimeConfig, keenableEndpoint, keenablePublicAllowed, type RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
@@ -382,14 +382,23 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
-    keenable: runtimeConfig.keenableApiKey || KEENABLE_PUBLIC_SENTINEL,
+    keenable: runtimeConfig.keenableApiKey,
   };
   return keyMap[provider];
+}
+
+// Routing/fallback gate: a provider is usable when keyed, or — for keenable —
+// when its keyless public endpoint is opted in. Distinct from getApiKey so key
+// status stays truthful.
+function providerConfigured(provider: ProviderName, runtimeConfig: RuntimeConfig): boolean {
+  if (getApiKey(provider, runtimeConfig)) return true;
+  return provider === "keenable" && keenablePublicAllowed(runtimeConfig);
 }
 
 function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string {
   const key = getApiKey(provider, runtimeConfig);
   if (!key) {
+    if (provider === "keenable" && keenablePublicAllowed(runtimeConfig)) return "";
     if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
     if (provider === "perplexity") throw new ProviderConfigError("Missing API key for perplexity (PERPLEXITY_API_KEY or pluginConfig.perplexityApiKey)");
     if (provider === "kilo-perplexity") throw new ProviderConfigError("Missing API key for kilo-perplexity (KILOCODE_API_KEY or pluginConfig.kilocodeApiKey)");
@@ -1112,15 +1121,14 @@ async function searchSearxng(query: string, instanceUrl: string, maxResults: num
 
 const KEENABLE_TIME_RANGE: Record<string, string> = { hour: "1h", day: "1d", week: "7d", month: "1mo", year: "1y" };
 
-export async function searchKeenable(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[]): Promise<SearchResponse> {
-  const authenticated = apiKey !== KEENABLE_PUBLIC_SENTINEL;
-  const url = `https://api.keenable.ai/v1/search${authenticated ? "" : "/public"}`;
+export async function searchKeenable(query: string, apiKey: string | undefined, maxResults: number, timeRange?: string, includeDomains?: string[], isPublic = false): Promise<SearchResponse> {
+  const { url, headers } = keenableEndpoint("https://api.keenable.ai/v1/search", apiKey, isPublic);
   const body: Json = { query };
   if (timeRange && KEENABLE_TIME_RANGE[timeRange]) body.published_after = KEENABLE_TIME_RANGE[timeRange];
   if (includeDomains?.length) body.site = includeDomains[0];
   const data = await httpJson(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Keenable-Title": "openclaw-web-search-plus", ...(authenticated ? { "X-API-Key": apiKey } : {}) },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   const results = (data.results || []).slice(0, maxResults).map((item: any) => ({
@@ -1192,7 +1200,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
     const routingConfig = routingConfigResult.config;
-    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeConfig));
+    const configuredProviders = ALL_PROVIDERS.filter((p) => providerConfigured(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider) => !routingConfig.disabled_providers.includes(provider));
     const braveOptions = {
       safesearch: runtimeConfig.braveSafesearch,
@@ -1267,15 +1275,15 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
-      if (p === "keenable") return searchKeenable(query, key, count, timeRange, includeDomains);
+      if (p === "keenable") return searchKeenable(query, key || undefined, count, timeRange, includeDomains, keenablePublicAllowed(runtimeConfig));
       return searchSearxng(query, key, count, timeRange, runtimeConfig);
     };
 
     if (params.mode === "research") {
       const providerEligibleForResearch = (p: ProviderName) =>
-        !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && !!getApiKey(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
+        !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && providerConfigured(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
       const availableResearchProviders = new Set<ProviderName>(configuredProviders.filter(providerEligibleForResearch));
-      if (getApiKey(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
+      if (providerConfigured(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
         availableResearchProviders.add(provider);
       }
       let researchProviders: ProviderName[];

@@ -239,7 +239,7 @@ test("extractKeenable fetches keyless via public endpoint", async () => {
   await withMockedFetch(
     () => mockJsonResponse({ url: "https://example.com", title: "Example", content: "# Page\nbody" }),
     async (calls) => {
-      const result = await extractKeenable(["https://example.com"], "keenable:public");
+      const result = await extractKeenable(["https://example.com"], undefined, "markdown", false, false, false, true);
       assert.equal(result.provider, "keenable");
       assert.equal(result.results[0].content, "# Page\nbody");
       assert.equal(result.results[0].title, "Example");
@@ -261,14 +261,39 @@ test("extractKeenable uses authenticated endpoint and X-API-Key when keyed", asy
   );
 });
 
-test("extractPlus falls back to keyless keenable when no extract key is set", async () => {
+test("extractPlus falls back to keenable when its public endpoint is opted in", async () => {
   await withMockedFetch(
     () => mockJsonResponse({ url: "https://example.com", title: "Example", content: "keenable body" }),
     async () => {
-      const result = await extractPlus(["https://example.com"], "auto", "markdown", false, false, false, {});
+      const result = await extractPlus(["https://example.com"], "auto", "markdown", false, false, false, { keenableAllowPublic: true });
       assert.equal(result.provider, "keenable");
       assert.equal(result.results[0].content, "keenable body");
       assert.equal(result.routing?.provider, "keenable");
+    },
+  );
+});
+
+test("extractPlus does not use keenable when public is not opted in", async () => {
+  let called = false;
+  await withMockedFetch(
+    () => { called = true; return mockJsonResponse({ url: "https://example.com", content: "body" }); },
+    async () => {
+      const result = await extractPlus(["https://example.com"], "auto", "markdown", false, false, false, {});
+      assert.equal(called, false);
+      assert.notEqual(result.provider, "keenable");
+      assert.ok(result.error || result.fallback_errors);
+    },
+  );
+});
+
+test("extractPlus: a present keenable key wins over public opt-in", async () => {
+  await withMockedFetch(
+    () => mockJsonResponse({ url: "https://example.com", title: "X", content: "body" }),
+    async (calls) => {
+      const result = await extractPlus(["https://example.com"], "keenable", "markdown", false, false, false, { keenableApiKey: "keen_secret", keenableAllowPublic: true });
+      assert.equal(result.provider, "keenable");
+      assert.doesNotMatch(calls[0].url, /\/fetch\/public/);
+      assert.equal((calls[0].init?.headers as Record<string, string>)["X-API-Key"], "keen_secret");
     },
   );
 });
@@ -345,16 +370,19 @@ test("register exposes web_extract_plus tool", () => {
   assert.ok(schema.properties.provider.enum.includes("you"));
 });
 
-test("web_extract_plus is always extract-capable via keyless keenable", () => {
+test("web_extract_plus availability tracks configured extract providers and the keenable opt-in", () => {
   const registered = new Map<string, any>();
   register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: {} });
-  assert.equal(registered.get("web_extract_plus").checkFn(), true);
+  assert.equal(registered.get("web_extract_plus").checkFn(), false);
 
   registered.clear();
-  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { firecrawlApiKey: "fc-test" } });
+  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { keenableAllowPublic: true } });
   assert.equal(registered.get("web_extract_plus").checkFn(), true);
+
   assert.equal(hasAnyExtractProviderCredential({ firecrawlApiKey: "fc-test" }), true);
-  assert.equal(hasAnyExtractProviderCredential({}), true);
+  assert.equal(hasAnyExtractProviderCredential({ keenableApiKey: "keen_secret" }), true);
+  assert.equal(hasAnyExtractProviderCredential({ keenableAllowPublic: true }), true);
+  assert.equal(hasAnyExtractProviderCredential({}), false);
 });
 
 test("registered web_extract_plus execute returns JSON payload", async () => {
