@@ -8,6 +8,9 @@ Native OpenClaw plugin for one clean set of web tools.
 
 Current version: **3.1.0**
 
+> **Status: stable & frozen — not the main development path.**
+> This OpenClaw plugin is feature-complete on the Web Search Plus engine **v2.4 line** and works as-is. It is **not** where active development happens. New engine features (Keenable, adaptive routing memory, GroktoCrawl-compatible backends, …) land on the actively-developed surfaces: **[hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus)** (the engine source of truth) and the **[web-search-plus-mcp](https://github.com/robbyczgw-cla/web-search-plus-mcp)** server. No further engine syncs are planned for this OpenClaw build.
+
 It registers:
 
 - `web_search_plus` — Routing v2 intelligent multi-provider web search with research mode and canonical-source reranking
