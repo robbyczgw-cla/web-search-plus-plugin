@@ -34,3 +34,18 @@ test("onboarding CLI status and config commands persist explicit plugin fields",
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("onboarding CLI status counts keenable as configured when the public tier is opted in", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wsp-cli-"));
+  const config = join(dir, "config.json");
+  try {
+    let status = JSON.parse((await execFileAsync(process.execPath, [CLI, "status", "--config", config, "--json"])).stdout);
+    assert.equal(status.configured_providers.includes("keenable"), false, "keenable not configured by default");
+
+    await execFileAsync(process.execPath, [CLI, "config", "--config", config, "--set", "keenableAllowPublic=true", "--json"]);
+    status = JSON.parse((await execFileAsync(process.execPath, [CLI, "status", "--config", config, "--json"])).stdout);
+    assert.equal(status.configured_providers.includes("keenable"), true, "keenable configured once public opt-in is set");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

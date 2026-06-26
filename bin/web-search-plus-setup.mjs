@@ -18,8 +18,15 @@ const PROVIDERS = [
   { name: "perplexity", field: "perplexityApiKey", capability: "answer-style source search via direct Perplexity; guarded in auto routing", starter: false, guarded: true },
   { name: "kilo-perplexity", field: "kilocodeApiKey", capability: "Kilo gateway Perplexity-compatible search; guarded in auto routing", starter: false, guarded: true },
   { name: "searxng", field: "searxngInstanceUrl", capability: "self-hosted privacy metasearch", starter: false, guarded: false },
-  { name: "keenable", field: "keenableApiKey", capability: "independent web index search and extraction; optional opt-in keyless public tier (off by default)", starter: false, guarded: false },
+  { name: "keenable", field: "keenableApiKey", keylessField: "keenableAllowPublic", capability: "independent web index search and extraction; optional opt-in keyless public tier (off by default)", starter: false, guarded: false },
 ];
+
+// Strict opt-in parse, mirroring isTruthy in runtime-config.ts.
+function isTruthy(value) {
+  if (typeof value === "boolean") return value;
+  if (value == null) return false;
+  return ["1", "true", "yes", "on"].includes(String(value).trim().replace(/^['"]|['"]$/g, "").toLowerCase());
+}
 
 const PRESETS = {
   starter: ["you", "serper", "linkup"],
@@ -61,7 +68,10 @@ function writeConfig(configPath, config) {
 }
 
 function configuredProviders(config) {
-  return PROVIDERS.filter((provider) => Boolean(config[provider.field]));
+  // A provider counts as configured when it has a credential, or — for a keyless
+  // provider — when its public tier is opted in (keeps status honest about what runs).
+  return PROVIDERS.filter((provider) =>
+    Boolean(config[provider.field]) || (provider.keylessField && isTruthy(config[provider.keylessField])));
 }
 
 function print(value, json = false) {
