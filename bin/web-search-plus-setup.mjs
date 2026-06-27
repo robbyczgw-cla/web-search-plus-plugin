@@ -48,10 +48,7 @@ function parseArgs(argv) {
     else if (arg === "--json") opts.json = true;
     else if (arg === "--set") opts.set.push(args[++i]);
     else if (arg === "--keyless-public") opts.keylessPublic = true;
-    else {
-      opts.positionals.push(arg);
-      if (!opts.subcommand) opts.subcommand = arg;
-    }
+    else opts.positionals.push(arg);
   }
   return { command, opts };
 }
@@ -130,7 +127,7 @@ async function main() {
   }
 
   if (command === "list") {
-    if (opts.subcommand === "presets") {
+    if (opts.positionals[0] === "presets") {
       print(Object.fromEntries(Object.entries(PRESETS).map(([name, providers]) => [name, { providers }])), opts.json);
       return;
     }
@@ -153,7 +150,7 @@ async function main() {
     print({
       config_path: opts.config,
       configured_providers: configuredProviders(config).map((p) => p.name),
-      keyless_public_enabled: keylessEnabled,
+      keyless_public_providers: keylessEnabled,
     }, opts.json);
     return;
   }

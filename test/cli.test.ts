@@ -75,7 +75,7 @@ test("onboarding CLI --keyless-public opts in without the confirmation prompt", 
     // Only the key prompt is shown (one empty line); the flag auto-confirms the keyless opt-in.
     const { stdout } = await runSetup(["setup", "keenable", "--keyless-public", "--config", config, "--json"], [""]);
     // The interactive prompt prints to stdout ahead of the JSON; parse from the first brace.
-    assert.deepEqual(JSON.parse(stdout.slice(stdout.indexOf("{"))).keyless_public_enabled, ["keenable"]);
+    assert.deepEqual(JSON.parse(stdout.slice(stdout.indexOf("{"))).keyless_public_providers, ["keenable"]);
     const stored = JSON.parse(await readFile(config, "utf8"));
     assert.equal(stored.keenableAllowPublic, true);
   } finally {
