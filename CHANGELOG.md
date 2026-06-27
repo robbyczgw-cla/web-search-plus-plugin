@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- The onboarding CLI (`web-search-plus-setup setup`) now offers the keyless public tier for keyless providers (currently Keenable): skip the key prompt and it asks whether to enable the no-key public endpoint, writing `keenableAllowPublic: true`. Add `--keyless-public` to skip that confirmation and opt in directly, and `setup` now accepts an explicit provider list (e.g. `setup keenable`) in addition to `--preset`. `list providers` reports a `keyless` flag per provider.
 - Keenable as a search and extraction provider, using Keenable's independent web index. Setting `keenableApiKey` uses the authenticated endpoints (with an `X-API-Key` header). It can also run keyless against the `/v1/search/public` and `/v1/fetch/public` endpoints, but this is **opt-in and off by default** — enable it with `keenableAllowPublic: true` (or `KEENABLE_ALLOW_PUBLIC=1`), since the public tier routes queries and fetched URLs to an unauthenticated service (~1000 req/hour, 10 req/sec per-IP limits, no SLA) and emits a one-time warning when first used. Once configured (keyed or opted-in), Keenable is available via `provider="keenable"` and as the lowest-priority auto-routing/extraction fallback, so it never displaces a configured keyed provider, and `web_extract_plus` is available only when at least one extraction provider is configured.
 
 ## [3.1.0] - 2026-06-10

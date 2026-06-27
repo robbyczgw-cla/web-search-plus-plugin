@@ -40,10 +40,13 @@ web-search-plus-setup status --config ./web-search-plus-plugin.config.json
 web-search-plus-setup list providers
 web-search-plus-setup list presets
 web-search-plus-setup setup --preset starter --config ./web-search-plus-plugin.config.json
+web-search-plus-setup setup keenable --keyless-public --config ./web-search-plus-plugin.config.json
 web-search-plus-setup config --config ./web-search-plus-plugin.config.json --set routingConfigPath=memory:default
 ```
 
 Runtime credentials still come from explicit OpenClaw plugin config fields. The CLI writes a JSON helper file for setup/onboarding, not runtime secret discovery.
+
+`setup` accepts a preset (`--preset`) or an explicit provider list (`web-search-plus-setup setup keenable serper`). For keyless providers (currently Keenable), skipping the key prompt offers an opt-in public tier and writes `keenableAllowPublic: true`; pass `--keyless-public` to skip that confirmation and opt in directly (the key prompt still runs first). See [Keenable keyless public access](#keenable-keyless-public-access).
 
 ## Provider coverage
 
@@ -109,7 +112,7 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 
 ### Keenable keyless public access
 
-Keenable also exposes keyless `/public` endpoints, but they are **opt-in and off by default**. With `keenableApiKey` set, requests always use the authenticated endpoints. Without a key, Keenable is treated as unconfigured (it won't auto-route, fall back, or enable `web_extract_plus`) unless you set `keenableAllowPublic: true` (or `KEENABLE_ALLOW_PUBLIC=1`). When enabled, queries and fetched URLs are sent to an **unauthenticated** public service with **per-IP** limits and **no SLA** — roughly **1,000 requests/hour** and **10 requests/second** — so treat it as a best-effort last resort. The first request that uses the public endpoint logs a one-time warning so the egress is visible.
+Keenable also exposes keyless `/public` endpoints, but they are **opt-in and off by default**. With `keenableApiKey` set, requests always use the authenticated endpoints. Without a key, Keenable is treated as unconfigured (it won't auto-route, fall back, or enable `web_extract_plus`) unless you set `keenableAllowPublic: true` (or `KEENABLE_ALLOW_PUBLIC=1`, or let the setup wizard do it — skip the key prompt and answer yes, or run `web-search-plus-setup setup keenable --keyless-public`). When enabled, queries and fetched URLs are sent to an **unauthenticated** public service with **per-IP** limits and **no SLA** — roughly **1,000 requests/hour** and **10 requests/second** — so treat it as a best-effort last resort. The first request that uses the public endpoint logs a one-time warning so the egress is visible.
 
 Example:
 

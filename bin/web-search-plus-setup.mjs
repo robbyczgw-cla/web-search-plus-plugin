@@ -40,14 +40,18 @@ function defaultConfigPath() {
 function parseArgs(argv) {
   const args = [...argv];
   const command = args.shift() || "status";
-  const opts = { config: defaultConfigPath(), preset: undefined, json: false, set: [] };
+  const opts = { config: defaultConfigPath(), preset: undefined, json: false, set: [], keylessPublic: false, positionals: [] };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "--config") opts.config = args[++i];
     else if (arg === "--preset") opts.preset = args[++i];
     else if (arg === "--json") opts.json = true;
     else if (arg === "--set") opts.set.push(args[++i]);
-    else if (!opts.subcommand) opts.subcommand = arg;
+    else if (arg === "--keyless-public") opts.keylessPublic = true;
+    else {
+      opts.positionals.push(arg);
+      if (!opts.subcommand) opts.subcommand = arg;
+    }
   }
   return { command, opts };
 }
@@ -80,17 +84,30 @@ function print(value, json = false) {
   else console.log(JSON.stringify(value, null, 2));
 }
 
-async function setupProviders(configPath, selectedProviderNames) {
+async function setupProviders(configPath, selectedProviderNames, forceKeyless = false) {
   const rl = readline.createInterface({ input, output });
   const config = readConfig(configPath);
+  const keylessEnabled = [];
   try {
     for (const provider of PROVIDERS.filter((p) => selectedProviderNames.includes(p.name))) {
       const current = config[provider.field] ? "configured" : "empty";
       const answer = await rl.question(`${provider.name} (${provider.field}, ${current}) — paste value or Enter to skip: `);
-      if (answer.trim()) config[provider.field] = answer.trim();
+      if (answer.trim()) {
+        config[provider.field] = answer.trim();
+        continue;
+      }
+      // Skipped the key. For a keyless provider not already opted in, offer the public tier.
+      if (!provider.keylessField || isTruthy(config[provider.keylessField])) continue;
+      const opt = forceKeyless
+        ? "y"
+        : (await rl.question(`  Use ${provider.name} keyless public search (no API key)? [y/N, Enter to skip]: `)).trim().toLowerCase();
+      if (opt === "y" || opt === "yes") {
+        config[provider.keylessField] = true;
+        keylessEnabled.push(provider.name);
+      }
     }
     writeConfig(configPath, config);
-    return config;
+    return { config, keylessEnabled };
   } finally {
     rl.close();
   }
@@ -117,15 +134,27 @@ async function main() {
       print(Object.fromEntries(Object.entries(PRESETS).map(([name, providers]) => [name, { providers }])), opts.json);
       return;
     }
-    print(PROVIDERS.map(({ name, field, capability, starter, guarded }) => ({ name, field, capability, starter, guarded })), opts.json);
+    print(PROVIDERS.map(({ name, field, capability, starter, guarded, keylessField }) => ({ name, field, capability, starter, guarded, keyless: Boolean(keylessField) })), opts.json);
     return;
   }
 
   if (command === "setup") {
-    const preset = opts.preset || "full";
-    if (!PRESETS[preset]) throw new Error(`Unknown preset: ${preset}`);
-    const config = await setupProviders(opts.config, PRESETS[preset]);
-    print({ config_path: opts.config, configured_providers: configuredProviders(config).map((p) => p.name) }, opts.json);
+    let selected;
+    if (opts.positionals.length) {
+      const unknown = opts.positionals.filter((name) => !PROVIDERS.some((p) => p.name === name));
+      if (unknown.length) throw new Error(`Unknown provider(s): ${unknown.join(", ")}`);
+      selected = opts.positionals;
+    } else {
+      const preset = opts.preset || "full";
+      if (!PRESETS[preset]) throw new Error(`Unknown preset: ${preset}`);
+      selected = PRESETS[preset];
+    }
+    const { config, keylessEnabled } = await setupProviders(opts.config, selected, opts.keylessPublic);
+    print({
+      config_path: opts.config,
+      configured_providers: configuredProviders(config).map((p) => p.name),
+      keyless_public_enabled: keylessEnabled,
+    }, opts.json);
     return;
   }
 
