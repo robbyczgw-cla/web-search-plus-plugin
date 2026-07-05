@@ -1,5 +1,35 @@
 # Changelog
 
+## [3.2.0] - 2026-07-05
+
+Feature sync with the Hermes Web Search Plus stack (hermes-web-search-plus v2.5.0–v2.9.0 plus the unreleased Parallel budget change), adapted for the in-process OpenClaw runtime. This resumes engine syncs for the OpenClaw build.
+
+### Added
+- Keenable search and extraction provider using Keenable's independent web index: keyed via `keenableApiKey` (X-API-Key), or keyless against the **opt-in** public tier (`keenableAllowPublic: true`, ~1000 req/hour shared, no SLA, one-time warning in result metadata). Lowest priority in auto routing and extraction fallback so it never displaces a configured keyed provider. (Hermes v2.6.0)
+- Unified `freshness` parameter (`day`/`week`/`month`/`year`) on `web_search_plus`: providers with native date filters receive the mapped value; providers without support run the normal search and report `freshness.applied=false` in metadata. Research mode reports per-provider application. (Hermes v2.8.0)
+- Unified `search_type` parameter (`search`/`news`): Serper serves the news vertical natively via `google.serper.dev/news` with correct parsing of the `news` response field (date, source, thumbnail, position); other providers report `search_type.applied=false`. (Hermes v2.9.0)
+- Serper is now an extraction provider: `web_extract_plus(provider="serper")` scrapes pages via Serper's webpage scraper (`https://scrape.serper.dev`, markdown preferred, per-URL error items). It joins the auto-extraction fallback chain in last position — Tavily-first ordering unchanged. (Hermes v2.9.0)
+- Configurable search locale defaults with lightweight query language detection: `localeCountry` (ISO 3166-1 alpha-2) and `localeLanguage` (ISO 639-1 or `"auto"`) replace the hardcoded us/en defaults for Serper, Brave, Querit, Firecrawl, You.com, and SearXNG. Country resolution is config-first with explicit location hints from a curated city/country table winning ("mejores restaurantes Madrid" → `es`); `localeLanguage: "auto"` enables a conservative stopword/character heuristic for `de`/`es`/`fr`/`it`/`pt`/`nl`/`en` (at least two distinct signals with a single unambiguous winner). Query language never implies the country. Result metadata reports the resolved locale and per-value source. Without these fields behavior stays exactly us/en. (Hermes v2.9.0)
+- Spam/mirror result filtering: results from known Stack Overflow/GitHub/documentation mirror domains are removed (strict exact-domain/true-subdomain matching, no look-alike false positives). Operators can extend via `qualityBlockedDomains` or rescue via `qualityAllowedDomains`. Domain-diversity reranking caps a single domain at 2 head slots (overflow demoted, not dropped). Explicit domain intent (`site:` queries, `include_domains`) bypasses both. Removals and demotions are reported in `metadata.result_filter`. (Hermes v2.5.0)
+- Adaptive provider performance memory: every provider call records latency/result-count/error into an in-memory rolling window (50 samples, 7-day freshness) that feeds bounded (±1.0) routing-score adjustments after 5 fresh samples — enough to break ties and nudge close calls, never enough to override a clear query-class winner. Reported as `routing.adaptive_adjustments`. (Hermes v2.5.0)
+
+### Security
+- `web_extract_plus` now rejects private/internal extraction target URLs by default before provider dispatch: loopback, RFC1918, CGNAT/shared address space, IPv6 ULA/link-local/mapped-private, multicast, cloud metadata hosts, and hostnames that resolve to private IPs. Trusted intranet extraction can be opted into with `extractAllowPrivateUrls: true`. (Hermes v2.7.0)
+- Domain boost matching no longer grants authority boosts to look-alike domains that merely contain a trusted domain string (for example `openai.com.evil.example`). (Hermes v2.8.0)
+- Inline base64 image data in extracted content is replaced with `[IMAGE: alt]` placeholders before measuring content, preventing data-URI token bombs while preserving normal `http(s)` image links. (Hermes v2.8.0)
+
+### Improved
+- Rate-limit handling: 429 responses parse `Retry-After`, retry at most once (short waits ≤30s honored inline), and feed the provider's requested wait into the cooldown ladder instead of hanging the request. (Hermes v2.5.0)
+- Provider cooldown escalation now decays stale failure history (older than 30 minutes) instead of punishing isolated old failures forever. (Hermes v2.5.0)
+- Provider configuration errors such as missing API keys no longer mark providers unhealthy or put them into cooldown; cooldown stays reserved for real provider/network failures. (Hermes v2.7.0)
+- `web_extract_plus` respects `disabled_providers` from routing preferences during fallback; explicit provider selection still tries the requested provider first, matching search semantics. (Hermes v2.5.1)
+- Oversized extracted pages return a head/tail window plus an explanatory footer; the inline budget is configurable via `extractCharLimit` (default 15000). In-process adaptation of Hermes truncate-and-store: no filesystem paging, matching the scanner-safe plugin runtime. (Hermes v2.8.0)
+- Parallel extraction `full_content` budget raised to 60k characters per result / 120k total so long pages are evaluated fairly against other extraction providers; operators can lower it via `parallelMaxCharsPerResult` / `parallelMaxCharsTotal`. (Hermes unreleased)
+- Provider JSON decode failures now surface as clear provider errors, improving retry/fallback behavior. (Hermes v2.8.0)
+
+### Not ported
+- Hermes' subprocess/in-process loader work, `.env`/cache permission hardening, provider bench CLI, golden snapshot recorder, generated docs drift checks, `setup.py fastpath`, and the registry-driven dispatch refactor are host-runtime or repo-tooling specific and do not apply to the in-process OpenClaw plugin.
+
 ## [3.1.0] - 2026-06-10
 
 Feature sync with the Hermes Web Search Plus stack (hermes-web-search-plus v2.3.x–v2.4.0), adapted for the in-process OpenClaw runtime.

@@ -6,10 +6,10 @@
 
 Native OpenClaw plugin for one clean set of web tools.
 
-Current version: **3.1.0**
+Current version: **3.2.0**
 
-> **Status: stable & frozen — not the main development path.**
-> This OpenClaw plugin is feature-complete on the Web Search Plus engine **v2.4 line** and works as-is. It is **not** where active development happens. New engine features (Keenable, adaptive routing memory, GroktoCrawl-compatible backends, …) land on the actively-developed surfaces: **[hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus)** (the engine source of truth) and the **[web-search-plus-mcp](https://github.com/robbyczgw-cla/web-search-plus-mcp)** server. No further engine syncs are planned for this OpenClaw build.
+> **Status: synced with the Hermes engine v2.9 line.**
+> v3.2.0 brings this OpenClaw build back to feature parity with **[hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus)** (v2.5–v2.9 plus the unreleased Parallel budget change), adapted for the in-process, scanner-safe OpenClaw runtime. The Hermes repo remains the engine source of truth; host-runtime-specific Hermes features (subprocess loaders, filesystem paging, bench/eval tooling) are intentionally not ported.
 
 It registers:
 
@@ -65,6 +65,7 @@ Runtime credentials still come from explicit OpenClaw plugin config fields. The 
 - **Kilo Perplexity** — gateway route via `https://api.kilo.ai/api/gateway/chat/completions`; guarded in auto routing
 - **You.com** — current web / RAG-style snippets
 - **SearXNG** — self-hosted metasearch
+- **Keenable** — independent web index; keyed or opt-in keyless public tier, lowest-priority fallback
 
 ### Extraction providers
 
@@ -76,8 +77,10 @@ Auto fallback order:
 - Parallel
 - Firecrawl
 - You.com
+- Keenable (keyed or opt-in keyless public tier)
+- Serper (webpage scraper via `scrape.serper.dev`, last resort)
 
-Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net.
+Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net. Extraction targets are validated against private/internal destinations by default (see `extractAllowPrivateUrls`), oversized pages return a head/tail window governed by `extractCharLimit`, and inline base64 images are replaced with `[IMAGE: alt]` placeholders.
 
 ## Configuration
 
@@ -98,12 +101,19 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `kilocodeApiKey`
 - `youApiKey`
 - `searxngInstanceUrl`
+- `keenableApiKey`
 
 ### Extra fields
 
 - `braveSafesearch`
 - `searxngAllowPrivate`
 - `routingConfigPath` — optional namespace for in-memory routing preferences
+- `keenableAllowPublic` — opt-in keyless Keenable public tier (unauthenticated shared service, off by default)
+- `extractAllowPrivateUrls` — opt-in: allow extraction of private/internal URLs (trusted intranets only)
+- `extractCharLimit` — inline character budget per extracted page before head/tail truncation (default 15000)
+- `localeCountry` / `localeLanguage` — default search locale for Serper, Brave, Querit, Firecrawl, You.com, and SearXNG; `localeLanguage: "auto"` enables conservative query language inference. Explicit location hints in the query win the country; query language never implies the country. Without these fields the providers keep their us/en defaults.
+- `parallelMaxCharsPerResult` / `parallelMaxCharsTotal` — Parallel extraction full-content budgets (defaults 60000 / 120000)
+- `qualityBlockedDomains` / `qualityAllowedDomains` — extend or rescue from the built-in spam/mirror result blocklist
 
 Example:
 
@@ -146,6 +156,18 @@ Default conservative auto pool: You.com, Serper, Exa, Firecrawl, Tavily, Linkup.
 Guarded providers require `auto_allow=true` in routing preferences: Brave, SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity.
 
 Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, and `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source) for canonical-source routing classes.
+
+Auto routing additionally learns from recent provider behavior: every call records latency, result volume, and errors into an in-memory rolling window, and routing scores get a bounded (±1.0) adjustment (`routing.adaptive_adjustments`) once enough fresh samples exist — enough to break ties, never enough to override a clear query-class winner.
+
+### Result hygiene
+
+Results from known SEO mirror/scraper domains (Stack Overflow clones, GitHub issue mirrors, documentation mirrors) are removed, and a single domain is capped at two head slots via a stable diversity rerank (overflow is demoted, not dropped). Explicit `site:` queries and `include_domains` bypass both. Removals and demotions are reported in `metadata.result_filter`.
+
+### Freshness, news vertical, and locale
+
+- `freshness: day|week|month|year` maps to each provider's native recency filter; providers without one run normally and report `freshness.applied=false` in metadata.
+- `search_type: news` uses Serper's native `/news` endpoint (with date, source, thumbnail, and position metadata); other providers report `search_type.applied=false`.
+- `localeCountry`/`localeLanguage` set default region and language for the locale-capable providers, with query-aware language inference when `localeLanguage: "auto"`. The resolved locale and its per-value source are reported in `metadata.locale`.
 
 ### Canonical-source reranking
 

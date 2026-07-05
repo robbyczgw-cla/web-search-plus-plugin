@@ -584,7 +584,7 @@ async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Prom
     const res = await fetch(url, {
       ...init,
       headers: {
-        "User-Agent": "ClawdBot-WebSearchPlus/3.0",
+        "User-Agent": "ClawdBot-WebSearchPlus/3.2",
         ...(init.headers || {}),
       },
       signal: controller.signal,

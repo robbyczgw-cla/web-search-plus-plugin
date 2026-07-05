@@ -1,8 +1,8 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "3.1.0",
-  "description": "One clean set of web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, Perplexity direct, Kilo Perplexity gateway, You.com, and SearXNG.",
+  "version": "3.2.0",
+  "description": "One clean set of web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, Perplexity direct, Kilo Perplexity gateway, You.com, SearXNG, and Keenable.",
   "contracts": {
     "tools": [
       "web_search_plus",
@@ -91,6 +91,52 @@
       "serpbaseApiKey": {
         "type": "string",
         "description": "SerpBase API key for guarded Google-style alternate search. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      "keenableApiKey": {
+        "type": "string",
+        "description": "Keenable API key for independent-index search and extraction. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      "keenableAllowPublic": {
+        "type": "boolean",
+        "description": "Opt-in: allow Keenable's keyless public tier. Queries and fetched URLs are sent to an unauthenticated shared service (~1000 req/hour, no SLA). Off by default."
+      },
+      "extractAllowPrivateUrls": {
+        "type": "boolean",
+        "description": "Opt-in danger flag. When true, web_extract_plus may target private/internal URLs (trusted intranet extraction). Off by default."
+      },
+      "extractCharLimit": {
+        "type": "number",
+        "description": "Inline character budget per extracted page before head/tail truncation (default 15000, minimum 1000)."
+      },
+      "localeCountry": {
+        "type": "string",
+        "description": "Default search country (ISO 3166-1 alpha-2, e.g. \"at\") for locale-capable providers (Serper, Brave, Querit, Firecrawl, You.com). Explicit location hints in the query still win. Without this the providers keep their us defaults."
+      },
+      "localeLanguage": {
+        "type": "string",
+        "description": "Default search language (ISO 639-1, e.g. \"de\") or \"auto\" for conservative query language inference. Without this the providers keep their en defaults."
+      },
+      "parallelMaxCharsPerResult": {
+        "type": "number",
+        "description": "Parallel extraction full_content budget per result in characters (default 60000)."
+      },
+      "parallelMaxCharsTotal": {
+        "type": "number",
+        "description": "Parallel extraction total character budget (default 120000)."
+      },
+      "qualityBlockedDomains": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Extra domains removed from search results in addition to the built-in spam/mirror blocklist (exact domain or true subdomain matches only)."
+      },
+      "qualityAllowedDomains": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Domains rescued from the built-in and extra blocklists."
       }
     }
   },
@@ -178,6 +224,54 @@
       "label": "SerpBase API Key",
       "placeholder": "sb-...",
       "sensitive": true
+    },
+    "keenableApiKey": {
+      "label": "Keenable API Key",
+      "placeholder": "...",
+      "sensitive": true
+    },
+    "keenableAllowPublic": {
+      "label": "Allow Keenable keyless public tier",
+      "description": "Sends queries and fetched URLs to Keenable's unauthenticated shared service. Off by default.",
+      "sensitive": false
+    },
+    "extractAllowPrivateUrls": {
+      "label": "Allow private-network extraction targets (danger)",
+      "description": "Disables the private/internal URL guard for web_extract_plus. Only enable on fully trusted private networks.",
+      "sensitive": false
+    },
+    "extractCharLimit": {
+      "label": "Extract inline character budget",
+      "placeholder": "15000",
+      "sensitive": false
+    },
+    "localeCountry": {
+      "label": "Default search country",
+      "placeholder": "at",
+      "sensitive": false
+    },
+    "localeLanguage": {
+      "label": "Default search language",
+      "placeholder": "de or auto",
+      "sensitive": false
+    },
+    "parallelMaxCharsPerResult": {
+      "label": "Parallel extract chars per result",
+      "placeholder": "60000",
+      "sensitive": false
+    },
+    "parallelMaxCharsTotal": {
+      "label": "Parallel extract chars total",
+      "placeholder": "120000",
+      "sensitive": false
+    },
+    "qualityBlockedDomains": {
+      "label": "Extra blocked result domains",
+      "sensitive": false
+    },
+    "qualityAllowedDomains": {
+      "label": "Rescued result domains",
+      "sensitive": false
     }
   }
 }
