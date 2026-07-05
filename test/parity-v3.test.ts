@@ -79,12 +79,15 @@ test("Parallel search provider is explicit and normalized", async () => {
 
 test("SerpBase search provider is explicit and normalized", async () => {
   await withMockedFetch(async () => {
-    globalThis.fetch = (async (url: any) => {
-      assert.match(String(url), /api\.serpbase\.com/);
-      return new Response(JSON.stringify({ status: 0, organic_results: [{ title: "Result", link: "https://example.com/?utm_source=x", snippet: "clean" }], related_searches: [{ query: "more" }] }), { status: 200, headers: { "content-type": "application/json" } });
+    globalThis.fetch = (async (url: any, init: any) => {
+      assert.equal(String(url), "https://api.serpbase.dev/google/search");
+      assert.equal(init?.method, "POST");
+      assert.equal(init?.headers?.["X-API-Key"], "test-key");
+      assert.deepEqual(JSON.parse(init?.body), { q: "test", page: 1 });
+      return new Response(JSON.stringify({ status: 0, organic: [{ title: "Result", link: "https://example.com/?utm_source=x", snippet: "clean" }], related_searches: [{ query: "more" }] }), { status: 200, headers: { "content-type": "application/json" } });
     }) as any;
     const registered = new Map<string, any>();
-    register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { serpbaseApiKey: "sb-test" } });
+    register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { serpbaseApiKey: "test-key" } });
     const response = await registered.get("web_search_plus").execute("tool-serpbase", { query: "test", provider: "serpbase", count: 3 });
     const payload = JSON.parse(response.content[0].text);
     assert.equal(payload.provider, "serpbase");
