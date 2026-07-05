@@ -53,6 +53,11 @@ const PARAMETERS_SCHEMA = {
       enum: ["hour", "day", "week", "month", "year"],
       description: "Recency filter where supported.",
     },
+    freshness: {
+      type: "string",
+      enum: ["day", "week", "month", "year"],
+      description: "Unified recency filter. Providers with native date filters receive the mapped value; providers without support run the normal search and report freshness.applied=false in metadata.",
+    },
     include_domains: {
       type: "array",
       items: { type: "string" },
@@ -111,6 +116,7 @@ type ToolParams = {
   count?: number;
   depth?: "normal" | "deep" | "deep-reasoning";
   time_range?: "hour" | "day" | "week" | "month" | "year";
+  freshness?: "day" | "week" | "month" | "year";
   include_domains?: string[];
   exclude_domains?: string[];
   quality_report?: boolean;
@@ -447,6 +453,55 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
 
 function toTimeRange(value?: string): string | undefined {
   return value && ["hour", "day", "week", "month", "year"].includes(value) ? value : undefined;
+}
+
+// =============================================================================
+// Unified freshness filter (Hermes v2.8 parity)
+// =============================================================================
+
+export const FRESHNESS_VALUES = ["day", "week", "month", "year"] as const;
+
+// Native recency formats per provider, derived from the request bodies the
+// provider functions in this module already send. Providers absent from this
+// table (tavily, exa, linkup, parallel) have no relative-recency parameter in
+// their current API calls, so no native value is invented for them.
+export const PROVIDER_FRESHNESS_FORMATS: Record<string, Record<string, string>> = {
+  // searchSerper: body.tbs
+  serper: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
+  // searchBrave: freshness query param
+  brave: { day: "pd", week: "pw", month: "pm", year: "py" },
+  // searchQuerit: filters.timeRange.date
+  querit: { day: "d1", week: "w1", month: "m1", year: "y1" },
+  // searchFirecrawl: body.tbs
+  firecrawl: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
+  // searchKeenable: body.published_after
+  keenable: { day: "1d", week: "7d", month: "1mo", year: "1y" },
+  // searchSerpBase: time_range query param (plugin-specific endpoint support)
+  serpbase: { day: "day", week: "week", month: "month", year: "year" },
+  // searchYou: freshness query param (native values match the unified ones)
+  you: { day: "day", week: "week", month: "month", year: "year" },
+  // searchPerplexityCompatible: body.search_recency_filter
+  perplexity: { day: "day", week: "week", month: "month", year: "year" },
+  "kilo-perplexity": { day: "day", week: "week", month: "month", year: "year" },
+  // searchSearxng: time_range query param
+  searxng: { day: "day", week: "week", month: "month", year: "year" },
+};
+
+export function normalizeFreshness(value?: string | null): string | null {
+  if (value == null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return null;
+  if (!(FRESHNESS_VALUES as readonly string[]).includes(normalized)) {
+    throw new Error(`Invalid freshness value: ${JSON.stringify(value)}. Valid values: ${FRESHNESS_VALUES.join(", ")}`);
+  }
+  return normalized;
+}
+
+// Describe whether a provider applied the requested freshness filter.
+export function freshnessMetadata(provider: string, requested: string): Json {
+  const native = PROVIDER_FRESHNESS_FORMATS[provider]?.[requested];
+  if (native != null) return { requested, applied: true, provider, native_value: native };
+  return { requested, applied: false, provider, reason: `provider ${provider} does not support freshness` };
 }
 
 function normalizeBraveCountry(value?: string): string {
@@ -1272,7 +1327,16 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
     const requestedProvider = normalizeRequestedProvider(params.provider);
-    const timeRange = toTimeRange(params.time_range);
+    let freshness: string | null = null;
+    try {
+      freshness = normalizeFreshness(params.freshness);
+    } catch (error: any) {
+      return { ok: false, payload: { error: `Search failed: ${String(error?.message || error)}` } };
+    }
+    // The unified freshness value doubles as the shared time-range hint: provider
+    // functions with a native recency parameter map it themselves, providers
+    // without one ignore it and metadata reports freshness.applied=false.
+    const timeRange = freshness || toTimeRange(params.time_range);
     const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : undefined;
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
@@ -1404,6 +1468,12 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
       });
 
+      if (freshness) {
+        result.metadata = {
+          ...(result.metadata || {}),
+          freshness: { requested: freshness, per_provider: researchProviders.map((p) => freshnessMetadata(p, freshness!)) },
+        };
+      }
       routingInfo = { ...routingInfo, mode: "research", provider: "research" };
       if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
       if (routingConfigResult.warning) routingInfo.config_warning = routingConfigResult.warning;
@@ -1508,6 +1578,10 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
           },
         };
       }
+    }
+
+    if (freshness) {
+      result.metadata = { ...(result.metadata || {}), freshness: freshnessMetadata(successfulProvider, freshness) };
     }
 
     result.routing = routingInfo;

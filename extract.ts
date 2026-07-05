@@ -113,7 +113,16 @@ async function requestJson(url: string, init: RequestInit, timeout = 30): Promis
   try {
     const response = await fetch(url, { ...init, signal: controller.signal });
     const text = await response.text();
-    const data = text ? JSON.parse(text) : {};
+    let data: any = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // Decode failures are provider errors, not crashes: surface a clear
+        // message so retry/fallback and per-URL error items stay meaningful.
+        if (response.ok) throw new Error(`Provider returned invalid JSON (HTTP ${response.status})`);
+      }
+    }
     if (!response.ok) {
       const message = data?.error || data?.message || data?.detail || data?.warning || `HTTP ${response.status}`;
       throw new Error(String(message));
@@ -465,6 +474,52 @@ export async function extractYou(
   return { provider: "you", results };
 }
 
+// --- Truncate-and-sanitize output handling (Hermes v2.8 parity) ------------
+// Hermes stores the full cleaned text under cache/web and pages it on demand;
+// this plugin is scanner-safe with no filesystem writes, so long pages return
+// a head/tail window plus an explanatory footer instead of a page-on-demand
+// pointer. Inline base64 image data is replaced with [IMAGE: alt] placeholders
+// before measuring content, preventing data-URI token bombs while preserving
+// normal http(s) image links.
+
+const BASE64_MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(\s*data:image\/[^)]+\)/gi;
+const BASE64_HTML_IMAGE_RE = /<img\b(?=[^>]*\bsrc=["']data:image\/)[^>]*>/gi;
+export const DEFAULT_EXTRACT_CHAR_LIMIT = 15000;
+
+export function sanitizeExtractContent(content: string): string {
+  let out = content.replace(BASE64_MARKDOWN_IMAGE_RE, (_match, alt) => `[IMAGE: ${String(alt || "image").trim() || "image"}]`);
+  out = out.replace(BASE64_HTML_IMAGE_RE, (tag: string) => {
+    const altMatch = tag.match(/\balt=["']([^"']*)["']/i);
+    const alt = (altMatch?.[1] || "image").trim() || "image";
+    return `[IMAGE: ${alt}]`;
+  });
+  return out;
+}
+
+function splitExtractContent(content: string, limit: number): { head: string; tail: string; omittedChars: number } {
+  const headChars = Math.min(Math.max(1, Math.floor((limit * 2) / 3)), Math.max(1, limit - 1));
+  const tailChars = Math.min(Math.max(1, Math.floor(limit * 0.2)), Math.max(1, limit - headChars));
+  if (headChars + tailChars >= content.length) return { head: content, tail: "", omittedChars: 0 };
+  const head = content.slice(0, headChars).replace(/\s+$/, "");
+  const tail = content.slice(-tailChars).replace(/^\s+/, "");
+  return { head, tail, omittedChars: Math.max(0, content.length - head.length - tail.length) };
+}
+
+// Return inline-safe extract content: sanitized, and truncated to a head/tail
+// window when it exceeds the limit.
+export function formatTruncatedExtractContent(content: string, limit: number): { content: string; truncated: boolean; originalChars: number } {
+  const cleaned = sanitizeExtractContent(content);
+  if (cleaned.length <= limit) return { content: cleaned, truncated: false, originalChars: cleaned.length };
+  const { head, tail, omittedChars } = splitExtractContent(cleaned, limit);
+  const footer = [
+    "",
+    "---",
+    `[Content truncated: original ${cleaned.length} chars; omitted middle ${omittedChars} chars; showing head and tail.]`,
+    "Raise pluginConfig.extractCharLimit for a larger inline budget, or extract a more specific URL for the omitted section.",
+  ].join("\n");
+  return { content: `${head}\n\n[... omitted middle ...]\n\n${tail}\n${footer}`, truncated: true, originalChars: cleaned.length };
+}
+
 // A present key always uses the authenticated route; with no key, the keyless
 // /public route is used when the public tier is enabled.
 function keenableExtractEndpoint(apiUrl: string, apiKey: string | undefined, publicAllowed: boolean): { url: string; headers: Json } {
@@ -596,6 +651,23 @@ export async function extractPlus(
       if (allUrlsFailed) {
         errors.push({ provider: currentProvider, error: "all_urls_failed", details: resultList.map((item) => item.error) });
         continue;
+      }
+
+      const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
+      for (const item of resultList) {
+        if (item?.error) continue;
+        const originalContent = item.content;
+        if (item.content) {
+          const formatted = formatTruncatedExtractContent(item.content, charLimit);
+          item.content = formatted.content;
+          if (formatted.truncated) {
+            (item as any).truncated = true;
+            (item as any).original_chars = formatted.originalChars;
+          }
+        }
+        if (item.raw_content) {
+          item.raw_content = item.raw_content === originalContent ? item.content : formatTruncatedExtractContent(item.raw_content, charLimit).content;
+        }
       }
 
       return {

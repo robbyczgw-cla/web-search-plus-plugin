@@ -21,6 +21,9 @@ export type RuntimeConfig = {
   // Opt-in: allow web_extract_plus to target private/internal URLs (trusted
   // intranet extraction). Off by default.
   extractAllowPrivateUrls?: boolean;
+  // Inline character budget per extracted page before head/tail truncation
+  // (default 15000, minimum 1000).
+  extractCharLimit?: number;
 };
 
 function maybeString(value: unknown): string | undefined {
@@ -49,5 +52,8 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
     keenableAllowPublic: pluginConfig?.keenableAllowPublic === true ? true : undefined,
     extractAllowPrivateUrls: pluginConfig?.extractAllowPrivateUrls === true ? true : undefined,
+    extractCharLimit: Number.isFinite(Number(pluginConfig?.extractCharLimit)) && Number(pluginConfig?.extractCharLimit) > 0
+      ? Math.max(1000, Math.floor(Number(pluginConfig.extractCharLimit)))
+      : undefined,
   };
 }
