@@ -30,7 +30,7 @@ export const RATE_LIMIT_MAX_ATTEMPTS = 2;
 // the cooldown ladder instead of blocking the current request.
 export const MAX_RETRY_AFTER_WAIT_SECONDS = 30;
 
-const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "kilo_perplexity", "auto"];
+const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable", "kilo_perplexity", "auto"];
 
 const PARAMETERS_SCHEMA = {
   type: "object",
@@ -104,7 +104,7 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
 };
 
 type Json = Record<string, any>;
-const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng"];
+const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable"];
 type ToolParams = {
   query: string;
   provider?: ProviderName | "kilo_perplexity" | "auto";
@@ -418,8 +418,16 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
+    keenable: runtimeConfig.keenableApiKey,
   };
   return keyMap[provider];
+}
+
+// Keenable can run keyless against its opt-in public tier, so provider
+// availability is not purely "has an API key".
+function providerIsConfigured(provider: ProviderName, runtimeConfig: RuntimeConfig): boolean {
+  if (getApiKey(provider, runtimeConfig)) return true;
+  return provider === "keenable" && runtimeConfig.keenableAllowPublic === true;
 }
 
 function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string {
@@ -428,6 +436,10 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
     if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
     if (provider === "perplexity") throw new ProviderConfigError("Missing API key for perplexity (PERPLEXITY_API_KEY or pluginConfig.perplexityApiKey)");
     if (provider === "kilo-perplexity") throw new ProviderConfigError("Missing API key for kilo-perplexity (KILOCODE_API_KEY or pluginConfig.kilocodeApiKey)");
+    if (provider === "keenable") {
+      if (runtimeConfig.keenableAllowPublic === true) return "";
+      throw new ProviderConfigError("Keenable requires an API key (pluginConfig.keenableApiKey) or the opt-in public tier (pluginConfig.keenableAllowPublic=true)");
+    }
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -778,6 +790,8 @@ export class QueryAnalyzer {
         "kilo-perplexity": direct.total + localNews.total * 0.4 + recency.score * 0.55,
         you: rag.total + recency.score * 0.25,
         searxng: privacy.total,
+        // Keenable is a last-resort fallback: no query-class signals boost it.
+        keenable: 0,
       } as Record<ProviderName, number>;
     const providerMatches = {
         serper: [...shopping.matches, ...localNews.matches],
@@ -793,6 +807,7 @@ export class QueryAnalyzer {
         "kilo-perplexity": direct.matches,
         you: rag.matches,
         searxng: privacy.matches,
+        keenable: [],
       } as Record<ProviderName, any[]>;
     const routingClass = this.applyRoutingV2Boosts(query, providerScores, providerMatches);
 
@@ -821,7 +836,9 @@ export class QueryAnalyzer {
       return { provider: "serper" as ProviderName, confidence: 0, confidence_level: "low", reason: "no_available_providers", scores: {}, top_signals: [], exa_depth: "normal" };
     }
     const maxScore = Math.max(...providers.map((p) => available[p]));
-    const winners = providers.filter((p) => available[p] === maxScore);
+    let winners = providers.filter((p) => available[p] === maxScore);
+    // Keenable never displaces another configured provider on a score tie.
+    if (winners.length > 1 && winners.includes("keenable")) winners = winners.filter((p) => p !== "keenable");
     const priority: ProviderName[] = [...DEFAULT_PROVIDER_PRIORITY];
     const braveSerperCandidates = (["brave", "serper"] as ProviderName[]).filter((p) => providers.includes(p) && maxScore - (available[p] || 0) <= 0.5);
     const winner = braveSerperCandidates.length > 0 && maxScore <= 6.5
@@ -1131,6 +1148,46 @@ async function searchYou(query: string, apiKey: string, maxResults: number, time
   return { provider: "you", query, results, news: news.slice(0, 5), images: [], answer, metadata: { search_uuid: data?.metadata?.search_uuid, latency: data?.metadata?.latency } };
 }
 
+const KEENABLE_TIME_RANGE: Record<string, string> = { hour: "1h", day: "1d", week: "7d", month: "1mo", year: "1y" };
+let keenablePublicWarned = false;
+
+// A present key always uses the authenticated route; with no key, the keyless
+// /public route is used when the public tier is enabled.
+export function keenableEndpoint(apiUrl: string, apiKey: string | undefined, publicAllowed: boolean): { url: string; headers: Json; publicTier: boolean } {
+  const headers: Json = { "X-Keenable-Title": "web-search-plus-plugin" };
+  if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+    return { url: apiUrl, headers, publicTier: false };
+  }
+  if (publicAllowed) return { url: `${apiUrl}/public`, headers, publicTier: true };
+  throw new ProviderConfigError("Keenable requires an API key or an enabled public endpoint");
+}
+
+async function searchKeenable(query: string, apiKey: string | undefined, maxResults: number, timeRange: string | undefined, includeDomains: string[] | undefined, publicAllowed: boolean): Promise<SearchResponse> {
+  const body: Json = { query };
+  if (timeRange && KEENABLE_TIME_RANGE[timeRange]) body.published_after = KEENABLE_TIME_RANGE[timeRange];
+  if (includeDomains?.length) body.site = includeDomains[0];
+  const endpoint = keenableEndpoint("https://api.keenable.ai/v1/search", apiKey, publicAllowed);
+  const data = await httpJson(endpoint.url, { method: "POST", headers: { ...endpoint.headers, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const results = (data.results || []).slice(0, maxResults).map((item: any, i: number) => ({
+    title: item.title || titleFromUrl(item.url || ""),
+    url: item.url || "",
+    snippet: item.snippet || item.description || "",
+    score: Number((1 - i * 0.05).toFixed(3)),
+    date: item.published_at,
+    acquired_at: item.acquired_at,
+  }));
+  const metadata: Json = { number_of_results: data.number_of_results };
+  if (endpoint.publicTier) {
+    metadata.public_endpoint = true;
+    if (!keenablePublicWarned) {
+      keenablePublicWarned = true;
+      metadata.public_endpoint_warning = "Keenable keyless public endpoint in use: queries are sent to an unauthenticated shared service (https://keenable.ai) with no SLA. Set pluginConfig.keenableApiKey for the authenticated endpoint.";
+    }
+  }
+  return { provider: "keenable", query, results, images: [], answer: results[0]?.snippet || "", metadata };
+}
+
 async function searchSearxng(query: string, instanceUrl: string, maxResults: number, timeRange: string | undefined, runtimeConfig: RuntimeConfig): Promise<SearchResponse> {
   const base = await validateSearxngUrl(instanceUrl, runtimeConfig);
   const url = new URL(`${base}/search`);
@@ -1220,7 +1277,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
     const routingConfig = routingConfigResult.config;
-    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeConfig));
+    const configuredProviders = ALL_PROVIDERS.filter((p) => providerIsConfigured(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider) => !routingConfig.disabled_providers.includes(provider));
     const braveOptions = {
       safesearch: runtimeConfig.braveSafesearch,
@@ -1295,14 +1352,15 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange);
+      if (p === "keenable") return searchKeenable(query, key || undefined, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
       return searchSearxng(query, key, count, timeRange, runtimeConfig);
     };
 
     if (params.mode === "research") {
       const providerEligibleForResearch = (p: ProviderName) =>
-        !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && !!getApiKey(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
+        !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && providerIsConfigured(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
       const availableResearchProviders = new Set<ProviderName>(configuredProviders.filter(providerEligibleForResearch));
-      if (getApiKey(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
+      if (providerIsConfigured(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
         availableResearchProviders.add(provider);
       }
       let researchProviders: ProviderName[];

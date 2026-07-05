@@ -1,8 +1,10 @@
+import dns from "dns/promises";
+import net from "net";
 import type { RuntimeConfig } from "./runtime-config.ts";
 
 type Json = Record<string, any>;
 
-export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you";
+export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable";
 export type ExtractFormat = "markdown" | "html";
 
 export type ExtractImage = {
@@ -35,7 +37,9 @@ export type ExtractResponse = {
   };
 };
 
-export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you"];
+// Extraction fallback order: Tavily-first stays; Keenable is a low-priority
+// fallback so it never displaces a configured keyed provider.
+export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable"];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -43,7 +47,7 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable"],
       description: "Force a provider, or use auto fallback routing (default: auto)",
     },
     format: {
@@ -131,12 +135,82 @@ function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeC
     exa: runtimeConfig.exaApiKey,
     you: runtimeConfig.youApiKey,
     parallel: runtimeConfig.parallelApiKey,
+    keenable: runtimeConfig.keenableApiKey,
   };
   return keyMap[provider];
 }
 
+// Keenable can run keyless when the operator opted into the public tier.
+function keylessPublicAllowed(provider: ExtractProviderName, runtimeConfig: RuntimeConfig): boolean {
+  return provider === "keenable" && runtimeConfig.keenableAllowPublic === true;
+}
+
 export function hasAnyExtractProviderCredential(runtimeConfig: RuntimeConfig): boolean {
-  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)));
+  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig));
+}
+
+// --- Private/internal extraction target guard (SSRF) -----------------------
+// Rejects target URLs that point at loopback, RFC1918, CGNAT/shared-address,
+// link-local, ULA, mapped-private, multicast, unspecified, or cloud-metadata
+// destinations before any provider (remote or operator-local) fetches them.
+// Operator-configured provider endpoints are intentionally not checked here;
+// this guard only covers user/agent-controlled target URLs. Trusted intranet
+// extraction can be opted into with pluginConfig.extractAllowPrivateUrls=true.
+
+const BLOCKED_EXTRACT_HOSTS = new Set(["localhost", "metadata.google.internal", "metadata.internal"]);
+
+export function isPrivateOrInternalIp(value: string): boolean {
+  const family = net.isIP(value);
+  if (family === 4) {
+    const octets = value.split(".").map(Number);
+    const [a, b] = octets;
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT / shared address space
+    if (a === 169 && b === 254) return true; // link-local
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 192 && b === 0 && octets[2] === 0) return true; // IETF protocol assignments
+    if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
+    if (a >= 224) return true; // multicast + reserved + broadcast
+    return false;
+  }
+  if (family === 6) {
+    const lower = value.toLowerCase();
+    if (lower === "::" || lower === "::1") return true;
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
+    if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) return true; // link-local
+    if (lower.startsWith("ff")) return true; // multicast
+    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return isPrivateOrInternalIp(mapped[1]);
+    return false;
+  }
+  return false;
+}
+
+export async function validateExtractUrls(urls: string[], runtimeConfig: RuntimeConfig): Promise<void> {
+  if (runtimeConfig.extractAllowPrivateUrls === true) return;
+  for (const url of urls) {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`Invalid URL: ${url}`);
+    }
+    const hostname = parsed.hostname.trim().toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
+    if (!hostname) throw new Error(`Invalid URL — hostname is required: ${url}`);
+    if (BLOCKED_EXTRACT_HOSTS.has(hostname)) throw new Error(`Extraction URL blocked: ${hostname} is private/internal`);
+    if (net.isIP(hostname)) {
+      if (isPrivateOrInternalIp(hostname)) throw new Error(`Extraction URL blocked: ${hostname} is private/internal`);
+      continue;
+    }
+    const records = await dns.lookup(hostname, { all: true, verbatim: true }).catch(() => [] as dns.LookupAddress[]);
+    if (!records.length) throw new Error(`Extraction URL blocked: cannot resolve hostname ${hostname}`);
+    for (const record of records) {
+      if (isPrivateOrInternalIp(record.address)) {
+        throw new Error(`Extraction URL blocked: ${hostname} resolves to private/internal IP ${record.address}`);
+      }
+    }
+  }
 }
 
 export async function extractFirecrawl(
@@ -391,6 +465,51 @@ export async function extractYou(
   return { provider: "you", results };
 }
 
+// A present key always uses the authenticated route; with no key, the keyless
+// /public route is used when the public tier is enabled.
+function keenableExtractEndpoint(apiUrl: string, apiKey: string | undefined, publicAllowed: boolean): { url: string; headers: Json } {
+  const headers: Json = { "X-Keenable-Title": "web-search-plus-plugin" };
+  if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+    return { url: apiUrl, headers };
+  }
+  if (publicAllowed) return { url: `${apiUrl}/public`, headers };
+  throw new Error("Keenable requires an API key or an enabled public endpoint");
+}
+
+export async function extractKeenable(
+  urls: string[],
+  apiKey: string | undefined,
+  _outputFormat: ExtractFormat = "markdown",
+  _includeImages = false,
+  _includeRawHtml = false,
+  _renderJs = false,
+  publicAllowed = false,
+  apiUrl = "https://api.keenable.ai/v1/fetch",
+  timeout = 30,
+): Promise<ExtractResponse> {
+  const endpoint = keenableExtractEndpoint(apiUrl, apiKey, publicAllowed);
+  const results: ExtractResult[] = [];
+  for (const url of urls) {
+    try {
+      const data = await requestJson(`${endpoint.url}?url=${encodeURIComponent(url)}`, {
+        method: "GET",
+        headers: endpoint.headers,
+      }, timeout);
+      const content = String(data?.content || "");
+      const metadata: Json = {};
+      if (data?.author != null) metadata.author = data.author;
+      if (data?.description != null) metadata.description = data.description;
+      results.push(normalizeExtractResult("keenable", String(data?.url || url), String(data?.title || ""), content, content, {
+        metadata: Object.keys(metadata).length ? metadata : undefined,
+      }));
+    } catch (error: any) {
+      results.push(normalizeExtractResult("keenable", url, "", "", undefined, { error: String(error?.message || error) }));
+    }
+  }
+  return { provider: "keenable", results };
+}
+
 export async function extractPlus(
   urls: string[],
   provider: ExtractProviderName | "auto" = "auto",
@@ -422,6 +541,17 @@ export async function extractPlus(
     };
   }
 
+  try {
+    await validateExtractUrls(cleanedUrls as string[], runtimeConfig);
+  } catch (error: any) {
+    return {
+      provider: requestedProvider,
+      results: [],
+      error: String(error?.message || error),
+      routing: { requested_provider: requestedProvider },
+    };
+  }
+
   const baseProviders = requestedProvider === "auto"
     ? EXTRACT_PROVIDER_PRIORITY
     : [requestedProvider, ...EXTRACT_PROVIDER_PRIORITY.filter((item) => item !== requestedProvider)] as ExtractProviderName[];
@@ -437,7 +567,8 @@ export async function extractPlus(
     }
 
     const providerCredential = getExtractApiKey(currentProvider, runtimeConfig);
-    if (!providerCredential) {
+    const keylessAllowed = keylessPublicAllowed(currentProvider, runtimeConfig);
+    if (!providerCredential && !keylessAllowed) {
       errors.push({ provider: currentProvider, error: "missing_api_key" });
       continue;
     }
@@ -453,9 +584,11 @@ export async function extractPlus(
       } else if (currentProvider === "parallel") {
         result = await extractParallel(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "firecrawl") {
-        result = await extractFirecrawl(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractFirecrawl(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "keenable") {
+        result = await extractKeenable(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
       } else {
-        result = await extractYou(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractYou(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       }
 
       const resultList = Array.isArray(result.results) ? result.results : [];

@@ -14,6 +14,13 @@ export type RuntimeConfig = {
   serpbaseApiKey?: string;
   searxngInstanceUrl?: string;
   searxngAllowPrivate?: boolean;
+  keenableApiKey?: string;
+  // Opt-in: routes queries and fetched URLs to Keenable's unauthenticated
+  // public endpoints (~1000 req/hour shared, no SLA). Off by default.
+  keenableAllowPublic?: boolean;
+  // Opt-in: allow web_extract_plus to target private/internal URLs (trusted
+  // intranet extraction). Off by default.
+  extractAllowPrivateUrls?: boolean;
 };
 
 function maybeString(value: unknown): string | undefined {
@@ -39,5 +46,8 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : undefined,
+    keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
+    keenableAllowPublic: pluginConfig?.keenableAllowPublic === true ? true : undefined,
+    extractAllowPrivateUrls: pluginConfig?.extractAllowPrivateUrls === true ? true : undefined,
   };
 }
