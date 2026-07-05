@@ -1,8 +1,10 @@
+import dns from "dns/promises";
+import net from "net";
 import type { RuntimeConfig } from "./runtime-config.ts";
 
 type Json = Record<string, any>;
 
-export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you";
+export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable" | "serper";
 export type ExtractFormat = "markdown" | "html";
 
 export type ExtractImage = {
@@ -35,7 +37,9 @@ export type ExtractResponse = {
   };
 };
 
-export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you"];
+// Extraction fallback order: Tavily-first stays; Keenable is a low-priority
+// fallback and Serper's webpage scraper is a last-resort fallback at the end.
+export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -43,7 +47,7 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper"],
       description: "Force a provider, or use auto fallback routing (default: auto)",
     },
     format: {
@@ -109,7 +113,16 @@ async function requestJson(url: string, init: RequestInit, timeout = 30): Promis
   try {
     const response = await fetch(url, { ...init, signal: controller.signal });
     const text = await response.text();
-    const data = text ? JSON.parse(text) : {};
+    let data: any = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // Decode failures are provider errors, not crashes: surface a clear
+        // message so retry/fallback and per-URL error items stay meaningful.
+        if (response.ok) throw new Error(`Provider returned invalid JSON (HTTP ${response.status})`);
+      }
+    }
     if (!response.ok) {
       const message = data?.error || data?.message || data?.detail || data?.warning || `HTTP ${response.status}`;
       throw new Error(String(message));
@@ -131,12 +144,83 @@ function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeC
     exa: runtimeConfig.exaApiKey,
     you: runtimeConfig.youApiKey,
     parallel: runtimeConfig.parallelApiKey,
+    keenable: runtimeConfig.keenableApiKey,
+    serper: runtimeConfig.serperApiKey,
   };
   return keyMap[provider];
 }
 
+// Keenable can run keyless when the operator opted into the public tier.
+function keylessPublicAllowed(provider: ExtractProviderName, runtimeConfig: RuntimeConfig): boolean {
+  return provider === "keenable" && runtimeConfig.keenableAllowPublic === true;
+}
+
 export function hasAnyExtractProviderCredential(runtimeConfig: RuntimeConfig): boolean {
-  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)));
+  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig));
+}
+
+// --- Private/internal extraction target guard (SSRF) -----------------------
+// Rejects target URLs that point at loopback, RFC1918, CGNAT/shared-address,
+// link-local, ULA, mapped-private, multicast, unspecified, or cloud-metadata
+// destinations before any provider (remote or operator-local) fetches them.
+// Operator-configured provider endpoints are intentionally not checked here;
+// this guard only covers user/agent-controlled target URLs. Trusted intranet
+// extraction can be opted into with pluginConfig.extractAllowPrivateUrls=true.
+
+const BLOCKED_EXTRACT_HOSTS = new Set(["localhost", "metadata.google.internal", "metadata.internal"]);
+
+export function isPrivateOrInternalIp(value: string): boolean {
+  const family = net.isIP(value);
+  if (family === 4) {
+    const octets = value.split(".").map(Number);
+    const [a, b] = octets;
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT / shared address space
+    if (a === 169 && b === 254) return true; // link-local
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 192 && b === 0 && octets[2] === 0) return true; // IETF protocol assignments
+    if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
+    if (a >= 224) return true; // multicast + reserved + broadcast
+    return false;
+  }
+  if (family === 6) {
+    const lower = value.toLowerCase();
+    if (lower === "::" || lower === "::1") return true;
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
+    if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) return true; // link-local
+    if (lower.startsWith("ff")) return true; // multicast
+    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return isPrivateOrInternalIp(mapped[1]);
+    return false;
+  }
+  return false;
+}
+
+export async function validateExtractUrls(urls: string[], runtimeConfig: RuntimeConfig): Promise<void> {
+  if (runtimeConfig.extractAllowPrivateUrls === true) return;
+  for (const url of urls) {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`Invalid URL: ${url}`);
+    }
+    const hostname = parsed.hostname.trim().toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
+    if (!hostname) throw new Error(`Invalid URL — hostname is required: ${url}`);
+    if (BLOCKED_EXTRACT_HOSTS.has(hostname)) throw new Error(`Extraction URL blocked: ${hostname} is private/internal`);
+    if (net.isIP(hostname)) {
+      if (isPrivateOrInternalIp(hostname)) throw new Error(`Extraction URL blocked: ${hostname} is private/internal`);
+      continue;
+    }
+    const records = await dns.lookup(hostname, { all: true, verbatim: true }).catch(() => [] as dns.LookupAddress[]);
+    if (!records.length) throw new Error(`Extraction URL blocked: cannot resolve hostname ${hostname}`);
+    for (const record of records) {
+      if (isPrivateOrInternalIp(record.address)) {
+        throw new Error(`Extraction URL blocked: ${hostname} resolves to private/internal IP ${record.address}`);
+      }
+    }
+  }
 }
 
 export async function extractFirecrawl(
@@ -321,6 +405,13 @@ export async function extractExa(
   return { provider: "exa", results };
 }
 
+// Default Parallel full_content budgets: high enough that long pages are
+// evaluated fairly against other extraction providers instead of being
+// silently capped. Operators can lower them via
+// pluginConfig.parallelMaxCharsPerResult / parallelMaxCharsTotal.
+export const PARALLEL_MAX_CHARS_PER_RESULT = 60000;
+export const PARALLEL_MAX_CHARS_TOTAL = 120000;
+
 export async function extractParallel(
   urls: string[],
   apiKey: string,
@@ -328,6 +419,7 @@ export async function extractParallel(
   _includeImages = false,
   includeRawHtml = false,
   _renderJs = false,
+  budgets: { maxCharsPerResult?: number; maxCharsTotal?: number } = {},
   apiUrl = "https://api.parallel.ai/v1beta/tasks/extract",
   timeout = 30,
 ): Promise<ExtractResponse> {
@@ -336,8 +428,8 @@ export async function extractParallel(
     headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
       urls,
-      max_chars_total: 20000,
-      advanced_settings: { full_content: { max_chars_per_result: 8000 } },
+      max_chars_total: budgets.maxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
+      advanced_settings: { full_content: { max_chars_per_result: budgets.maxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT } },
     }),
   }, timeout);
 
@@ -391,6 +483,142 @@ export async function extractYou(
   return { provider: "you", results };
 }
 
+// --- Truncate-and-sanitize output handling (Hermes v2.8 parity) ------------
+// Hermes stores the full cleaned text under cache/web and pages it on demand;
+// this plugin is scanner-safe with no filesystem writes, so long pages return
+// a head/tail window plus an explanatory footer instead of a page-on-demand
+// pointer. Inline base64 image data is replaced with [IMAGE: alt] placeholders
+// before measuring content, preventing data-URI token bombs while preserving
+// normal http(s) image links.
+
+const BASE64_MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(\s*data:image\/[^)]+\)/gi;
+const BASE64_HTML_IMAGE_RE = /<img\b(?=[^>]*\bsrc=["']data:image\/)[^>]*>/gi;
+export const DEFAULT_EXTRACT_CHAR_LIMIT = 15000;
+
+export function sanitizeExtractContent(content: string): string {
+  let out = content.replace(BASE64_MARKDOWN_IMAGE_RE, (_match, alt) => `[IMAGE: ${String(alt || "image").trim() || "image"}]`);
+  out = out.replace(BASE64_HTML_IMAGE_RE, (tag: string) => {
+    const altMatch = tag.match(/\balt=["']([^"']*)["']/i);
+    const alt = (altMatch?.[1] || "image").trim() || "image";
+    return `[IMAGE: ${alt}]`;
+  });
+  return out;
+}
+
+function splitExtractContent(content: string, limit: number): { head: string; tail: string; omittedChars: number } {
+  const headChars = Math.min(Math.max(1, Math.floor((limit * 2) / 3)), Math.max(1, limit - 1));
+  const tailChars = Math.min(Math.max(1, Math.floor(limit * 0.2)), Math.max(1, limit - headChars));
+  if (headChars + tailChars >= content.length) return { head: content, tail: "", omittedChars: 0 };
+  const head = content.slice(0, headChars).replace(/\s+$/, "");
+  const tail = content.slice(-tailChars).replace(/^\s+/, "");
+  return { head, tail, omittedChars: Math.max(0, content.length - head.length - tail.length) };
+}
+
+// Return inline-safe extract content: sanitized, and truncated to a head/tail
+// window when it exceeds the limit.
+export function formatTruncatedExtractContent(content: string, limit: number): { content: string; truncated: boolean; originalChars: number } {
+  const cleaned = sanitizeExtractContent(content);
+  if (cleaned.length <= limit) return { content: cleaned, truncated: false, originalChars: cleaned.length };
+  const { head, tail, omittedChars } = splitExtractContent(cleaned, limit);
+  const footer = [
+    "",
+    "---",
+    `[Content truncated: original ${cleaned.length} chars; omitted middle ${omittedChars} chars; showing head and tail.]`,
+    "Raise pluginConfig.extractCharLimit for a larger inline budget, or extract a more specific URL for the omitted section.",
+  ].join("\n");
+  return { content: `${head}\n\n[... omitted middle ...]\n\n${tail}\n${footer}`, truncated: true, originalChars: cleaned.length };
+}
+
+// A present key always uses the authenticated route; with no key, the keyless
+// /public route is used when the public tier is enabled.
+function keenableExtractEndpoint(apiUrl: string, apiKey: string | undefined, publicAllowed: boolean): { url: string; headers: Json } {
+  const headers: Json = { "X-Keenable-Title": "web-search-plus-plugin" };
+  if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+    return { url: apiUrl, headers };
+  }
+  if (publicAllowed) return { url: `${apiUrl}/public`, headers };
+  throw new Error("Keenable requires an API key or an enabled public endpoint");
+}
+
+export async function extractKeenable(
+  urls: string[],
+  apiKey: string | undefined,
+  _outputFormat: ExtractFormat = "markdown",
+  _includeImages = false,
+  _includeRawHtml = false,
+  _renderJs = false,
+  publicAllowed = false,
+  apiUrl = "https://api.keenable.ai/v1/fetch",
+  timeout = 30,
+): Promise<ExtractResponse> {
+  const endpoint = keenableExtractEndpoint(apiUrl, apiKey, publicAllowed);
+  const results: ExtractResult[] = [];
+  for (const url of urls) {
+    try {
+      const data = await requestJson(`${endpoint.url}?url=${encodeURIComponent(url)}`, {
+        method: "GET",
+        headers: endpoint.headers,
+      }, timeout);
+      const content = String(data?.content || "");
+      const metadata: Json = {};
+      if (data?.author != null) metadata.author = data.author;
+      if (data?.description != null) metadata.description = data.description;
+      results.push(normalizeExtractResult("keenable", String(data?.url || url), String(data?.title || ""), content, content, {
+        metadata: Object.keys(metadata).length ? metadata : undefined,
+      }));
+    } catch (error: any) {
+      results.push(normalizeExtractResult("keenable", url, "", "", undefined, { error: String(error?.message || error) }));
+    }
+  }
+  return { provider: "keenable", results };
+}
+
+// Extract page content via Serper's webpage scraper. POST
+// {"url": ..., "includeMarkdown": true} with the X-API-KEY header; the answer
+// carries "text" plus optional "markdown", "metadata", "jsonld" and "credits".
+// The endpoint accepts one URL per call, so multi-URL requests loop with
+// per-URL error items. The scraper returns no raw HTML; html/raw-html/render-js
+// options are accepted for tool compatibility but have no upstream effect.
+export async function extractSerper(
+  urls: string[],
+  apiKey: string,
+  _outputFormat: ExtractFormat = "markdown",
+  _includeImages = false,
+  _includeRawHtml = false,
+  _renderJs = false,
+  apiUrl = "https://scrape.serper.dev",
+  timeout = 30,
+): Promise<ExtractResponse> {
+  const results: ExtractResult[] = [];
+  for (const url of urls) {
+    try {
+      const data = await requestJson(apiUrl, {
+        method: "POST",
+        headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ url, includeMarkdown: true }),
+      }, timeout);
+      if (data?.error) {
+        results.push(normalizeExtractResult("serper", url, "", "", undefined, { error: String(data.error) }));
+        continue;
+      }
+      // Field names are parsed tolerantly in case Serper renames them.
+      const markdown = String(data?.markdown || "");
+      const text = String(data?.text || data?.content || "");
+      const content = markdown || text;
+      const metadata = data?.metadata && typeof data.metadata === "object" ? data.metadata : {};
+      const title = String(metadata.title || data?.title || "");
+      const extra: Json = { metadata: Object.keys(metadata).length ? metadata : undefined };
+      if (data?.jsonld != null) extra.jsonld = data.jsonld;
+      if (data?.credits != null) extra.credits = data.credits;
+      results.push(normalizeExtractResult("serper", url, title, content, content, extra));
+    } catch (error: any) {
+      results.push(normalizeExtractResult("serper", url, "", "", undefined, { error: String(error?.message || error) }));
+    }
+  }
+  return { provider: "serper", results };
+}
+
 export async function extractPlus(
   urls: string[],
   provider: ExtractProviderName | "auto" = "auto",
@@ -399,6 +627,7 @@ export async function extractPlus(
   includeRawHtml = false,
   renderJs = false,
   runtimeConfig: RuntimeConfig = {},
+  disabledProviders: string[] = [],
 ): Promise<ExtractResponse> {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
@@ -421,9 +650,23 @@ export async function extractPlus(
     };
   }
 
-  const providers = requestedProvider === "auto"
+  try {
+    await validateExtractUrls(cleanedUrls as string[], runtimeConfig);
+  } catch (error: any) {
+    return {
+      provider: requestedProvider,
+      results: [],
+      error: String(error?.message || error),
+      routing: { requested_provider: requestedProvider },
+    };
+  }
+
+  const baseProviders = requestedProvider === "auto"
     ? EXTRACT_PROVIDER_PRIORITY
     : [requestedProvider, ...EXTRACT_PROVIDER_PRIORITY.filter((item) => item !== requestedProvider)] as ExtractProviderName[];
+  // Routing preferences' disabled_providers also apply to extraction fallback;
+  // an explicitly requested provider is still tried first, matching search semantics.
+  const providers = baseProviders.filter((item) => item === requestedProvider || !disabledProviders.includes(item));
 
   const errors: Json[] = [];
   for (const currentProvider of providers) {
@@ -433,7 +676,8 @@ export async function extractPlus(
     }
 
     const providerCredential = getExtractApiKey(currentProvider, runtimeConfig);
-    if (!providerCredential) {
+    const keylessAllowed = keylessPublicAllowed(currentProvider, runtimeConfig);
+    if (!providerCredential && !keylessAllowed) {
       errors.push({ provider: currentProvider, error: "missing_api_key" });
       continue;
     }
@@ -447,11 +691,18 @@ export async function extractPlus(
       } else if (currentProvider === "linkup") {
         result = await extractLinkup(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "parallel") {
-        result = await extractParallel(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractParallel(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs, {
+          maxCharsPerResult: runtimeConfig.parallelMaxCharsPerResult,
+          maxCharsTotal: runtimeConfig.parallelMaxCharsTotal,
+        });
       } else if (currentProvider === "firecrawl") {
-        result = await extractFirecrawl(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractFirecrawl(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "keenable") {
+        result = await extractKeenable(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
+      } else if (currentProvider === "serper") {
+        result = await extractSerper(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       } else {
-        result = await extractYou(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractYou(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       }
 
       const resultList = Array.isArray(result.results) ? result.results : [];
@@ -459,6 +710,23 @@ export async function extractPlus(
       if (allUrlsFailed) {
         errors.push({ provider: currentProvider, error: "all_urls_failed", details: resultList.map((item) => item.error) });
         continue;
+      }
+
+      const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
+      for (const item of resultList) {
+        if (item?.error) continue;
+        const originalContent = item.content;
+        if (item.content) {
+          const formatted = formatTruncatedExtractContent(item.content, charLimit);
+          item.content = formatted.content;
+          if (formatted.truncated) {
+            (item as any).truncated = true;
+            (item as any).original_chars = formatted.originalChars;
+          }
+        }
+        if (item.raw_content) {
+          item.raw_content = item.raw_content === originalContent ? item.content : formatTruncatedExtractContent(item.raw_content, charLimit).content;
+        }
       }
 
       return {

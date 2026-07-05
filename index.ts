@@ -6,7 +6,9 @@ import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
-import { buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
+import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
+import { __resetProviderStatsForTests, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
+import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
 
 export { deduplicateResultsAcrossProviders } from "./research.ts";
 export { CANONICAL_DOMAIN_RULES, buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
@@ -18,8 +20,18 @@ const DEFAULT_RESEARCH_EXTRACT_COUNT = 3;
 const DEFAULT_RESEARCH_TIME_BUDGET_SECONDS = 55;
 const COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+// Failures older than this no longer escalate the cooldown ladder: a provider
+// that fails once every few hours should restart at the shortest cooldown step
+// instead of compounding toward the 1h cap.
+export const FAILURE_DECAY_SECONDS = 1800;
+// Rate-limit (429) responses get at most one retry per request; burning the full
+// retry budget against an exhausted quota only wastes time and provider credits.
+export const RATE_LIMIT_MAX_ATTEMPTS = 2;
+// Longest Retry-After wait we will honor inline. Anything above this is left to
+// the cooldown ladder instead of blocking the current request.
+export const MAX_RETRY_AFTER_WAIT_SECONDS = 30;
 
-const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "kilo_perplexity", "auto"];
+const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable", "kilo_perplexity", "auto"];
 
 const PARAMETERS_SCHEMA = {
   type: "object",
@@ -41,6 +53,16 @@ const PARAMETERS_SCHEMA = {
       type: "string",
       enum: ["hour", "day", "week", "month", "year"],
       description: "Recency filter where supported.",
+    },
+    freshness: {
+      type: "string",
+      enum: ["day", "week", "month", "year"],
+      description: "Unified recency filter. Providers with native date filters receive the mapped value; providers without support run the normal search and report freshness.applied=false in metadata.",
+    },
+    search_type: {
+      type: "string",
+      enum: ["search", "news"],
+      description: "Result vertical. Serper serves news natively via its /news endpoint; other providers run their normal search and report search_type.applied=false in metadata.",
     },
     include_domains: {
       type: "array",
@@ -93,13 +115,15 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
 };
 
 type Json = Record<string, any>;
-const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng"];
+const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable"];
 type ToolParams = {
   query: string;
   provider?: ProviderName | "kilo_perplexity" | "auto";
   count?: number;
   depth?: "normal" | "deep" | "deep-reasoning";
   time_range?: "hour" | "day" | "week" | "month" | "year";
+  freshness?: "day" | "week" | "month" | "year";
+  search_type?: "search" | "news";
   include_domains?: string[];
   exclude_domains?: string[];
   quality_report?: boolean;
@@ -136,12 +160,24 @@ class ProviderConfigError extends Error {}
 class ProviderRequestError extends Error {
   statusCode?: number;
   transient: boolean;
-  constructor(message: string, statusCode?: number, transient = false) {
+  retryAfter?: number;
+  constructor(message: string, statusCode?: number, transient = false, retryAfter?: number) {
     super(message);
     this.name = "ProviderRequestError";
     this.statusCode = statusCode;
     this.transient = transient;
+    this.retryAfter = retryAfter;
   }
+}
+
+// Parse a Retry-After response header (delta-seconds or HTTP-date) into seconds.
+export function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isNaN(dateMs)) return Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
+  return undefined;
 }
 
 const SENSITIVE_PATTERNS: RegExp[] = [
@@ -245,11 +281,21 @@ function providerInCooldown(provider: string): { inCooldown: boolean; remaining:
   return { inCooldown: remaining > 0, remaining: Math.max(0, remaining) };
 }
 
-function markProviderFailure(provider: string, message: string): Json {
+function markProviderFailure(provider: string, message: string, retryAfter?: number): Json {
   const state = loadProviderHealth();
   const now = Math.floor(Date.now() / 1000);
-  const failCount = Number(state?.[provider]?.failure_count || 0) + 1;
-  const cooldownSeconds = COOLDOWN_STEPS_SECONDS[Math.min(failCount - 1, COOLDOWN_STEPS_SECONDS.length - 1)];
+  let prevCount = Number(state?.[provider]?.failure_count || 0);
+  const lastFailureAt = Number(state?.[provider]?.last_failure_at || 0);
+  if (lastFailureAt && now - lastFailureAt > FAILURE_DECAY_SECONDS) {
+    // Stale failure history: restart the escalation ladder.
+    prevCount = 0;
+  }
+  const failCount = prevCount + 1;
+  let cooldownSeconds = COOLDOWN_STEPS_SECONDS[Math.min(failCount - 1, COOLDOWN_STEPS_SECONDS.length - 1)];
+  if (retryAfter != null && retryAfter > 0) {
+    // Respect the provider's explicit wait request, capped at the ladder max.
+    cooldownSeconds = Math.min(Math.max(cooldownSeconds, Math.floor(retryAfter)), COOLDOWN_STEPS_SECONDS[COOLDOWN_STEPS_SECONDS.length - 1]);
+  }
   state[provider] = {
     failure_count: failCount,
     cooldown_until: now + cooldownSeconds,
@@ -272,6 +318,7 @@ function resetProviderHealth(provider: string): void {
 export function __resetRuntimeStateForTests(): void {
   memoryCache.clear();
   for (const key of Object.keys(providerHealthState)) delete providerHealthState[key];
+  __resetProviderStatsForTests();
 }
 
 export function chooseTieWinner(query: string, winners: ProviderName[], priority: ProviderName[]): ProviderName {
@@ -317,7 +364,8 @@ function selectAutoProvider(query: string, availableProviders: ProviderName[], r
   const autoProviders = availableProviders.filter((provider) => routingConfig.auto_allow?.[provider] !== false);
   const orderedProviders = orderProvidersByPreference(autoProviders.length ? autoProviders : availableProviders, routingConfig);
   const analyzer = new QueryAnalyzer();
-  const analysis = analyzer.route(query, orderedProviders);
+  const adaptiveAdjustments = performanceAdjustments(orderedProviders);
+  const analysis = analyzer.route(query, orderedProviders, adaptiveAdjustments);
   let provider = analysis.provider;
   let reason = analysis.reason;
 
@@ -345,6 +393,7 @@ function selectAutoProvider(query: string, availableProviders: ProviderName[], r
       language_hint: analysis.analysis_summary?.language_hint,
       routing_class: analysis.analysis_summary?.routing_class,
       scores: analysis.scores,
+      adaptive_adjustments: analysis.adaptive_adjustments,
       auto_allow_excluded: autoExcluded,
     },
   };
@@ -382,8 +431,16 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
+    keenable: runtimeConfig.keenableApiKey,
   };
   return keyMap[provider];
+}
+
+// Keenable can run keyless against its opt-in public tier, so provider
+// availability is not purely "has an API key".
+function providerIsConfigured(provider: ProviderName, runtimeConfig: RuntimeConfig): boolean {
+  if (getApiKey(provider, runtimeConfig)) return true;
+  return provider === "keenable" && runtimeConfig.keenableAllowPublic === true;
 }
 
 function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string {
@@ -392,6 +449,10 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
     if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
     if (provider === "perplexity") throw new ProviderConfigError("Missing API key for perplexity (PERPLEXITY_API_KEY or pluginConfig.perplexityApiKey)");
     if (provider === "kilo-perplexity") throw new ProviderConfigError("Missing API key for kilo-perplexity (KILOCODE_API_KEY or pluginConfig.kilocodeApiKey)");
+    if (provider === "keenable") {
+      if (runtimeConfig.keenableAllowPublic === true) return "";
+      throw new ProviderConfigError("Keenable requires an API key (pluginConfig.keenableApiKey) or the opt-in public tier (pluginConfig.keenableAllowPublic=true)");
+    }
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -399,6 +460,86 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
 
 function toTimeRange(value?: string): string | undefined {
   return value && ["hour", "day", "week", "month", "year"].includes(value) ? value : undefined;
+}
+
+// =============================================================================
+// Unified freshness filter (Hermes v2.8 parity)
+// =============================================================================
+
+export const FRESHNESS_VALUES = ["day", "week", "month", "year"] as const;
+
+// Native recency formats per provider, derived from the request bodies the
+// provider functions in this module already send. Providers absent from this
+// table (tavily, exa, linkup, parallel) have no relative-recency parameter in
+// their current API calls, so no native value is invented for them.
+export const PROVIDER_FRESHNESS_FORMATS: Record<string, Record<string, string>> = {
+  // searchSerper: body.tbs
+  serper: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
+  // searchBrave: freshness query param
+  brave: { day: "pd", week: "pw", month: "pm", year: "py" },
+  // searchQuerit: filters.timeRange.date
+  querit: { day: "d1", week: "w1", month: "m1", year: "y1" },
+  // searchFirecrawl: body.tbs
+  firecrawl: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
+  // searchKeenable: body.published_after
+  keenable: { day: "1d", week: "7d", month: "1mo", year: "1y" },
+  // searchSerpBase: time_range query param (plugin-specific endpoint support)
+  serpbase: { day: "day", week: "week", month: "month", year: "year" },
+  // searchYou: freshness query param (native values match the unified ones)
+  you: { day: "day", week: "week", month: "month", year: "year" },
+  // searchPerplexityCompatible: body.search_recency_filter
+  perplexity: { day: "day", week: "week", month: "month", year: "year" },
+  "kilo-perplexity": { day: "day", week: "week", month: "month", year: "year" },
+  // searchSearxng: time_range query param
+  searxng: { day: "day", week: "week", month: "month", year: "year" },
+};
+
+export function normalizeFreshness(value?: string | null): string | null {
+  if (value == null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return null;
+  if (!(FRESHNESS_VALUES as readonly string[]).includes(normalized)) {
+    throw new Error(`Invalid freshness value: ${JSON.stringify(value)}. Valid values: ${FRESHNESS_VALUES.join(", ")}`);
+  }
+  return normalized;
+}
+
+// Describe whether a provider applied the requested freshness filter.
+export function freshnessMetadata(provider: string, requested: string): Json {
+  const native = PROVIDER_FRESHNESS_FORMATS[provider]?.[requested];
+  if (native != null) return { requested, applied: true, provider, native_value: native };
+  return { requested, applied: false, provider, reason: `provider ${provider} does not support freshness` };
+}
+
+// =============================================================================
+// Unified search type — web vs. news vertical (Hermes v2.9 parity)
+// =============================================================================
+
+export const SEARCH_TYPE_VALUES = ["search", "news"] as const;
+
+// Providers whose API natively serves a Google-tab-style result vertical.
+// Providers absent from this table always run their normal web search and
+// report search_type.applied=false in metadata.
+export const PROVIDER_SEARCH_TYPES: Record<string, Record<string, string>> = {
+  // searchSerper: endpoint path https://google.serper.dev/<type>
+  serper: { search: "search", news: "news" },
+};
+
+export function normalizeSearchType(value?: string | null): string | null {
+  if (value == null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return null;
+  if (!(SEARCH_TYPE_VALUES as readonly string[]).includes(normalized)) {
+    throw new Error(`Invalid search_type value: ${JSON.stringify(value)}. Valid values: ${SEARCH_TYPE_VALUES.join(", ")}`);
+  }
+  return normalized;
+}
+
+// Describe whether a provider applied the requested search type.
+export function searchTypeMetadata(provider: string, requested: string): Json {
+  const native = PROVIDER_SEARCH_TYPES[provider]?.[requested];
+  if (native != null) return { requested, applied: true, provider, native_value: native };
+  return { requested, applied: false, provider, reason: `provider ${provider} does not support search_type ${requested}` };
 }
 
 function normalizeBraveCountry(value?: string): string {
@@ -443,7 +584,7 @@ async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Prom
     const res = await fetch(url, {
       ...init,
       headers: {
-        "User-Agent": "ClawdBot-WebSearchPlus/3.0",
+        "User-Agent": "ClawdBot-WebSearchPlus/3.2",
         ...(init.headers || {}),
       },
       signal: controller.signal,
@@ -453,7 +594,8 @@ async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Prom
     try { data = text ? JSON.parse(text) : {}; } catch {}
     if (!res.ok) {
       const detail = data?.error || data?.message || text || res.statusText;
-      throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, res.status, TRANSIENT_HTTP_CODES.has(res.status));
+      const retryAfter = res.status === 429 ? parseRetryAfter(res.headers.get("retry-after")) : undefined;
+      throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, res.status, TRANSIENT_HTTP_CODES.has(res.status), retryAfter);
     }
     return data ?? {};
   } catch (error: any) {
@@ -741,6 +883,8 @@ export class QueryAnalyzer {
         "kilo-perplexity": direct.total + localNews.total * 0.4 + recency.score * 0.55,
         you: rag.total + recency.score * 0.25,
         searxng: privacy.total,
+        // Keenable is a last-resort fallback: no query-class signals boost it.
+        keenable: 0,
       } as Record<ProviderName, number>;
     const providerMatches = {
         serper: [...shopping.matches, ...localNews.matches],
@@ -756,6 +900,7 @@ export class QueryAnalyzer {
         "kilo-perplexity": direct.matches,
         you: rag.matches,
         searxng: privacy.matches,
+        keenable: [],
       } as Record<ProviderName, any[]>;
     const routingClass = this.applyRoutingV2Boosts(query, providerScores, providerMatches);
 
@@ -773,16 +918,20 @@ export class QueryAnalyzer {
       provider_matches: providerMatches,
     };
   }
-  route(query: string, availableProviders: ProviderName[]) {
+  route(query: string, availableProviders: ProviderName[], adaptiveAdjustments: Record<string, number> = {}) {
     const analysis = this.analyze(query);
     const scores = analysis.provider_scores as Record<ProviderName, number>;
-    const available = Object.fromEntries(availableProviders.map((p) => [p, scores[p] ?? 0])) as Record<ProviderName, number>;
+    // Bounded performance-memory adjustments (±1.0) break ties and nudge close
+    // calls without overriding strong query-class signals.
+    const available = Object.fromEntries(availableProviders.map((p) => [p, (scores[p] ?? 0) + (adaptiveAdjustments[p] || 0)])) as Record<ProviderName, number>;
     const providers = Object.keys(available) as ProviderName[];
     if (!providers.length) {
       return { provider: "serper" as ProviderName, confidence: 0, confidence_level: "low", reason: "no_available_providers", scores: {}, top_signals: [], exa_depth: "normal" };
     }
     const maxScore = Math.max(...providers.map((p) => available[p]));
-    const winners = providers.filter((p) => available[p] === maxScore);
+    let winners = providers.filter((p) => available[p] === maxScore);
+    // Keenable never displaces another configured provider on a score tie.
+    if (winners.length > 1 && winners.includes("keenable")) winners = winners.filter((p) => p !== "keenable");
     const priority: ProviderName[] = [...DEFAULT_PROVIDER_PRIORITY];
     const braveSerperCandidates = (["brave", "serper"] as ProviderName[]).filter((p) => providers.includes(p) && maxScore - (available[p] || 0) <= 0.5);
     const winner = braveSerperCandidates.length > 0 && maxScore <= 6.5
@@ -802,6 +951,7 @@ export class QueryAnalyzer {
       confidence,
       confidence_level: confidence >= 0.7 ? "high" : confidence >= 0.4 ? "medium" : "low",
       reason: maxScore === 0 ? "no_signals_matched" : confidence >= 0.7 ? "high_confidence_match" : confidence >= 0.4 ? "moderate_confidence_match" : "low_confidence_match",
+      adaptive_adjustments: adaptiveAdjustments,
       exa_depth: exaDepth,
       scores: Object.fromEntries(providers.map((p) => [p, Number((available[p] || 0).toFixed(2))])),
       top_signals: (analysis.provider_matches[winner] || []).sort((a: any, b: any) => b.weight - a.weight).slice(0, 5).map((s: any) => ({ matched: s.matched, weight: s.weight })),
@@ -819,12 +969,24 @@ export class QueryAnalyzer {
   }
 }
 
-async function searchSerper(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
-  const body: Json = { q: query, gl: "us", hl: "en", num: maxResults, autocorrect: true };
+async function searchSerper(query: string, apiKey: string, maxResults: number, timeRange?: string, locale?: ResolvedLocale, searchType: string = "search"): Promise<SearchResponse> {
+  const body: Json = { q: query, gl: locale?.country || "us", hl: locale?.language || "en", num: maxResults, autocorrect: true };
   const tbsMap: Record<string, string> = { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" };
   if (timeRange && tbsMap[timeRange]) body.tbs = tbsMap[timeRange];
-  const data = await httpJson("https://google.serper.dev/search", { method: "POST", headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const results = (data.organic || []).slice(0, maxResults).map((item: any, i: number) => ({ title: item.title || "", url: item.link || "", snippet: item.snippet || "", score: Number((1 - i * 0.1).toFixed(2)), date: item.date }));
+  const data = await httpJson(`https://google.serper.dev/${searchType}`, { method: "POST", headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  // /news answers carry results under "news" (title/link/snippet/date/source/
+  // imageUrl/position) instead of "organic"; reading only "organic" used to
+  // silently return zero results for the news vertical.
+  const rawItems = searchType === "news" ? data.news || [] : data.organic || [];
+  const results = rawItems.slice(0, maxResults).map((item: any, i: number) => {
+    const result: SearchResult = { title: item.title || "", url: item.link || "", snippet: item.snippet || "", score: Number((1 - i * 0.1).toFixed(2)), date: item.date };
+    if (searchType === "news") {
+      if (item.source != null) result.source = item.source;
+      if (item.imageUrl) result.thumbnail = item.imageUrl;
+      if (item.position != null) result.position = item.position;
+    }
+    return result;
+  });
   const answer = data?.answerBox?.answer || data?.answerBox?.snippet || data?.knowledgeGraph?.description || results[0]?.snippet || "";
   return { provider: "serper", query, results, images: [], answer, knowledge_graph: data.knowledgeGraph, related_searches: (data.relatedSearches || []).map((r: any) => r.query) };
 }
@@ -897,9 +1059,9 @@ async function searchLinkup(query: string, apiKey: string, maxResults: number, i
   return { provider: "linkup", query, results, images: data.images || [], answer: data.answer || "", metadata: { depth: body.depth, output_type: body.outputType } };
 }
 
-async function searchQuerit(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
+async function searchQuerit(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[], locale?: ResolvedLocale): Promise<SearchResponse> {
   const timeMap: Record<string, string> = { day: "d1", week: "w1", month: "m1", year: "y1" };
-  const filters: Json = { languages: { include: ["en"] }, geo: { countries: { include: ["US"] } } };
+  const filters: Json = { languages: { include: [locale?.language || "en"] }, geo: { countries: { include: [(locale?.country || "us").toUpperCase()] } } };
   if (includeDomains?.length || excludeDomains?.length) {
     filters.sites = {};
     if (includeDomains?.length) filters.sites.include = includeDomains;
@@ -948,8 +1110,8 @@ function mapFirecrawlTimeRange(timeRange?: string): string | undefined {
   return timeRange ? tbsMap[timeRange] || timeRange : undefined;
 }
 
-async function searchFirecrawl(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
-  const body: Json = { query, limit: maxResults, sources: ["web"], timeout: 30000, ignoreInvalidURLs: false, country: "US" };
+async function searchFirecrawl(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[], locale?: ResolvedLocale): Promise<SearchResponse> {
+  const body: Json = { query, limit: maxResults, sources: ["web"], timeout: 30000, ignoreInvalidURLs: false, country: (locale?.country || "us").toUpperCase() };
   const tbs = mapFirecrawlTimeRange(timeRange);
   if (tbs) body.tbs = tbs;
   if (includeDomains?.length) body.query += ` ${includeDomains.map((domain) => `site:${domain}`).join(" ")}`;
@@ -1075,13 +1237,13 @@ async function searchKiloPerplexity(query: string, apiKey: string, maxResults: n
   return searchPerplexityCompatible("kilo-perplexity", query, apiKey, maxResults, timeRange);
 }
 
-async function searchYou(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
+async function searchYou(query: string, apiKey: string, maxResults: number, timeRange?: string, locale?: ResolvedLocale): Promise<SearchResponse> {
   const url = new URL("https://ydc-index.io/v1/search");
   url.searchParams.set("query", query);
   url.searchParams.set("count", String(maxResults));
   url.searchParams.set("safesearch", "moderate");
-  url.searchParams.set("country", "US");
-  url.searchParams.set("language", "EN");
+  url.searchParams.set("country", (locale?.country || "us").toUpperCase());
+  url.searchParams.set("language", (locale?.language || "en").toUpperCase());
   if (timeRange) url.searchParams.set("freshness", timeRange);
   const data = await httpJson(url.toString(), { method: "GET", headers: { "X-API-KEY": apiKey, Accept: "application/json" } });
   const web = data?.results?.web || [];
@@ -1091,12 +1253,52 @@ async function searchYou(query: string, apiKey: string, maxResults: number, time
   return { provider: "you", query, results, news: news.slice(0, 5), images: [], answer, metadata: { search_uuid: data?.metadata?.search_uuid, latency: data?.metadata?.latency } };
 }
 
-async function searchSearxng(query: string, instanceUrl: string, maxResults: number, timeRange: string | undefined, runtimeConfig: RuntimeConfig): Promise<SearchResponse> {
+const KEENABLE_TIME_RANGE: Record<string, string> = { hour: "1h", day: "1d", week: "7d", month: "1mo", year: "1y" };
+let keenablePublicWarned = false;
+
+// A present key always uses the authenticated route; with no key, the keyless
+// /public route is used when the public tier is enabled.
+export function keenableEndpoint(apiUrl: string, apiKey: string | undefined, publicAllowed: boolean): { url: string; headers: Json; publicTier: boolean } {
+  const headers: Json = { "X-Keenable-Title": "web-search-plus-plugin" };
+  if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+    return { url: apiUrl, headers, publicTier: false };
+  }
+  if (publicAllowed) return { url: `${apiUrl}/public`, headers, publicTier: true };
+  throw new ProviderConfigError("Keenable requires an API key or an enabled public endpoint");
+}
+
+async function searchKeenable(query: string, apiKey: string | undefined, maxResults: number, timeRange: string | undefined, includeDomains: string[] | undefined, publicAllowed: boolean): Promise<SearchResponse> {
+  const body: Json = { query };
+  if (timeRange && KEENABLE_TIME_RANGE[timeRange]) body.published_after = KEENABLE_TIME_RANGE[timeRange];
+  if (includeDomains?.length) body.site = includeDomains[0];
+  const endpoint = keenableEndpoint("https://api.keenable.ai/v1/search", apiKey, publicAllowed);
+  const data = await httpJson(endpoint.url, { method: "POST", headers: { ...endpoint.headers, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const results = (data.results || []).slice(0, maxResults).map((item: any, i: number) => ({
+    title: item.title || titleFromUrl(item.url || ""),
+    url: item.url || "",
+    snippet: item.snippet || item.description || "",
+    score: Number((1 - i * 0.05).toFixed(3)),
+    date: item.published_at,
+    acquired_at: item.acquired_at,
+  }));
+  const metadata: Json = { number_of_results: data.number_of_results };
+  if (endpoint.publicTier) {
+    metadata.public_endpoint = true;
+    if (!keenablePublicWarned) {
+      keenablePublicWarned = true;
+      metadata.public_endpoint_warning = "Keenable keyless public endpoint in use: queries are sent to an unauthenticated shared service (https://keenable.ai) with no SLA. Set pluginConfig.keenableApiKey for the authenticated endpoint.";
+    }
+  }
+  return { provider: "keenable", query, results, images: [], answer: results[0]?.snippet || "", metadata };
+}
+
+async function searchSearxng(query: string, instanceUrl: string, maxResults: number, timeRange: string | undefined, runtimeConfig: RuntimeConfig, locale?: ResolvedLocale): Promise<SearchResponse> {
   const base = await validateSearxngUrl(instanceUrl, runtimeConfig);
   const url = new URL(`${base}/search`);
   url.searchParams.set("q", query);
   url.searchParams.set("format", "json");
-  url.searchParams.set("language", "en");
+  url.searchParams.set("language", locale?.language || "en");
   url.searchParams.set("safesearch", "0");
   if (timeRange) url.searchParams.set("time_range", timeRange);
   const data = await httpJson(url.toString(), { method: "GET", headers: { Accept: "application/json" } });
@@ -1124,7 +1326,19 @@ async function executeWithRetry(fn: () => Promise<SearchResponse>): Promise<Sear
     } catch (error: any) {
       lastError = error;
       if (!(error instanceof ProviderRequestError) || !error.transient || error.statusCode === 401 || error.statusCode === 403) break;
-      if (attempt < RETRY_BACKOFF_MS.length - 1) await sleep(computeRetryDelayMs(attempt));
+      const isRateLimited = error.statusCode === 429;
+      const attemptCap = isRateLimited ? Math.min(RETRY_BACKOFF_MS.length, RATE_LIMIT_MAX_ATTEMPTS) : RETRY_BACKOFF_MS.length;
+      if (attempt >= attemptCap - 1) break;
+      if (isRateLimited && error.retryAfter != null) {
+        if (error.retryAfter > MAX_RETRY_AFTER_WAIT_SECONDS) {
+          // Provider asked for a longer pause than we will block inline;
+          // let the cooldown ladder handle it instead.
+          break;
+        }
+        await sleep(error.retryAfter * 1000);
+      } else {
+        await sleep(computeRetryDelayMs(attempt));
+      }
     }
   }
   throw lastError;
@@ -1147,7 +1361,7 @@ function buildQualityReport(result: SearchResponse, routingInfo: Json, errors: J
   if (dedupCount > 0) extractReasons.push("duplicates_removed");
   const routingClass = routingInfo.routing_class ? String(routingInfo.routing_class) : null;
   return {
-    routing_decision: { provider: result.provider, requested_provider: routingInfo.requested_provider, routing_policy: routingInfo.routing_policy || "routing-v2", routing_class: routingInfo.routing_class, language_hint: routingInfo.language_hint, confidence_level: routingInfo.confidence_level, reason: routingInfo.reason, scores: routingInfo.scores || {} },
+    routing_decision: { provider: result.provider, requested_provider: routingInfo.requested_provider, routing_policy: routingInfo.routing_policy || "routing-v2", routing_class: routingInfo.routing_class, language_hint: routingInfo.language_hint, confidence_level: routingInfo.confidence_level, reason: routingInfo.reason, scores: routingInfo.scores || {}, adaptive_adjustments: routingInfo.adaptive_adjustments || {} },
     result_quality: { result_count: results.length, domain_count: domains.length, domains, domain_diversity: results.length ? Number((domains.length / results.length).toFixed(3)) : 0, thin_snippet_count: thinSnippetCount, dedup_count: dedupCount },
     fallback_chain: { providers_considered: providersConsidered, provider_errors: errors, cooldown_skips: cooldownSkips },
     extract_recommended: extractReasons.length > 0,
@@ -1163,12 +1377,23 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
     const requestedProvider = normalizeRequestedProvider(params.provider);
-    const timeRange = toTimeRange(params.time_range);
+    let freshness: string | null = null;
+    let searchType: string | null = null;
+    try {
+      freshness = normalizeFreshness(params.freshness);
+      searchType = normalizeSearchType(params.search_type);
+    } catch (error: any) {
+      return { ok: false, payload: { error: `Search failed: ${String(error?.message || error)}` } };
+    }
+    // The unified freshness value doubles as the shared time-range hint: provider
+    // functions with a native recency parameter map it themselves, providers
+    // without one ignore it and metadata reports freshness.applied=false.
+    const timeRange = freshness || toTimeRange(params.time_range);
     const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : undefined;
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
     const routingConfig = routingConfigResult.config;
-    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeConfig));
+    const configuredProviders = ALL_PROVIDERS.filter((p) => providerIsConfigured(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider) => !routingConfig.disabled_providers.includes(provider));
     const braveOptions = {
       safesearch: runtimeConfig.braveSafesearch,
@@ -1228,29 +1453,31 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     const runProvider = async (p: ProviderName): Promise<SearchResponse> => {
       const key = validateApiKey(p, runtimeConfig);
-      if (p === "serper") return searchSerper(query, key, count, timeRange);
-      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
+      const locale = providerSupportsLocale(p) ? resolveLocale(p, runtimeConfig, query) : undefined;
+      if (p === "serper") return searchSerper(query, key, count, timeRange, locale, PROVIDER_SEARCH_TYPES.serper[searchType || "search"] || "search");
+      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
       if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
       if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
-      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains, locale);
       if (p === "exa") {
         const exaDepth = (params.depth || exaDepthHint || "normal") as "normal" | "deep" | "deep-reasoning";
         return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
       }
-      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
       if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
       if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
-      if (p === "you") return searchYou(query, key, count, timeRange);
-      return searchSearxng(query, key, count, timeRange, runtimeConfig);
+      if (p === "you") return searchYou(query, key, count, timeRange, locale);
+      if (p === "keenable") return searchKeenable(query, key || undefined, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
+      return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
     };
 
     if (params.mode === "research") {
       const providerEligibleForResearch = (p: ProviderName) =>
-        !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && !!getApiKey(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
+        !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && providerIsConfigured(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
       const availableResearchProviders = new Set<ProviderName>(configuredProviders.filter(providerEligibleForResearch));
-      if (getApiKey(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
+      if (providerIsConfigured(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
         availableResearchProviders.add(provider);
       }
       let researchProviders: ProviderName[];
@@ -1274,21 +1501,38 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         query,
         researchProviders,
         executeSearch: async (p) => {
+          const startedAt = Date.now();
           try {
             const response = await executeWithRetry(() => runProvider(p as ProviderName));
+            recordProviderOutcome(p, (Date.now() - startedAt) / 1000, (response.results || []).length, false);
             resetProviderHealth(p);
             return response;
           } catch (error: any) {
-            markProviderFailure(p, String(error?.message || error));
+            if (!(error instanceof ProviderConfigError)) {
+              recordProviderOutcome(p, (Date.now() - startedAt) / 1000, 0, true);
+              markProviderFailure(p, String(error?.message || error), error?.retryAfter);
+            }
             throw error;
           }
         },
-        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig),
+        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
       });
 
+      if (freshness) {
+        result.metadata = {
+          ...(result.metadata || {}),
+          freshness: { requested: freshness, per_provider: researchProviders.map((p) => freshnessMetadata(p, freshness!)) },
+        };
+      }
+      if (searchType && searchType !== "search") {
+        result.metadata = {
+          ...(result.metadata || {}),
+          search_type: { requested: searchType, per_provider: researchProviders.map((p) => searchTypeMetadata(p, searchType!)) },
+        };
+      }
       routingInfo = { ...routingInfo, mode: "research", provider: "research" };
       if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
       if (routingConfigResult.warning) routingInfo.config_warning = routingConfigResult.warning;
@@ -1299,6 +1543,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     const cacheContext = {
       time_range: timeRange,
+      search_type: searchType || "search",
+      locale: providerSupportsLocale(provider) ? (({ country, language }) => ({ country, language }))(resolveLocale(provider, runtimeConfig, query)) : null,
       include_domains: includeDomains ? [...includeDomains].sort() : null,
       exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
       exa_depth: params.depth || exaDepthHint || "normal",
@@ -1320,15 +1566,22 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const successes: Array<[string, SearchResponse]> = [];
 
     for (const p of eligibleProviders) {
+      const startedAt = Date.now();
       try {
         const result = await executeWithRetry(() => runProvider(p));
+        recordProviderOutcome(p, (Date.now() - startedAt) / 1000, (result.results || []).length, false);
         resetProviderHealth(p);
         successes.push([p, result]);
         if (strictProviderMode || (result.results || []).length >= count || errors.length === 0) break;
       } catch (error: any) {
         const message = sanitizeOutput(String(error?.message || error));
-        const cooldown = strictProviderMode ? { cooldown_seconds: 0 } : markProviderFailure(p, message);
-        errors.push({ provider: p, error: message, ...(strictProviderMode ? {} : { cooldown_seconds: cooldown.cooldown_seconds }) });
+        // Configuration errors such as missing API keys are not provider
+        // failures: they must not mark cooldowns or pollute performance stats.
+        const isConfigError = error instanceof ProviderConfigError;
+        if (!isConfigError) recordProviderOutcome(p, (Date.now() - startedAt) / 1000, 0, true);
+        const skipCooldown = strictProviderMode || isConfigError;
+        const cooldown = skipCooldown ? { cooldown_seconds: 0 } : markProviderFailure(p, message, error?.retryAfter);
+        errors.push({ provider: p, error: message, ...(skipCooldown ? {} : { cooldown_seconds: cooldown.cooldown_seconds }) });
         if (strictProviderMode) break;
       }
     }
@@ -1357,9 +1610,47 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     const routingClass = String(routingInfo.routing_class || "general");
     if (Array.isArray(result.results)) {
+      // Explicit domain intent (site: queries, include_domains) expresses user
+      // constraints: constrained domains are exempt from spam filtering and
+      // diversity reranking is skipped entirely so those constraints win.
+      const domainConstraints = extractDomainConstraints(query, includeDomains);
+      const extraBlocked = Array.isArray(pluginConfig.qualityBlockedDomains) ? pluginConfig.qualityBlockedDomains : [];
+      const extraAllowed = Array.isArray(pluginConfig.qualityAllowedDomains) ? pluginConfig.qualityAllowedDomains : [];
+      const spamFilter = filterSpamResults(result.results, extraBlocked, [...extraAllowed, ...domainConstraints]);
+      result.results = spamFilter.results as SearchResult[];
+
       const rerank = rerankResultsForIntent(query, routingClass, result.results);
       result.results = rerank.results as SearchResult[];
       if (rerank.metadata.reranked) result.metadata = { ...(result.metadata || {}), intent_rerank: rerank.metadata };
+
+      let diversityDemoted = 0;
+      if (!domainConstraints.length) {
+        const diversity = rerankDomainDiversity(result.results);
+        result.results = diversity.results as SearchResult[];
+        diversityDemoted = diversity.demotedCount;
+      }
+      if (spamFilter.removedDomains.length || diversityDemoted || domainConstraints.length) {
+        result.metadata = {
+          ...(result.metadata || {}),
+          result_filter: {
+            spam_removed_domains: spamFilter.removedDomains,
+            diversity_demoted_count: diversityDemoted,
+            domain_constraints: domainConstraints,
+          },
+        };
+      }
+    }
+
+    if (freshness) {
+      result.metadata = { ...(result.metadata || {}), freshness: freshnessMetadata(successfulProvider, freshness) };
+    }
+    if (searchType && searchType !== "search") {
+      result.metadata = { ...(result.metadata || {}), search_type: searchTypeMetadata(successfulProvider, searchType) };
+    }
+    if (providerSupportsLocale(successfulProvider)) {
+      // Locale transparency (freshness-metadata pattern): report the resolved
+      // locale and per-value source for providers with locale parameters.
+      result.metadata = { ...(result.metadata || {}), locale: resolveLocale(successfulProvider, runtimeConfig, query).metadata };
     }
 
     result.routing = routingInfo;
@@ -1518,6 +1809,7 @@ export function register(api: any) {
             Boolean(params?.include_raw_html),
             Boolean(params?.render_js),
             runtimeConfig,
+            loadRoutingPreferences(pluginConfig).config.disabled_providers,
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error: any) {

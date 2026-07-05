@@ -1,7 +1,7 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "3.1.0",
-  "description": "OpenClaw plugin: one clean set of web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, and Tavily-first extraction across Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, Perplexity direct, Kilo Perplexity gateway, You.com, and SearXNG.",
+  "version": "3.2.0",
+  "description": "OpenClaw plugin: one clean set of web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction across Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, Perplexity direct, Kilo Perplexity gateway, You.com, SearXNG, and Keenable.",
   "type": "module",
   "main": "index.ts",
   "scripts": {
@@ -29,6 +29,8 @@
     "extract.ts",
     "research.ts",
     "quality.ts",
+    "provider-stats.ts",
+    "search-locale.ts",
     "routing-config.ts",
     "runtime-config.ts",
     "openclaw.plugin.json",
@@ -60,7 +62,12 @@
     "routing-v2",
     "quality-report",
     "research-mode",
-    "authority-rerank"
+    "authority-rerank",
+    "keenable",
+    "freshness",
+    "news-search",
+    "locale",
+    "spam-filtering"
   ],
   "peerDependencies": {
     "openclaw": ">=2026.3.22"

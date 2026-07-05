@@ -1,7 +1,7 @@
 // index.ts
 import crypto from "crypto";
-import dns from "dns/promises";
-import net from "net";
+import dns2 from "dns/promises";
+import net2 from "net";
 
 // node_modules/openclaw/dist/plugin-cache-primitives-BXH3UUqE.js
 var PluginLruCache = class {
@@ -152,12 +152,24 @@ function getRuntimeConfig(pluginConfig) {
     parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
     serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
-    searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0
+    searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0,
+    keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
+    keenableAllowPublic: pluginConfig?.keenableAllowPublic === true ? true : void 0,
+    extractAllowPrivateUrls: pluginConfig?.extractAllowPrivateUrls === true ? true : void 0,
+    extractCharLimit: Number.isFinite(Number(pluginConfig?.extractCharLimit)) && Number(pluginConfig?.extractCharLimit) > 0 ? Math.max(1e3, Math.floor(Number(pluginConfig.extractCharLimit))) : void 0,
+    localeCountry: maybeString(pluginConfig?.localeCountry),
+    localeLanguage: maybeString(pluginConfig?.localeLanguage),
+    parallelMaxCharsPerResult: maybePositiveInt(pluginConfig?.parallelMaxCharsPerResult),
+    parallelMaxCharsTotal: maybePositiveInt(pluginConfig?.parallelMaxCharsTotal)
   };
+}
+function maybePositiveInt(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : void 0;
 }
 
 // routing-config.ts
-var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng"];
+var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng", "keenable"];
 var GUARDED_AUTO_PROVIDERS = ["brave", "serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 2,
@@ -291,7 +303,9 @@ function resetRoutingPreferences(pluginConfig = {}) {
 }
 
 // extract.ts
-var EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you"];
+import dns from "dns/promises";
+import net from "net";
+var EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"];
 var EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -299,7 +313,7 @@ var EXTRACT_PARAMETERS_SCHEMA = {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper"],
       description: "Force a provider, or use auto fallback routing (default: auto)"
     },
     format: {
@@ -352,7 +366,14 @@ async function requestJson(url, init, timeout = 30) {
   try {
     const response = await fetch(url, { ...init, signal: controller.signal });
     const text = await response.text();
-    const data = text ? JSON.parse(text) : {};
+    let data = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        if (response.ok) throw new Error(`Provider returned invalid JSON (HTTP ${response.status})`);
+      }
+    }
     if (!response.ok) {
       const message = data?.error || data?.message || data?.detail || data?.warning || `HTTP ${response.status}`;
       throw new Error(String(message));
@@ -372,12 +393,70 @@ function getExtractApiKey(provider, runtimeConfig) {
     tavily: runtimeConfig.tavilyApiKey,
     exa: runtimeConfig.exaApiKey,
     you: runtimeConfig.youApiKey,
-    parallel: runtimeConfig.parallelApiKey
+    parallel: runtimeConfig.parallelApiKey,
+    keenable: runtimeConfig.keenableApiKey,
+    serper: runtimeConfig.serperApiKey
   };
   return keyMap[provider];
 }
+function keylessPublicAllowed(provider, runtimeConfig) {
+  return provider === "keenable" && runtimeConfig.keenableAllowPublic === true;
+}
 function hasAnyExtractProviderCredential(runtimeConfig) {
-  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)));
+  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig));
+}
+var BLOCKED_EXTRACT_HOSTS = /* @__PURE__ */ new Set(["localhost", "metadata.google.internal", "metadata.internal"]);
+function isPrivateOrInternalIp(value) {
+  const family = net.isIP(value);
+  if (family === 4) {
+    const octets = value.split(".").map(Number);
+    const [a, b] = octets;
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 192 && b === 0 && octets[2] === 0) return true;
+    if (a === 198 && (b === 18 || b === 19)) return true;
+    if (a >= 224) return true;
+    return false;
+  }
+  if (family === 6) {
+    const lower = value.toLowerCase();
+    if (lower === "::" || lower === "::1") return true;
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
+    if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) return true;
+    if (lower.startsWith("ff")) return true;
+    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return isPrivateOrInternalIp(mapped[1]);
+    return false;
+  }
+  return false;
+}
+async function validateExtractUrls(urls, runtimeConfig) {
+  if (runtimeConfig.extractAllowPrivateUrls === true) return;
+  for (const url of urls) {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`Invalid URL: ${url}`);
+    }
+    const hostname = parsed.hostname.trim().toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
+    if (!hostname) throw new Error(`Invalid URL \u2014 hostname is required: ${url}`);
+    if (BLOCKED_EXTRACT_HOSTS.has(hostname)) throw new Error(`Extraction URL blocked: ${hostname} is private/internal`);
+    if (net.isIP(hostname)) {
+      if (isPrivateOrInternalIp(hostname)) throw new Error(`Extraction URL blocked: ${hostname} is private/internal`);
+      continue;
+    }
+    const records = await dns.lookup(hostname, { all: true, verbatim: true }).catch(() => []);
+    if (!records.length) throw new Error(`Extraction URL blocked: cannot resolve hostname ${hostname}`);
+    for (const record of records) {
+      if (isPrivateOrInternalIp(record.address)) {
+        throw new Error(`Extraction URL blocked: ${hostname} resolves to private/internal IP ${record.address}`);
+      }
+    }
+  }
 }
 async function extractFirecrawl(urls, apiKey, outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, apiUrl = "https://api.firecrawl.dev/v2/scrape", timeout = 60) {
   const formats = outputFormat === "html" ? ["html"] : ["markdown"];
@@ -509,14 +588,16 @@ async function extractExa(urls, apiKey, outputFormat = "markdown", includeImages
   });
   return { provider: "exa", results };
 }
-async function extractParallel(urls, apiKey, outputFormat = "markdown", _includeImages = false, includeRawHtml = false, _renderJs = false, apiUrl = "https://api.parallel.ai/v1beta/tasks/extract", timeout = 30) {
+var PARALLEL_MAX_CHARS_PER_RESULT = 6e4;
+var PARALLEL_MAX_CHARS_TOTAL = 12e4;
+async function extractParallel(urls, apiKey, outputFormat = "markdown", _includeImages = false, includeRawHtml = false, _renderJs = false, budgets = {}, apiUrl = "https://api.parallel.ai/v1beta/tasks/extract", timeout = 30) {
   const data = await requestJson(apiUrl, {
     method: "POST",
     headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
       urls,
-      max_chars_total: 2e4,
-      advanced_settings: { full_content: { max_chars_per_result: 8e3 } }
+      max_chars_total: budgets.maxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
+      advanced_settings: { full_content: { max_chars_per_result: budgets.maxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT } }
     })
   }, timeout);
   const rawItems = Array.isArray(data?.results) ? data.results : Array.isArray(data?.data) ? data.data : [];
@@ -556,7 +637,103 @@ async function extractYou(urls, apiKey, outputFormat = "markdown", includeImages
   });
   return { provider: "you", results };
 }
-async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, runtimeConfig = {}) {
+var BASE64_MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(\s*data:image\/[^)]+\)/gi;
+var BASE64_HTML_IMAGE_RE = /<img\b(?=[^>]*\bsrc=["']data:image\/)[^>]*>/gi;
+var DEFAULT_EXTRACT_CHAR_LIMIT = 15e3;
+function sanitizeExtractContent(content) {
+  let out = content.replace(BASE64_MARKDOWN_IMAGE_RE, (_match, alt) => `[IMAGE: ${String(alt || "image").trim() || "image"}]`);
+  out = out.replace(BASE64_HTML_IMAGE_RE, (tag) => {
+    const altMatch = tag.match(/\balt=["']([^"']*)["']/i);
+    const alt = (altMatch?.[1] || "image").trim() || "image";
+    return `[IMAGE: ${alt}]`;
+  });
+  return out;
+}
+function splitExtractContent(content, limit) {
+  const headChars = Math.min(Math.max(1, Math.floor(limit * 2 / 3)), Math.max(1, limit - 1));
+  const tailChars = Math.min(Math.max(1, Math.floor(limit * 0.2)), Math.max(1, limit - headChars));
+  if (headChars + tailChars >= content.length) return { head: content, tail: "", omittedChars: 0 };
+  const head = content.slice(0, headChars).replace(/\s+$/, "");
+  const tail = content.slice(-tailChars).replace(/^\s+/, "");
+  return { head, tail, omittedChars: Math.max(0, content.length - head.length - tail.length) };
+}
+function formatTruncatedExtractContent(content, limit) {
+  const cleaned = sanitizeExtractContent(content);
+  if (cleaned.length <= limit) return { content: cleaned, truncated: false, originalChars: cleaned.length };
+  const { head, tail, omittedChars } = splitExtractContent(cleaned, limit);
+  const footer = [
+    "",
+    "---",
+    `[Content truncated: original ${cleaned.length} chars; omitted middle ${omittedChars} chars; showing head and tail.]`,
+    "Raise pluginConfig.extractCharLimit for a larger inline budget, or extract a more specific URL for the omitted section."
+  ].join("\n");
+  return { content: `${head}
+
+[... omitted middle ...]
+
+${tail}
+${footer}`, truncated: true, originalChars: cleaned.length };
+}
+function keenableExtractEndpoint(apiUrl, apiKey, publicAllowed) {
+  const headers = { "X-Keenable-Title": "web-search-plus-plugin" };
+  if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+    return { url: apiUrl, headers };
+  }
+  if (publicAllowed) return { url: `${apiUrl}/public`, headers };
+  throw new Error("Keenable requires an API key or an enabled public endpoint");
+}
+async function extractKeenable(urls, apiKey, _outputFormat = "markdown", _includeImages = false, _includeRawHtml = false, _renderJs = false, publicAllowed = false, apiUrl = "https://api.keenable.ai/v1/fetch", timeout = 30) {
+  const endpoint = keenableExtractEndpoint(apiUrl, apiKey, publicAllowed);
+  const results = [];
+  for (const url of urls) {
+    try {
+      const data = await requestJson(`${endpoint.url}?url=${encodeURIComponent(url)}`, {
+        method: "GET",
+        headers: endpoint.headers
+      }, timeout);
+      const content = String(data?.content || "");
+      const metadata = {};
+      if (data?.author != null) metadata.author = data.author;
+      if (data?.description != null) metadata.description = data.description;
+      results.push(normalizeExtractResult("keenable", String(data?.url || url), String(data?.title || ""), content, content, {
+        metadata: Object.keys(metadata).length ? metadata : void 0
+      }));
+    } catch (error2) {
+      results.push(normalizeExtractResult("keenable", url, "", "", void 0, { error: String(error2?.message || error2) }));
+    }
+  }
+  return { provider: "keenable", results };
+}
+async function extractSerper(urls, apiKey, _outputFormat = "markdown", _includeImages = false, _includeRawHtml = false, _renderJs = false, apiUrl = "https://scrape.serper.dev", timeout = 30) {
+  const results = [];
+  for (const url of urls) {
+    try {
+      const data = await requestJson(apiUrl, {
+        method: "POST",
+        headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ url, includeMarkdown: true })
+      }, timeout);
+      if (data?.error) {
+        results.push(normalizeExtractResult("serper", url, "", "", void 0, { error: String(data.error) }));
+        continue;
+      }
+      const markdown = String(data?.markdown || "");
+      const text = String(data?.text || data?.content || "");
+      const content = markdown || text;
+      const metadata = data?.metadata && typeof data.metadata === "object" ? data.metadata : {};
+      const title = String(metadata.title || data?.title || "");
+      const extra = { metadata: Object.keys(metadata).length ? metadata : void 0 };
+      if (data?.jsonld != null) extra.jsonld = data.jsonld;
+      if (data?.credits != null) extra.credits = data.credits;
+      results.push(normalizeExtractResult("serper", url, title, content, content, extra));
+    } catch (error2) {
+      results.push(normalizeExtractResult("serper", url, "", "", void 0, { error: String(error2?.message || error2) }));
+    }
+  }
+  return { provider: "serper", results };
+}
+async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, runtimeConfig = {}, disabledProviders = []) {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
     return {
@@ -576,7 +753,18 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       routing: { requested_provider: requestedProvider }
     };
   }
-  const providers = requestedProvider === "auto" ? EXTRACT_PROVIDER_PRIORITY : [requestedProvider, ...EXTRACT_PROVIDER_PRIORITY.filter((item) => item !== requestedProvider)];
+  try {
+    await validateExtractUrls(cleanedUrls, runtimeConfig);
+  } catch (error2) {
+    return {
+      provider: requestedProvider,
+      results: [],
+      error: String(error2?.message || error2),
+      routing: { requested_provider: requestedProvider }
+    };
+  }
+  const baseProviders = requestedProvider === "auto" ? EXTRACT_PROVIDER_PRIORITY : [requestedProvider, ...EXTRACT_PROVIDER_PRIORITY.filter((item) => item !== requestedProvider)];
+  const providers = baseProviders.filter((item) => item === requestedProvider || !disabledProviders.includes(item));
   const errors = [];
   for (const currentProvider of providers) {
     if (!EXTRACT_PROVIDER_PRIORITY.includes(currentProvider)) {
@@ -584,7 +772,8 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       continue;
     }
     const providerCredential = getExtractApiKey(currentProvider, runtimeConfig);
-    if (!providerCredential) {
+    const keylessAllowed = keylessPublicAllowed(currentProvider, runtimeConfig);
+    if (!providerCredential && !keylessAllowed) {
       errors.push({ provider: currentProvider, error: "missing_api_key" });
       continue;
     }
@@ -597,9 +786,16 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       } else if (currentProvider === "linkup") {
         result = await extractLinkup(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "parallel") {
-        result = await extractParallel(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractParallel(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, {
+          maxCharsPerResult: runtimeConfig.parallelMaxCharsPerResult,
+          maxCharsTotal: runtimeConfig.parallelMaxCharsTotal
+        });
       } else if (currentProvider === "firecrawl") {
         result = await extractFirecrawl(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "keenable") {
+        result = await extractKeenable(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
+      } else if (currentProvider === "serper") {
+        result = await extractSerper(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else {
         result = await extractYou(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }
@@ -608,6 +804,22 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       if (allUrlsFailed) {
         errors.push({ provider: currentProvider, error: "all_urls_failed", details: resultList.map((item) => item.error) });
         continue;
+      }
+      const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
+      for (const item of resultList) {
+        if (item?.error) continue;
+        const originalContent = item.content;
+        if (item.content) {
+          const formatted = formatTruncatedExtractContent(item.content, charLimit);
+          item.content = formatted.content;
+          if (formatted.truncated) {
+            item.truncated = true;
+            item.original_chars = formatted.originalChars;
+          }
+        }
+        if (item.raw_content) {
+          item.raw_content = item.raw_content === originalContent ? item.content : formatTruncatedExtractContent(item.raw_content, charLimit).content;
+        }
       }
       return {
         ...result,
@@ -792,7 +1004,80 @@ var CANONICAL_DOMAIN_RULES = {
   }
 };
 function domainMatchesRule(domain, rule) {
-  return domain === rule || domain.endsWith(`.${rule}`) || domain.startsWith(rule);
+  if (rule.endsWith(".")) {
+    return domain.startsWith(rule);
+  }
+  return domain === rule || domain.endsWith(`.${rule}`);
+}
+var SPAM_MIRROR_DOMAINS = [
+  // Stack Overflow / Q&A scrapers
+  "newbedev.com",
+  "stackoom.com",
+  "stackovergo.com",
+  "syntaxfix.com",
+  "copyprogramming.com",
+  "devcodef1.com",
+  "exceptionshub.com",
+  "code-examples.net",
+  "i-harness.com",
+  "fixmycodeerror.com",
+  "stacklesson.com",
+  // GitHub issue/readme mirrors
+  "githubmemory.com",
+  "gitmemory.com",
+  "issueexplorer.com",
+  "bleepcoder.com",
+  "gitanswer.com",
+  // Documentation mirrors
+  "w3cub.com",
+  // Generic AI/SEO content farms already demoted by the intent reranker
+  "aizolo.com"
+];
+function blockedDomainMatches(domain, rule) {
+  return domain === rule || domain.endsWith(`.${rule}`);
+}
+var SITE_OPERATOR_RE = /\bsite:([a-z0-9][a-z0-9.-]*)/gi;
+function extractDomainConstraints(query, includeDomains) {
+  const domains = [];
+  for (const match of String(query || "").matchAll(SITE_OPERATOR_RE)) {
+    domains.push(match[1].toLowerCase().replace(/\.+$/, ""));
+  }
+  for (const entry of includeDomains || []) {
+    if (entry && entry.trim()) domains.push(entry.toLowerCase().trim());
+  }
+  return [...new Set(domains)].sort();
+}
+function filterSpamResults(results, extraBlocked, allowed) {
+  const blockedRules = [...SPAM_MIRROR_DOMAINS, ...(extraBlocked || []).map((d) => String(d || "").toLowerCase().trim()).filter(Boolean)];
+  const allowedRules = (allowed || []).map((d) => String(d || "").toLowerCase().trim()).filter(Boolean);
+  const kept = [];
+  const removedDomains = [];
+  for (const item of results) {
+    const domain = resultDomain(item.url || "");
+    if (domain && !allowedRules.some((rule) => blockedDomainMatches(domain, rule)) && blockedRules.some((rule) => blockedDomainMatches(domain, rule))) {
+      removedDomains.push(domain);
+      continue;
+    }
+    kept.push(item);
+  }
+  return { results: kept, removedDomains: [...new Set(removedDomains)].sort() };
+}
+function rerankDomainDiversity(results, maxPerDomain = 2) {
+  if (maxPerDomain < 1 || results.length < 3) return { results, demotedCount: 0 };
+  const head = [];
+  const overflow = [];
+  const perDomain = /* @__PURE__ */ new Map();
+  for (const item of results) {
+    const domain = resultDomain(item.url || "");
+    const count = perDomain.get(domain) || 0;
+    if (domain && count >= maxPerDomain) {
+      overflow.push(item);
+      continue;
+    }
+    perDomain.set(domain, count + 1);
+    head.push(item);
+  }
+  return { results: [...head, ...overflow], demotedCount: overflow.length };
 }
 function urlMatchesRule(url, rule) {
   const domain = resultDomain(url);
@@ -856,6 +1141,222 @@ function buildAuthoritySignals(routingClass, results) {
   };
 }
 
+// provider-stats.ts
+var MAX_SAMPLES_PER_PROVIDER = 50;
+var SAMPLE_MAX_AGE_SECONDS = 7 * 24 * 3600;
+var MIN_SAMPLES_FOR_ADJUSTMENT = 5;
+var MAX_SCORE_ADJUSTMENT = 1;
+var LATENCY_CEILING_SECONDS = 8;
+var PERFORMANCE_BASELINE = 0.75;
+var providerSamples = /* @__PURE__ */ new Map();
+function nowSeconds() {
+  return Date.now() / 1e3;
+}
+function recordProviderOutcome(provider, latencySeconds, resultCount, error2, now) {
+  const sample = {
+    t: Math.floor(now ?? nowSeconds()),
+    lat: Math.round(Math.max(0, Number(latencySeconds) || 0) * 1e3) / 1e3,
+    n: Math.max(0, Math.floor(Number(resultCount) || 0)),
+    err: Boolean(error2)
+  };
+  const samples = providerSamples.get(provider) || [];
+  samples.push(sample);
+  providerSamples.set(provider, samples.slice(-MAX_SAMPLES_PER_PROVIDER));
+}
+function freshSamples(provider, now) {
+  const cutoff = now - SAMPLE_MAX_AGE_SECONDS;
+  return (providerSamples.get(provider) || []).filter((sample) => sample.t >= cutoff);
+}
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+function getProviderPerformance(provider, now) {
+  const nowTs = now ?? nowSeconds();
+  const samples = freshSamples(provider, nowTs);
+  if (!samples.length) return null;
+  const successes = samples.filter((s) => !s.err);
+  const empty = successes.filter((s) => s.n === 0);
+  const latencies = successes.map((s) => s.lat);
+  return {
+    samples: samples.length,
+    success_rate: Number((successes.length / samples.length).toFixed(3)),
+    empty_rate: successes.length ? Number((empty.length / successes.length).toFixed(3)) : 0,
+    median_latency_seconds: latencies.length ? Number(median(latencies).toFixed(3)) : null
+  };
+}
+function performanceAdjustment(provider, now) {
+  const perf = getProviderPerformance(provider, now);
+  if (!perf || perf.samples < MIN_SAMPLES_FOR_ADJUSTMENT) return 0;
+  const reliability = perf.success_rate * (1 - 0.5 * perf.empty_rate);
+  const speed = perf.median_latency_seconds == null ? 0 : Math.max(0, Math.min(1, 1 - perf.median_latency_seconds / LATENCY_CEILING_SECONDS));
+  const combined = 0.6 * reliability + 0.4 * speed;
+  const adjustment = (combined - PERFORMANCE_BASELINE) * 2 * MAX_SCORE_ADJUSTMENT;
+  return Number(Math.max(-MAX_SCORE_ADJUSTMENT, Math.min(MAX_SCORE_ADJUSTMENT, adjustment)).toFixed(3));
+}
+function performanceAdjustments(providers, now) {
+  const adjustments = {};
+  for (const provider of providers) {
+    const value = performanceAdjustment(provider, now);
+    if (value !== 0) adjustments[provider] = value;
+  }
+  return adjustments;
+}
+function __resetProviderStatsForTests() {
+  providerSamples.clear();
+}
+
+// search-locale.ts
+var FALLBACK_COUNTRY = "us";
+var FALLBACK_LANGUAGE = "en";
+var AUTO_LANGUAGE = "auto";
+var LOCALE_PROVIDERS = /* @__PURE__ */ new Set(["serper", "brave", "querit", "firecrawl", "you", "searxng"]);
+var LOCATION_COUNTRY_HINTS = {
+  // Austria
+  wien: "at",
+  vienna: "at",
+  graz: "at",
+  salzburg: "at",
+  innsbruck: "at",
+  "\xF6sterreich": "at",
+  austria: "at",
+  // Germany
+  berlin: "de",
+  "m\xFCnchen": "de",
+  munich: "de",
+  hamburg: "de",
+  frankfurt: "de",
+  deutschland: "de",
+  germany: "de",
+  // Switzerland
+  "z\xFCrich": "ch",
+  zurich: "ch",
+  schweiz: "ch",
+  switzerland: "ch",
+  // France
+  paris: "fr",
+  lyon: "fr",
+  marseille: "fr",
+  france: "fr",
+  // Spain
+  madrid: "es",
+  barcelona: "es",
+  "espa\xF1a": "es",
+  spain: "es",
+  // Italy
+  rome: "it",
+  roma: "it",
+  milano: "it",
+  milan: "it",
+  italia: "it",
+  italy: "it",
+  // Portugal
+  lisbon: "pt",
+  lisboa: "pt",
+  portugal: "pt",
+  // Netherlands
+  amsterdam: "nl",
+  rotterdam: "nl",
+  netherlands: "nl",
+  // United Kingdom
+  london: "gb",
+  manchester: "gb",
+  "united kingdom": "gb",
+  // United States
+  "new york": "us",
+  chicago: "us",
+  "san francisco": "us",
+  usa: "us"
+};
+var LANGUAGE_INFERENCE_MIN_MATCHES = 2;
+var LANGUAGE_INFERENCE_STOPWORDS = {
+  en: /* @__PURE__ */ new Set(["the", "and", "what", "how", "where", "when", "which", "who", "best", "near", "hours", "open", "with", "from", "for", "are", "is", "was", "does", "latest", "today", "new"]),
+  de: /* @__PURE__ */ new Set(["der", "die", "das", "und", "oder", "nicht", "ist", "sind", "ein", "eine", "einen", "mit", "f\xFCr", "von", "wie", "wo", "was", "warum", "welche", "beste", "besten", "gibt", "\xF6ffnungszeiten", "heute", "morgen", "preis", "kaufen", "g\xFCnstig", "n\xE4he"]),
+  es: /* @__PURE__ */ new Set(["el", "los", "las", "una", "unos", "que", "qu\xE9", "c\xF3mo", "d\xF3nde", "cu\xE1l", "por", "para", "con", "mejores", "mejor", "cerca", "hoy", "horario", "horarios", "abierto", "abiertos", "tiendas", "restaurantes", "precio", "precios", "donde", "como"]),
+  fr: /* @__PURE__ */ new Set(["le", "les", "des", "une", "du", "o\xF9", "quel", "quelle", "quels", "quelles", "meilleur", "meilleure", "meilleurs", "meilleures", "horaires", "ouvert", "ouverts", "ouverture", "aujourd", "hui", "pr\xE8s", "proche", "avec", "pour", "prix", "cher", "que"]),
+  it: /* @__PURE__ */ new Set(["il", "lo", "gli", "che", "come", "dove", "quale", "quali", "migliori", "migliore", "orari", "orario", "aperto", "aperti", "vicino", "con", "oggi", "prezzo", "prezzi", "negozi", "ristoranti", "della", "delle"]),
+  pt: /* @__PURE__ */ new Set(["os", "do", "dos", "das", "um", "uma", "que", "como", "onde", "qual", "quais", "melhores", "melhor", "hor\xE1rios", "aberto", "perto", "hoje", "pre\xE7o", "lojas", "com", "voc\xEA", "para", "restaurantes"]),
+  nl: /* @__PURE__ */ new Set(["het", "een", "waar", "hoe", "welke", "beste", "goedkoop", "goedkoopste", "vandaag", "morgen", "openingstijden", "winkel", "winkels", "dichtbij", "buurt", "naar", "zijn", "niet", "voor"])
+};
+var LANGUAGE_INFERENCE_CHAR_HINTS = {
+  de: "\xE4\xF6\xFC\xDF",
+  es: "\xF1\xBF\xA1",
+  pt: "\xE3\xF5",
+  fr: "\u0153"
+};
+function providerSupportsLocale(provider) {
+  return LOCALE_PROVIDERS.has(provider);
+}
+function detectLocationCountry(query) {
+  if (!query) return null;
+  const lowered = query.toLowerCase();
+  const countries = /* @__PURE__ */ new Set();
+  for (const [place, country] of Object.entries(LOCATION_COUNTRY_HINTS)) {
+    const escaped = place.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}($|[^\\p{L}\\p{N}_])`, "iu").test(lowered)) countries.add(country);
+  }
+  return countries.size === 1 ? [...countries][0] : null;
+}
+function inferQueryLanguage(query) {
+  if (!query) return null;
+  const lowered = query.toLowerCase();
+  const words = new Set(lowered.match(/[\p{L}\p{N}_]+/gu) || []);
+  const counts = {};
+  for (const [language, stopwords] of Object.entries(LANGUAGE_INFERENCE_STOPWORDS)) {
+    let count = 0;
+    for (const word of words) if (stopwords.has(word)) count += 1;
+    for (const char of LANGUAGE_INFERENCE_CHAR_HINTS[language] || "") {
+      if (lowered.includes(char)) count += 1;
+    }
+    if (count) counts[language] = count;
+  }
+  const ranked = Object.entries(counts).sort(([la, ca], [lb, cb]) => cb - ca || la.localeCompare(lb));
+  if (!ranked.length) return null;
+  const [bestLanguage, bestCount] = ranked[0];
+  if (bestCount < LANGUAGE_INFERENCE_MIN_MATCHES) return null;
+  if (ranked.length > 1 && ranked[1][1] === bestCount) return null;
+  return bestLanguage;
+}
+function resolveLocale(provider, runtimeConfig, query) {
+  const configuredCountry = String(runtimeConfig.localeCountry || "").trim().toLowerCase();
+  const configuredLanguage = String(runtimeConfig.localeLanguage || "").trim().toLowerCase();
+  let country;
+  let countrySource;
+  const hinted = detectLocationCountry(query);
+  if (hinted) {
+    country = hinted;
+    countrySource = "hint";
+  } else if (configuredCountry) {
+    country = configuredCountry;
+    countrySource = "config";
+  } else {
+    country = FALLBACK_COUNTRY;
+    countrySource = "fallback";
+  }
+  let language;
+  let languageSource;
+  const autoLanguage = configuredLanguage === AUTO_LANGUAGE;
+  if (configuredLanguage && !autoLanguage) {
+    language = configuredLanguage;
+    languageSource = "config";
+  } else {
+    const inferred = autoLanguage ? inferQueryLanguage(query || "") : null;
+    if (inferred) {
+      language = inferred;
+      languageSource = "inferred";
+    } else {
+      language = FALLBACK_LANGUAGE;
+      languageSource = "fallback";
+    }
+  }
+  return {
+    country,
+    language,
+    metadata: { country, language, source: { country: countrySource, language: languageSource } }
+  };
+}
+
 // index.ts
 var DEFAULT_CACHE_TTL = 3600;
 var RETRY_BACKOFF_MS = [1e3, 3e3, 9e3];
@@ -864,7 +1365,10 @@ var DEFAULT_RESEARCH_EXTRACT_COUNT = 3;
 var DEFAULT_RESEARCH_TIME_BUDGET_SECONDS = 55;
 var COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 var TRANSIENT_HTTP_CODES = /* @__PURE__ */ new Set([408, 425, 429, 500, 502, 503, 504]);
-var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "kilo_perplexity", "auto"];
+var FAILURE_DECAY_SECONDS = 1800;
+var RATE_LIMIT_MAX_ATTEMPTS = 2;
+var MAX_RETRY_AFTER_WAIT_SECONDS = 30;
+var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable", "kilo_perplexity", "auto"];
 var PARAMETERS_SCHEMA = {
   type: "object",
   required: ["query"],
@@ -885,6 +1389,16 @@ var PARAMETERS_SCHEMA = {
       type: "string",
       enum: ["hour", "day", "week", "month", "year"],
       description: "Recency filter where supported."
+    },
+    freshness: {
+      type: "string",
+      enum: ["day", "week", "month", "year"],
+      description: "Unified recency filter. Providers with native date filters receive the mapped value; providers without support run the normal search and report freshness.applied=false in metadata."
+    },
+    search_type: {
+      type: "string",
+      enum: ["search", "news"],
+      description: "Result vertical. Serper serves news natively via its /news endpoint; other providers run their normal search and report search_type.applied=false in metadata."
     },
     include_domains: {
       type: "array",
@@ -933,19 +1447,29 @@ var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     confidence_threshold: { type: "number", minimum: 0, maximum: 1 }
   }
 };
-var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng"];
+var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable"];
 var ProviderConfigError = class extends Error {
 };
 var ProviderRequestError = class extends Error {
   statusCode;
   transient;
-  constructor(message, statusCode, transient = false) {
+  retryAfter;
+  constructor(message, statusCode, transient = false, retryAfter) {
     super(message);
     this.name = "ProviderRequestError";
     this.statusCode = statusCode;
     this.transient = transient;
+    this.retryAfter = retryAfter;
   }
 };
+function parseRetryAfter(value) {
+  if (!value) return void 0;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isNaN(dateMs)) return Math.max(0, Math.ceil((dateMs - Date.now()) / 1e3));
+  return void 0;
+}
 var SENSITIVE_PATTERNS = [
   /\b(?:sk|pk|rk|api|tok)_[A-Za-z0-9\-_]{10,}\b/g,
   /\bBearer\s+[A-Za-z0-9\-._~+/]+=*\b/gi,
@@ -1033,11 +1557,19 @@ function providerInCooldown(provider) {
   const remaining = cooldownUntil - Math.floor(Date.now() / 1e3);
   return { inCooldown: remaining > 0, remaining: Math.max(0, remaining) };
 }
-function markProviderFailure(provider, message) {
+function markProviderFailure(provider, message, retryAfter) {
   const state = loadProviderHealth();
   const now = Math.floor(Date.now() / 1e3);
-  const failCount = Number(state?.[provider]?.failure_count || 0) + 1;
-  const cooldownSeconds = COOLDOWN_STEPS_SECONDS[Math.min(failCount - 1, COOLDOWN_STEPS_SECONDS.length - 1)];
+  let prevCount = Number(state?.[provider]?.failure_count || 0);
+  const lastFailureAt = Number(state?.[provider]?.last_failure_at || 0);
+  if (lastFailureAt && now - lastFailureAt > FAILURE_DECAY_SECONDS) {
+    prevCount = 0;
+  }
+  const failCount = prevCount + 1;
+  let cooldownSeconds = COOLDOWN_STEPS_SECONDS[Math.min(failCount - 1, COOLDOWN_STEPS_SECONDS.length - 1)];
+  if (retryAfter != null && retryAfter > 0) {
+    cooldownSeconds = Math.min(Math.max(cooldownSeconds, Math.floor(retryAfter)), COOLDOWN_STEPS_SECONDS[COOLDOWN_STEPS_SECONDS.length - 1]);
+  }
   state[provider] = {
     failure_count: failCount,
     cooldown_until: now + cooldownSeconds,
@@ -1058,6 +1590,7 @@ function resetProviderHealth(provider) {
 function __resetRuntimeStateForTests() {
   memoryCache.clear();
   for (const key of Object.keys(providerHealthState)) delete providerHealthState[key];
+  __resetProviderStatsForTests();
 }
 function chooseTieWinner(query, winners, priority) {
   const orderedWinners = priority.filter((provider) => winners.includes(provider));
@@ -1097,7 +1630,8 @@ function selectAutoProvider(query, availableProviders, routingConfig) {
   const autoProviders = availableProviders.filter((provider2) => routingConfig.auto_allow?.[provider2] !== false);
   const orderedProviders = orderProvidersByPreference(autoProviders.length ? autoProviders : availableProviders, routingConfig);
   const analyzer = new QueryAnalyzer();
-  const analysis = analyzer.route(query, orderedProviders);
+  const adaptiveAdjustments = performanceAdjustments(orderedProviders);
+  const analysis = analyzer.route(query, orderedProviders, adaptiveAdjustments);
   let provider = analysis.provider;
   let reason = analysis.reason;
   if (analysis.confidence < routingConfig.confidence_threshold) {
@@ -1121,6 +1655,7 @@ function selectAutoProvider(query, availableProviders, routingConfig) {
       language_hint: analysis.analysis_summary?.language_hint,
       routing_class: analysis.analysis_summary?.routing_class,
       scores: analysis.scores,
+      adaptive_adjustments: analysis.adaptive_adjustments,
       auto_allow_excluded: autoExcluded
     }
   };
@@ -1155,9 +1690,14 @@ function getApiKey(provider, runtimeConfig) {
     you: runtimeConfig.youApiKey,
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
-    serpbase: runtimeConfig.serpbaseApiKey
+    serpbase: runtimeConfig.serpbaseApiKey,
+    keenable: runtimeConfig.keenableApiKey
   };
   return keyMap[provider];
+}
+function providerIsConfigured(provider, runtimeConfig) {
+  if (getApiKey(provider, runtimeConfig)) return true;
+  return provider === "keenable" && runtimeConfig.keenableAllowPublic === true;
 }
 function validateApiKey(provider, runtimeConfig) {
   const key = getApiKey(provider, runtimeConfig);
@@ -1165,12 +1705,71 @@ function validateApiKey(provider, runtimeConfig) {
     if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
     if (provider === "perplexity") throw new ProviderConfigError("Missing API key for perplexity (PERPLEXITY_API_KEY or pluginConfig.perplexityApiKey)");
     if (provider === "kilo-perplexity") throw new ProviderConfigError("Missing API key for kilo-perplexity (KILOCODE_API_KEY or pluginConfig.kilocodeApiKey)");
+    if (provider === "keenable") {
+      if (runtimeConfig.keenableAllowPublic === true) return "";
+      throw new ProviderConfigError("Keenable requires an API key (pluginConfig.keenableApiKey) or the opt-in public tier (pluginConfig.keenableAllowPublic=true)");
+    }
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
 }
 function toTimeRange(value) {
   return value && ["hour", "day", "week", "month", "year"].includes(value) ? value : void 0;
+}
+var FRESHNESS_VALUES = ["day", "week", "month", "year"];
+var PROVIDER_FRESHNESS_FORMATS = {
+  // searchSerper: body.tbs
+  serper: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
+  // searchBrave: freshness query param
+  brave: { day: "pd", week: "pw", month: "pm", year: "py" },
+  // searchQuerit: filters.timeRange.date
+  querit: { day: "d1", week: "w1", month: "m1", year: "y1" },
+  // searchFirecrawl: body.tbs
+  firecrawl: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
+  // searchKeenable: body.published_after
+  keenable: { day: "1d", week: "7d", month: "1mo", year: "1y" },
+  // searchSerpBase: time_range query param (plugin-specific endpoint support)
+  serpbase: { day: "day", week: "week", month: "month", year: "year" },
+  // searchYou: freshness query param (native values match the unified ones)
+  you: { day: "day", week: "week", month: "month", year: "year" },
+  // searchPerplexityCompatible: body.search_recency_filter
+  perplexity: { day: "day", week: "week", month: "month", year: "year" },
+  "kilo-perplexity": { day: "day", week: "week", month: "month", year: "year" },
+  // searchSearxng: time_range query param
+  searxng: { day: "day", week: "week", month: "month", year: "year" }
+};
+function normalizeFreshness(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return null;
+  if (!FRESHNESS_VALUES.includes(normalized)) {
+    throw new Error(`Invalid freshness value: ${JSON.stringify(value)}. Valid values: ${FRESHNESS_VALUES.join(", ")}`);
+  }
+  return normalized;
+}
+function freshnessMetadata(provider, requested) {
+  const native = PROVIDER_FRESHNESS_FORMATS[provider]?.[requested];
+  if (native != null) return { requested, applied: true, provider, native_value: native };
+  return { requested, applied: false, provider, reason: `provider ${provider} does not support freshness` };
+}
+var SEARCH_TYPE_VALUES = ["search", "news"];
+var PROVIDER_SEARCH_TYPES = {
+  // searchSerper: endpoint path https://google.serper.dev/<type>
+  serper: { search: "search", news: "news" }
+};
+function normalizeSearchType(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return null;
+  if (!SEARCH_TYPE_VALUES.includes(normalized)) {
+    throw new Error(`Invalid search_type value: ${JSON.stringify(value)}. Valid values: ${SEARCH_TYPE_VALUES.join(", ")}`);
+  }
+  return normalized;
+}
+function searchTypeMetadata(provider, requested) {
+  const native = PROVIDER_SEARCH_TYPES[provider]?.[requested];
+  if (native != null) return { requested, applied: true, provider, native_value: native };
+  return { requested, applied: false, provider, reason: `provider ${provider} does not support search_type ${requested}` };
 }
 function normalizeBraveCountry(value) {
   const normalized = String(value || "US").trim();
@@ -1202,7 +1801,7 @@ async function httpJson(url, init, timeoutMs = 3e4) {
     const res = await fetch(url, {
       ...init,
       headers: {
-        "User-Agent": "ClawdBot-WebSearchPlus/3.0",
+        "User-Agent": "ClawdBot-WebSearchPlus/3.2",
         ...init.headers || {}
       },
       signal: controller.signal
@@ -1215,7 +1814,8 @@ async function httpJson(url, init, timeoutMs = 3e4) {
     }
     if (!res.ok) {
       const detail = data?.error || data?.message || text || res.statusText;
-      throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, res.status, TRANSIENT_HTTP_CODES.has(res.status));
+      const retryAfter = res.status === 429 ? parseRetryAfter(res.headers.get("retry-after")) : void 0;
+      throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, res.status, TRANSIENT_HTTP_CODES.has(res.status), retryAfter);
     }
     return data ?? {};
   } catch (error2) {
@@ -1239,8 +1839,8 @@ async function validateSearxngUrl(input, runtimeConfig) {
   if (blockedHosts.has(u.hostname)) throw new ProviderConfigError("SearXNG URL blocked: metadata endpoint");
   const allowPrivate = runtimeConfig.searxngAllowPrivate === true;
   if (!allowPrivate) {
-    const records = await dns.lookup(u.hostname, { all: true, verbatim: true }).catch(() => []);
-    if (!records.length && net.isIP(u.hostname)) records.push({ address: u.hostname, family: net.isIP(u.hostname) });
+    const records = await dns2.lookup(u.hostname, { all: true, verbatim: true }).catch(() => []);
+    if (!records.length && net2.isIP(u.hostname)) records.push({ address: u.hostname, family: net2.isIP(u.hostname) });
     if (!records.length) throw new ProviderConfigError(`SearXNG URL blocked: cannot resolve hostname ${u.hostname}`);
     for (const record of records) {
       const ip = record.address;
@@ -1758,7 +2358,9 @@ var QueryAnalyzer = class {
       perplexity: direct.total + localNews.total * 0.4 + recency.score * 0.55,
       "kilo-perplexity": direct.total + localNews.total * 0.4 + recency.score * 0.55,
       you: rag.total + recency.score * 0.25,
-      searxng: privacy.total
+      searxng: privacy.total,
+      // Keenable is a last-resort fallback: no query-class signals boost it.
+      keenable: 0
     };
     const providerMatches = {
       serper: [...shopping.matches, ...localNews.matches],
@@ -1773,7 +2375,8 @@ var QueryAnalyzer = class {
       perplexity: direct.matches,
       "kilo-perplexity": direct.matches,
       you: rag.matches,
-      searxng: privacy.matches
+      searxng: privacy.matches,
+      keenable: []
     };
     const routingClass = this.applyRoutingV2Boosts(query, providerScores, providerMatches);
     return {
@@ -1790,16 +2393,17 @@ var QueryAnalyzer = class {
       provider_matches: providerMatches
     };
   }
-  route(query, availableProviders) {
+  route(query, availableProviders, adaptiveAdjustments = {}) {
     const analysis = this.analyze(query);
     const scores = analysis.provider_scores;
-    const available = Object.fromEntries(availableProviders.map((p) => [p, scores[p] ?? 0]));
+    const available = Object.fromEntries(availableProviders.map((p) => [p, (scores[p] ?? 0) + (adaptiveAdjustments[p] || 0)]));
     const providers = Object.keys(available);
     if (!providers.length) {
       return { provider: "serper", confidence: 0, confidence_level: "low", reason: "no_available_providers", scores: {}, top_signals: [], exa_depth: "normal" };
     }
     const maxScore = Math.max(...providers.map((p) => available[p]));
-    const winners = providers.filter((p) => available[p] === maxScore);
+    let winners = providers.filter((p) => available[p] === maxScore);
+    if (winners.length > 1 && winners.includes("keenable")) winners = winners.filter((p) => p !== "keenable");
     const priority = [...DEFAULT_PROVIDER_PRIORITY];
     const braveSerperCandidates = ["brave", "serper"].filter((p) => providers.includes(p) && maxScore - (available[p] || 0) <= 0.5);
     const winner = braveSerperCandidates.length > 0 && maxScore <= 6.5 ? chooseTieWinner(query, braveSerperCandidates, ["brave", "serper"]) : chooseTieWinner(query, winners, priority);
@@ -1817,6 +2421,7 @@ var QueryAnalyzer = class {
       confidence,
       confidence_level: confidence >= 0.7 ? "high" : confidence >= 0.4 ? "medium" : "low",
       reason: maxScore === 0 ? "no_signals_matched" : confidence >= 0.7 ? "high_confidence_match" : confidence >= 0.4 ? "moderate_confidence_match" : "low_confidence_match",
+      adaptive_adjustments: adaptiveAdjustments,
       exa_depth: exaDepth,
       scores: Object.fromEntries(providers.map((p) => [p, Number((available[p] || 0).toFixed(2))])),
       top_signals: (analysis.provider_matches[winner] || []).sort((a, b) => b.weight - a.weight).slice(0, 5).map((s) => ({ matched: s.matched, weight: s.weight })),
@@ -1833,12 +2438,21 @@ var QueryAnalyzer = class {
     };
   }
 };
-async function searchSerper(query, apiKey, maxResults, timeRange) {
-  const body = { q: query, gl: "us", hl: "en", num: maxResults, autocorrect: true };
+async function searchSerper(query, apiKey, maxResults, timeRange, locale, searchType = "search") {
+  const body = { q: query, gl: locale?.country || "us", hl: locale?.language || "en", num: maxResults, autocorrect: true };
   const tbsMap = { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" };
   if (timeRange && tbsMap[timeRange]) body.tbs = tbsMap[timeRange];
-  const data = await httpJson("https://google.serper.dev/search", { method: "POST", headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const results = (data.organic || []).slice(0, maxResults).map((item, i) => ({ title: item.title || "", url: item.link || "", snippet: item.snippet || "", score: Number((1 - i * 0.1).toFixed(2)), date: item.date }));
+  const data = await httpJson(`https://google.serper.dev/${searchType}`, { method: "POST", headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const rawItems = searchType === "news" ? data.news || [] : data.organic || [];
+  const results = rawItems.slice(0, maxResults).map((item, i) => {
+    const result = { title: item.title || "", url: item.link || "", snippet: item.snippet || "", score: Number((1 - i * 0.1).toFixed(2)), date: item.date };
+    if (searchType === "news") {
+      if (item.source != null) result.source = item.source;
+      if (item.imageUrl) result.thumbnail = item.imageUrl;
+      if (item.position != null) result.position = item.position;
+    }
+    return result;
+  });
   const answer = data?.answerBox?.answer || data?.answerBox?.snippet || data?.knowledgeGraph?.description || results[0]?.snippet || "";
   return { provider: "serper", query, results, images: [], answer, knowledge_graph: data.knowledgeGraph, related_searches: (data.relatedSearches || []).map((r) => r.query) };
 }
@@ -1904,9 +2518,9 @@ async function searchLinkup(query, apiKey, maxResults, includeDomains, excludeDo
   });
   return { provider: "linkup", query, results, images: data.images || [], answer: data.answer || "", metadata: { depth: body.depth, output_type: body.outputType } };
 }
-async function searchQuerit(query, apiKey, maxResults, timeRange, includeDomains, excludeDomains) {
+async function searchQuerit(query, apiKey, maxResults, timeRange, includeDomains, excludeDomains, locale) {
   const timeMap = { day: "d1", week: "w1", month: "m1", year: "y1" };
-  const filters = { languages: { include: ["en"] }, geo: { countries: { include: ["US"] } } };
+  const filters = { languages: { include: [locale?.language || "en"] }, geo: { countries: { include: [(locale?.country || "us").toUpperCase()] } } };
   if (includeDomains?.length || excludeDomains?.length) {
     filters.sites = {};
     if (includeDomains?.length) filters.sites.include = includeDomains;
@@ -1948,8 +2562,8 @@ function mapFirecrawlTimeRange(timeRange) {
   const tbsMap = { hour: "qdr:h", day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" };
   return timeRange ? tbsMap[timeRange] || timeRange : void 0;
 }
-async function searchFirecrawl(query, apiKey, maxResults, timeRange, includeDomains, excludeDomains) {
-  const body = { query, limit: maxResults, sources: ["web"], timeout: 3e4, ignoreInvalidURLs: false, country: "US" };
+async function searchFirecrawl(query, apiKey, maxResults, timeRange, includeDomains, excludeDomains, locale) {
+  const body = { query, limit: maxResults, sources: ["web"], timeout: 3e4, ignoreInvalidURLs: false, country: (locale?.country || "us").toUpperCase() };
   const tbs = mapFirecrawlTimeRange(timeRange);
   if (tbs) body.tbs = tbs;
   if (includeDomains?.length) body.query += ` ${includeDomains.map((domain) => `site:${domain}`).join(" ")}`;
@@ -2059,13 +2673,13 @@ async function searchPerplexity(query, apiKey, maxResults, timeRange) {
 async function searchKiloPerplexity(query, apiKey, maxResults, timeRange) {
   return searchPerplexityCompatible("kilo-perplexity", query, apiKey, maxResults, timeRange);
 }
-async function searchYou(query, apiKey, maxResults, timeRange) {
+async function searchYou(query, apiKey, maxResults, timeRange, locale) {
   const url = new URL("https://ydc-index.io/v1/search");
   url.searchParams.set("query", query);
   url.searchParams.set("count", String(maxResults));
   url.searchParams.set("safesearch", "moderate");
-  url.searchParams.set("country", "US");
-  url.searchParams.set("language", "EN");
+  url.searchParams.set("country", (locale?.country || "us").toUpperCase());
+  url.searchParams.set("language", (locale?.language || "en").toUpperCase());
   if (timeRange) url.searchParams.set("freshness", timeRange);
   const data = await httpJson(url.toString(), { method: "GET", headers: { "X-API-KEY": apiKey, Accept: "application/json" } });
   const web = data?.results?.web || [];
@@ -2074,12 +2688,47 @@ async function searchYou(query, apiKey, maxResults, timeRange) {
   const answer = results.slice(0, 3).map((r) => r.snippet).filter(Boolean).join(" ").slice(0, 1e3);
   return { provider: "you", query, results, news: news.slice(0, 5), images: [], answer, metadata: { search_uuid: data?.metadata?.search_uuid, latency: data?.metadata?.latency } };
 }
-async function searchSearxng(query, instanceUrl, maxResults, timeRange, runtimeConfig) {
+var KEENABLE_TIME_RANGE = { hour: "1h", day: "1d", week: "7d", month: "1mo", year: "1y" };
+var keenablePublicWarned = false;
+function keenableEndpoint(apiUrl, apiKey, publicAllowed) {
+  const headers = { "X-Keenable-Title": "web-search-plus-plugin" };
+  if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+    return { url: apiUrl, headers, publicTier: false };
+  }
+  if (publicAllowed) return { url: `${apiUrl}/public`, headers, publicTier: true };
+  throw new ProviderConfigError("Keenable requires an API key or an enabled public endpoint");
+}
+async function searchKeenable(query, apiKey, maxResults, timeRange, includeDomains, publicAllowed) {
+  const body = { query };
+  if (timeRange && KEENABLE_TIME_RANGE[timeRange]) body.published_after = KEENABLE_TIME_RANGE[timeRange];
+  if (includeDomains?.length) body.site = includeDomains[0];
+  const endpoint = keenableEndpoint("https://api.keenable.ai/v1/search", apiKey, publicAllowed);
+  const data = await httpJson(endpoint.url, { method: "POST", headers: { ...endpoint.headers, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const results = (data.results || []).slice(0, maxResults).map((item, i) => ({
+    title: item.title || titleFromUrl2(item.url || ""),
+    url: item.url || "",
+    snippet: item.snippet || item.description || "",
+    score: Number((1 - i * 0.05).toFixed(3)),
+    date: item.published_at,
+    acquired_at: item.acquired_at
+  }));
+  const metadata = { number_of_results: data.number_of_results };
+  if (endpoint.publicTier) {
+    metadata.public_endpoint = true;
+    if (!keenablePublicWarned) {
+      keenablePublicWarned = true;
+      metadata.public_endpoint_warning = "Keenable keyless public endpoint in use: queries are sent to an unauthenticated shared service (https://keenable.ai) with no SLA. Set pluginConfig.keenableApiKey for the authenticated endpoint.";
+    }
+  }
+  return { provider: "keenable", query, results, images: [], answer: results[0]?.snippet || "", metadata };
+}
+async function searchSearxng(query, instanceUrl, maxResults, timeRange, runtimeConfig, locale) {
   const base = await validateSearxngUrl(instanceUrl, runtimeConfig);
   const url = new URL(`${base}/search`);
   url.searchParams.set("q", query);
   url.searchParams.set("format", "json");
-  url.searchParams.set("language", "en");
+  url.searchParams.set("language", locale?.language || "en");
   url.searchParams.set("safesearch", "0");
   if (timeRange) url.searchParams.set("time_range", timeRange);
   const data = await httpJson(url.toString(), { method: "GET", headers: { Accept: "application/json" } });
@@ -2103,7 +2752,17 @@ async function executeWithRetry(fn) {
     } catch (error2) {
       lastError = error2;
       if (!(error2 instanceof ProviderRequestError) || !error2.transient || error2.statusCode === 401 || error2.statusCode === 403) break;
-      if (attempt < RETRY_BACKOFF_MS.length - 1) await sleep(computeRetryDelayMs(attempt));
+      const isRateLimited = error2.statusCode === 429;
+      const attemptCap = isRateLimited ? Math.min(RETRY_BACKOFF_MS.length, RATE_LIMIT_MAX_ATTEMPTS) : RETRY_BACKOFF_MS.length;
+      if (attempt >= attemptCap - 1) break;
+      if (isRateLimited && error2.retryAfter != null) {
+        if (error2.retryAfter > MAX_RETRY_AFTER_WAIT_SECONDS) {
+          break;
+        }
+        await sleep(error2.retryAfter * 1e3);
+      } else {
+        await sleep(computeRetryDelayMs(attempt));
+      }
     }
   }
   throw lastError;
@@ -2128,7 +2787,7 @@ function buildQualityReport(result, routingInfo, errors, cooldownSkips, provider
   if (dedupCount > 0) extractReasons.push("duplicates_removed");
   const routingClass = routingInfo.routing_class ? String(routingInfo.routing_class) : null;
   return {
-    routing_decision: { provider: result.provider, requested_provider: routingInfo.requested_provider, routing_policy: routingInfo.routing_policy || "routing-v2", routing_class: routingInfo.routing_class, language_hint: routingInfo.language_hint, confidence_level: routingInfo.confidence_level, reason: routingInfo.reason, scores: routingInfo.scores || {} },
+    routing_decision: { provider: result.provider, requested_provider: routingInfo.requested_provider, routing_policy: routingInfo.routing_policy || "routing-v2", routing_class: routingInfo.routing_class, language_hint: routingInfo.language_hint, confidence_level: routingInfo.confidence_level, reason: routingInfo.reason, scores: routingInfo.scores || {}, adaptive_adjustments: routingInfo.adaptive_adjustments || {} },
     result_quality: { result_count: results.length, domain_count: domains.length, domains, domain_diversity: results.length ? Number((domains.length / results.length).toFixed(3)) : 0, thin_snippet_count: thinSnippetCount, dedup_count: dedupCount },
     fallback_chain: { providers_considered: providersConsidered, provider_errors: errors, cooldown_skips: cooldownSkips },
     extract_recommended: extractReasons.length > 0,
@@ -2142,12 +2801,20 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
     const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
     const requestedProvider = normalizeRequestedProvider(params.provider);
-    const timeRange = toTimeRange(params.time_range);
+    let freshness = null;
+    let searchType = null;
+    try {
+      freshness = normalizeFreshness(params.freshness);
+      searchType = normalizeSearchType(params.search_type);
+    } catch (error2) {
+      return { ok: false, payload: { error: `Search failed: ${String(error2?.message || error2)}` } };
+    }
+    const timeRange = freshness || toTimeRange(params.time_range);
     const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : void 0;
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : void 0;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
     const routingConfig = routingConfigResult.config;
-    const configuredProviders = ALL_PROVIDERS.filter((p) => !!getApiKey(p, runtimeConfig));
+    const configuredProviders = ALL_PROVIDERS.filter((p) => providerIsConfigured(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider2) => !routingConfig.disabled_providers.includes(provider2));
     const braveOptions = {
       safesearch: runtimeConfig.braveSafesearch
@@ -2202,27 +2869,29 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     }
     const runProvider = async (p) => {
       const key = validateApiKey(p, runtimeConfig);
-      if (p === "serper") return searchSerper(query, key, count, timeRange);
-      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
+      const locale = providerSupportsLocale(p) ? resolveLocale(p, runtimeConfig, query) : void 0;
+      if (p === "serper") return searchSerper(query, key, count, timeRange, locale, PROVIDER_SEARCH_TYPES.serper[searchType || "search"] || "search");
+      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
       if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
       if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
-      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains, locale);
       if (p === "exa") {
         const exaDepth = params.depth || exaDepthHint || "normal";
         return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
       }
-      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
       if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
       if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
-      if (p === "you") return searchYou(query, key, count, timeRange);
-      return searchSearxng(query, key, count, timeRange, runtimeConfig);
+      if (p === "you") return searchYou(query, key, count, timeRange, locale);
+      if (p === "keenable") return searchKeenable(query, key || void 0, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
+      return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
     };
     if (params.mode === "research") {
-      const providerEligibleForResearch = (p) => !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && !!getApiKey(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
+      const providerEligibleForResearch = (p) => !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && providerIsConfigured(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
       const availableResearchProviders = new Set(configuredProviders.filter(providerEligibleForResearch));
-      if (getApiKey(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
+      if (providerIsConfigured(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
         availableResearchProviders.add(provider);
       }
       let researchProviders;
@@ -2245,20 +2914,37 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         query,
         researchProviders,
         executeSearch: async (p) => {
+          const startedAt = Date.now();
           try {
             const response = await executeWithRetry(() => runProvider(p));
+            recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, (response.results || []).length, false);
             resetProviderHealth(p);
             return response;
           } catch (error2) {
-            markProviderFailure(p, String(error2?.message || error2));
+            if (!(error2 instanceof ProviderConfigError)) {
+              recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, 0, true);
+              markProviderFailure(p, String(error2?.message || error2), error2?.retryAfter);
+            }
             throw error2;
           }
         },
-        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig),
+        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null
       });
+      if (freshness) {
+        result2.metadata = {
+          ...result2.metadata || {},
+          freshness: { requested: freshness, per_provider: researchProviders.map((p) => freshnessMetadata(p, freshness)) }
+        };
+      }
+      if (searchType && searchType !== "search") {
+        result2.metadata = {
+          ...result2.metadata || {},
+          search_type: { requested: searchType, per_provider: researchProviders.map((p) => searchTypeMetadata(p, searchType)) }
+        };
+      }
       routingInfo = { ...routingInfo, mode: "research", provider: "research" };
       if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
       if (routingConfigResult.warning) routingInfo.config_warning = routingConfigResult.warning;
@@ -2268,6 +2954,8 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     }
     const cacheContext = {
       time_range: timeRange,
+      search_type: searchType || "search",
+      locale: providerSupportsLocale(provider) ? (({ country, language }) => ({ country, language }))(resolveLocale(provider, runtimeConfig, query)) : null,
       include_domains: includeDomains ? [...includeDomains].sort() : null,
       exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
       exa_depth: params.depth || exaDepthHint || "normal",
@@ -2286,15 +2974,20 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     const errors = [];
     const successes = [];
     for (const p of eligibleProviders) {
+      const startedAt = Date.now();
       try {
         const result2 = await executeWithRetry(() => runProvider(p));
+        recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, (result2.results || []).length, false);
         resetProviderHealth(p);
         successes.push([p, result2]);
         if (strictProviderMode || (result2.results || []).length >= count || errors.length === 0) break;
       } catch (error2) {
         const message = sanitizeOutput(String(error2?.message || error2));
-        const cooldown = strictProviderMode ? { cooldown_seconds: 0 } : markProviderFailure(p, message);
-        errors.push({ provider: p, error: message, ...strictProviderMode ? {} : { cooldown_seconds: cooldown.cooldown_seconds } });
+        const isConfigError = error2 instanceof ProviderConfigError;
+        if (!isConfigError) recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, 0, true);
+        const skipCooldown = strictProviderMode || isConfigError;
+        const cooldown = skipCooldown ? { cooldown_seconds: 0 } : markProviderFailure(p, message, error2?.retryAfter);
+        errors.push({ provider: p, error: message, ...skipCooldown ? {} : { cooldown_seconds: cooldown.cooldown_seconds } });
         if (strictProviderMode) break;
       }
     }
@@ -2319,9 +3012,39 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     if (routingConfigResult.warning) routingInfo.config_warning = routingConfigResult.warning;
     const routingClass = String(routingInfo.routing_class || "general");
     if (Array.isArray(result.results)) {
+      const domainConstraints = extractDomainConstraints(query, includeDomains);
+      const extraBlocked = Array.isArray(pluginConfig.qualityBlockedDomains) ? pluginConfig.qualityBlockedDomains : [];
+      const extraAllowed = Array.isArray(pluginConfig.qualityAllowedDomains) ? pluginConfig.qualityAllowedDomains : [];
+      const spamFilter = filterSpamResults(result.results, extraBlocked, [...extraAllowed, ...domainConstraints]);
+      result.results = spamFilter.results;
       const rerank = rerankResultsForIntent(query, routingClass, result.results);
       result.results = rerank.results;
       if (rerank.metadata.reranked) result.metadata = { ...result.metadata || {}, intent_rerank: rerank.metadata };
+      let diversityDemoted = 0;
+      if (!domainConstraints.length) {
+        const diversity = rerankDomainDiversity(result.results);
+        result.results = diversity.results;
+        diversityDemoted = diversity.demotedCount;
+      }
+      if (spamFilter.removedDomains.length || diversityDemoted || domainConstraints.length) {
+        result.metadata = {
+          ...result.metadata || {},
+          result_filter: {
+            spam_removed_domains: spamFilter.removedDomains,
+            diversity_demoted_count: diversityDemoted,
+            domain_constraints: domainConstraints
+          }
+        };
+      }
+    }
+    if (freshness) {
+      result.metadata = { ...result.metadata || {}, freshness: freshnessMetadata(successfulProvider, freshness) };
+    }
+    if (searchType && searchType !== "search") {
+      result.metadata = { ...result.metadata || {}, search_type: searchTypeMetadata(successfulProvider, searchType) };
+    }
+    if (providerSupportsLocale(successfulProvider)) {
+      result.metadata = { ...result.metadata || {}, locale: resolveLocale(successfulProvider, runtimeConfig, query).metadata };
     }
     result.routing = routingInfo;
     result.cached = false;
@@ -2467,7 +3190,8 @@ function register(api) {
             Boolean(params?.include_images),
             Boolean(params?.include_raw_html),
             Boolean(params?.render_js),
-            runtimeConfig
+            runtimeConfig,
+            loadRoutingPreferences(pluginConfig).config.disabled_providers
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error2) {
@@ -2486,8 +3210,15 @@ var index_default = definePluginEntry({
 });
 export {
   CANONICAL_DOMAIN_RULES,
+  FAILURE_DECAY_SECONDS,
+  FRESHNESS_VALUES,
+  MAX_RETRY_AFTER_WAIT_SECONDS,
+  PROVIDER_FRESHNESS_FORMATS,
+  PROVIDER_SEARCH_TYPES,
   QueryAnalyzer,
+  RATE_LIMIT_MAX_ATTEMPTS,
   RETRY_JITTER_FRACTION,
+  SEARCH_TYPE_VALUES,
   __resetRuntimeStateForTests,
   buildAuthoritySignals,
   buildCacheKey,
@@ -2495,7 +3226,13 @@ export {
   computeRetryDelayMs,
   deduplicateResultsAcrossProviders,
   index_default as default,
+  freshnessMetadata,
+  keenableEndpoint,
+  normalizeFreshness,
+  normalizeSearchType,
+  parseRetryAfter,
   register,
   rerankResultsForIntent,
-  searchBrave
+  searchBrave,
+  searchTypeMetadata
 };
