@@ -6,7 +6,8 @@ import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
-import { buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
+import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
+import { __resetProviderStatsForTests, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
 
 export { deduplicateResultsAcrossProviders } from "./research.ts";
 export { CANONICAL_DOMAIN_RULES, buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
@@ -18,6 +19,16 @@ const DEFAULT_RESEARCH_EXTRACT_COUNT = 3;
 const DEFAULT_RESEARCH_TIME_BUDGET_SECONDS = 55;
 const COOLDOWN_STEPS_SECONDS = [60, 300, 1500, 3600];
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+// Failures older than this no longer escalate the cooldown ladder: a provider
+// that fails once every few hours should restart at the shortest cooldown step
+// instead of compounding toward the 1h cap.
+export const FAILURE_DECAY_SECONDS = 1800;
+// Rate-limit (429) responses get at most one retry per request; burning the full
+// retry budget against an exhausted quota only wastes time and provider credits.
+export const RATE_LIMIT_MAX_ATTEMPTS = 2;
+// Longest Retry-After wait we will honor inline. Anything above this is left to
+// the cooldown ladder instead of blocking the current request.
+export const MAX_RETRY_AFTER_WAIT_SECONDS = 30;
 
 const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "kilo_perplexity", "auto"];
 
@@ -136,12 +147,24 @@ class ProviderConfigError extends Error {}
 class ProviderRequestError extends Error {
   statusCode?: number;
   transient: boolean;
-  constructor(message: string, statusCode?: number, transient = false) {
+  retryAfter?: number;
+  constructor(message: string, statusCode?: number, transient = false, retryAfter?: number) {
     super(message);
     this.name = "ProviderRequestError";
     this.statusCode = statusCode;
     this.transient = transient;
+    this.retryAfter = retryAfter;
   }
+}
+
+// Parse a Retry-After response header (delta-seconds or HTTP-date) into seconds.
+export function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isNaN(dateMs)) return Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
+  return undefined;
 }
 
 const SENSITIVE_PATTERNS: RegExp[] = [
@@ -245,11 +268,21 @@ function providerInCooldown(provider: string): { inCooldown: boolean; remaining:
   return { inCooldown: remaining > 0, remaining: Math.max(0, remaining) };
 }
 
-function markProviderFailure(provider: string, message: string): Json {
+function markProviderFailure(provider: string, message: string, retryAfter?: number): Json {
   const state = loadProviderHealth();
   const now = Math.floor(Date.now() / 1000);
-  const failCount = Number(state?.[provider]?.failure_count || 0) + 1;
-  const cooldownSeconds = COOLDOWN_STEPS_SECONDS[Math.min(failCount - 1, COOLDOWN_STEPS_SECONDS.length - 1)];
+  let prevCount = Number(state?.[provider]?.failure_count || 0);
+  const lastFailureAt = Number(state?.[provider]?.last_failure_at || 0);
+  if (lastFailureAt && now - lastFailureAt > FAILURE_DECAY_SECONDS) {
+    // Stale failure history: restart the escalation ladder.
+    prevCount = 0;
+  }
+  const failCount = prevCount + 1;
+  let cooldownSeconds = COOLDOWN_STEPS_SECONDS[Math.min(failCount - 1, COOLDOWN_STEPS_SECONDS.length - 1)];
+  if (retryAfter != null && retryAfter > 0) {
+    // Respect the provider's explicit wait request, capped at the ladder max.
+    cooldownSeconds = Math.min(Math.max(cooldownSeconds, Math.floor(retryAfter)), COOLDOWN_STEPS_SECONDS[COOLDOWN_STEPS_SECONDS.length - 1]);
+  }
   state[provider] = {
     failure_count: failCount,
     cooldown_until: now + cooldownSeconds,
@@ -272,6 +305,7 @@ function resetProviderHealth(provider: string): void {
 export function __resetRuntimeStateForTests(): void {
   memoryCache.clear();
   for (const key of Object.keys(providerHealthState)) delete providerHealthState[key];
+  __resetProviderStatsForTests();
 }
 
 export function chooseTieWinner(query: string, winners: ProviderName[], priority: ProviderName[]): ProviderName {
@@ -317,7 +351,8 @@ function selectAutoProvider(query: string, availableProviders: ProviderName[], r
   const autoProviders = availableProviders.filter((provider) => routingConfig.auto_allow?.[provider] !== false);
   const orderedProviders = orderProvidersByPreference(autoProviders.length ? autoProviders : availableProviders, routingConfig);
   const analyzer = new QueryAnalyzer();
-  const analysis = analyzer.route(query, orderedProviders);
+  const adaptiveAdjustments = performanceAdjustments(orderedProviders);
+  const analysis = analyzer.route(query, orderedProviders, adaptiveAdjustments);
   let provider = analysis.provider;
   let reason = analysis.reason;
 
@@ -345,6 +380,7 @@ function selectAutoProvider(query: string, availableProviders: ProviderName[], r
       language_hint: analysis.analysis_summary?.language_hint,
       routing_class: analysis.analysis_summary?.routing_class,
       scores: analysis.scores,
+      adaptive_adjustments: analysis.adaptive_adjustments,
       auto_allow_excluded: autoExcluded,
     },
   };
@@ -453,7 +489,8 @@ async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Prom
     try { data = text ? JSON.parse(text) : {}; } catch {}
     if (!res.ok) {
       const detail = data?.error || data?.message || text || res.statusText;
-      throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, res.status, TRANSIENT_HTTP_CODES.has(res.status));
+      const retryAfter = res.status === 429 ? parseRetryAfter(res.headers.get("retry-after")) : undefined;
+      throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, res.status, TRANSIENT_HTTP_CODES.has(res.status), retryAfter);
     }
     return data ?? {};
   } catch (error: any) {
@@ -773,10 +810,12 @@ export class QueryAnalyzer {
       provider_matches: providerMatches,
     };
   }
-  route(query: string, availableProviders: ProviderName[]) {
+  route(query: string, availableProviders: ProviderName[], adaptiveAdjustments: Record<string, number> = {}) {
     const analysis = this.analyze(query);
     const scores = analysis.provider_scores as Record<ProviderName, number>;
-    const available = Object.fromEntries(availableProviders.map((p) => [p, scores[p] ?? 0])) as Record<ProviderName, number>;
+    // Bounded performance-memory adjustments (±1.0) break ties and nudge close
+    // calls without overriding strong query-class signals.
+    const available = Object.fromEntries(availableProviders.map((p) => [p, (scores[p] ?? 0) + (adaptiveAdjustments[p] || 0)])) as Record<ProviderName, number>;
     const providers = Object.keys(available) as ProviderName[];
     if (!providers.length) {
       return { provider: "serper" as ProviderName, confidence: 0, confidence_level: "low", reason: "no_available_providers", scores: {}, top_signals: [], exa_depth: "normal" };
@@ -802,6 +841,7 @@ export class QueryAnalyzer {
       confidence,
       confidence_level: confidence >= 0.7 ? "high" : confidence >= 0.4 ? "medium" : "low",
       reason: maxScore === 0 ? "no_signals_matched" : confidence >= 0.7 ? "high_confidence_match" : confidence >= 0.4 ? "moderate_confidence_match" : "low_confidence_match",
+      adaptive_adjustments: adaptiveAdjustments,
       exa_depth: exaDepth,
       scores: Object.fromEntries(providers.map((p) => [p, Number((available[p] || 0).toFixed(2))])),
       top_signals: (analysis.provider_matches[winner] || []).sort((a: any, b: any) => b.weight - a.weight).slice(0, 5).map((s: any) => ({ matched: s.matched, weight: s.weight })),
@@ -1124,7 +1164,19 @@ async function executeWithRetry(fn: () => Promise<SearchResponse>): Promise<Sear
     } catch (error: any) {
       lastError = error;
       if (!(error instanceof ProviderRequestError) || !error.transient || error.statusCode === 401 || error.statusCode === 403) break;
-      if (attempt < RETRY_BACKOFF_MS.length - 1) await sleep(computeRetryDelayMs(attempt));
+      const isRateLimited = error.statusCode === 429;
+      const attemptCap = isRateLimited ? Math.min(RETRY_BACKOFF_MS.length, RATE_LIMIT_MAX_ATTEMPTS) : RETRY_BACKOFF_MS.length;
+      if (attempt >= attemptCap - 1) break;
+      if (isRateLimited && error.retryAfter != null) {
+        if (error.retryAfter > MAX_RETRY_AFTER_WAIT_SECONDS) {
+          // Provider asked for a longer pause than we will block inline;
+          // let the cooldown ladder handle it instead.
+          break;
+        }
+        await sleep(error.retryAfter * 1000);
+      } else {
+        await sleep(computeRetryDelayMs(attempt));
+      }
     }
   }
   throw lastError;
@@ -1147,7 +1199,7 @@ function buildQualityReport(result: SearchResponse, routingInfo: Json, errors: J
   if (dedupCount > 0) extractReasons.push("duplicates_removed");
   const routingClass = routingInfo.routing_class ? String(routingInfo.routing_class) : null;
   return {
-    routing_decision: { provider: result.provider, requested_provider: routingInfo.requested_provider, routing_policy: routingInfo.routing_policy || "routing-v2", routing_class: routingInfo.routing_class, language_hint: routingInfo.language_hint, confidence_level: routingInfo.confidence_level, reason: routingInfo.reason, scores: routingInfo.scores || {} },
+    routing_decision: { provider: result.provider, requested_provider: routingInfo.requested_provider, routing_policy: routingInfo.routing_policy || "routing-v2", routing_class: routingInfo.routing_class, language_hint: routingInfo.language_hint, confidence_level: routingInfo.confidence_level, reason: routingInfo.reason, scores: routingInfo.scores || {}, adaptive_adjustments: routingInfo.adaptive_adjustments || {} },
     result_quality: { result_count: results.length, domain_count: domains.length, domains, domain_diversity: results.length ? Number((domains.length / results.length).toFixed(3)) : 0, thin_snippet_count: thinSnippetCount, dedup_count: dedupCount },
     fallback_chain: { providers_considered: providersConsidered, provider_errors: errors, cooldown_skips: cooldownSkips },
     extract_recommended: extractReasons.length > 0,
@@ -1274,16 +1326,21 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         query,
         researchProviders,
         executeSearch: async (p) => {
+          const startedAt = Date.now();
           try {
             const response = await executeWithRetry(() => runProvider(p as ProviderName));
+            recordProviderOutcome(p, (Date.now() - startedAt) / 1000, (response.results || []).length, false);
             resetProviderHealth(p);
             return response;
           } catch (error: any) {
-            markProviderFailure(p, String(error?.message || error));
+            if (!(error instanceof ProviderConfigError)) {
+              recordProviderOutcome(p, (Date.now() - startedAt) / 1000, 0, true);
+              markProviderFailure(p, String(error?.message || error), error?.retryAfter);
+            }
             throw error;
           }
         },
-        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig),
+        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
@@ -1320,15 +1377,22 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const successes: Array<[string, SearchResponse]> = [];
 
     for (const p of eligibleProviders) {
+      const startedAt = Date.now();
       try {
         const result = await executeWithRetry(() => runProvider(p));
+        recordProviderOutcome(p, (Date.now() - startedAt) / 1000, (result.results || []).length, false);
         resetProviderHealth(p);
         successes.push([p, result]);
         if (strictProviderMode || (result.results || []).length >= count || errors.length === 0) break;
       } catch (error: any) {
         const message = sanitizeOutput(String(error?.message || error));
-        const cooldown = strictProviderMode ? { cooldown_seconds: 0 } : markProviderFailure(p, message);
-        errors.push({ provider: p, error: message, ...(strictProviderMode ? {} : { cooldown_seconds: cooldown.cooldown_seconds }) });
+        // Configuration errors such as missing API keys are not provider
+        // failures: they must not mark cooldowns or pollute performance stats.
+        const isConfigError = error instanceof ProviderConfigError;
+        if (!isConfigError) recordProviderOutcome(p, (Date.now() - startedAt) / 1000, 0, true);
+        const skipCooldown = strictProviderMode || isConfigError;
+        const cooldown = skipCooldown ? { cooldown_seconds: 0 } : markProviderFailure(p, message, error?.retryAfter);
+        errors.push({ provider: p, error: message, ...(skipCooldown ? {} : { cooldown_seconds: cooldown.cooldown_seconds }) });
         if (strictProviderMode) break;
       }
     }
@@ -1357,9 +1421,35 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     const routingClass = String(routingInfo.routing_class || "general");
     if (Array.isArray(result.results)) {
+      // Explicit domain intent (site: queries, include_domains) expresses user
+      // constraints: constrained domains are exempt from spam filtering and
+      // diversity reranking is skipped entirely so those constraints win.
+      const domainConstraints = extractDomainConstraints(query, includeDomains);
+      const extraBlocked = Array.isArray(pluginConfig.qualityBlockedDomains) ? pluginConfig.qualityBlockedDomains : [];
+      const extraAllowed = Array.isArray(pluginConfig.qualityAllowedDomains) ? pluginConfig.qualityAllowedDomains : [];
+      const spamFilter = filterSpamResults(result.results, extraBlocked, [...extraAllowed, ...domainConstraints]);
+      result.results = spamFilter.results as SearchResult[];
+
       const rerank = rerankResultsForIntent(query, routingClass, result.results);
       result.results = rerank.results as SearchResult[];
       if (rerank.metadata.reranked) result.metadata = { ...(result.metadata || {}), intent_rerank: rerank.metadata };
+
+      let diversityDemoted = 0;
+      if (!domainConstraints.length) {
+        const diversity = rerankDomainDiversity(result.results);
+        result.results = diversity.results as SearchResult[];
+        diversityDemoted = diversity.demotedCount;
+      }
+      if (spamFilter.removedDomains.length || diversityDemoted || domainConstraints.length) {
+        result.metadata = {
+          ...(result.metadata || {}),
+          result_filter: {
+            spam_removed_domains: spamFilter.removedDomains,
+            diversity_demoted_count: diversityDemoted,
+            domain_constraints: domainConstraints,
+          },
+        };
+      }
     }
 
     result.routing = routingInfo;
@@ -1518,6 +1608,7 @@ export function register(api: any) {
             Boolean(params?.include_raw_html),
             Boolean(params?.render_js),
             runtimeConfig,
+            loadRoutingPreferences(pluginConfig).config.disabled_providers,
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error: any) {

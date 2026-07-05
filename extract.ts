@@ -399,6 +399,7 @@ export async function extractPlus(
   includeRawHtml = false,
   renderJs = false,
   runtimeConfig: RuntimeConfig = {},
+  disabledProviders: string[] = [],
 ): Promise<ExtractResponse> {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
@@ -421,9 +422,12 @@ export async function extractPlus(
     };
   }
 
-  const providers = requestedProvider === "auto"
+  const baseProviders = requestedProvider === "auto"
     ? EXTRACT_PROVIDER_PRIORITY
     : [requestedProvider, ...EXTRACT_PROVIDER_PRIORITY.filter((item) => item !== requestedProvider)] as ExtractProviderName[];
+  // Routing preferences' disabled_providers also apply to extraction fallback;
+  // an explicitly requested provider is still tried first, matching search semantics.
+  const providers = baseProviders.filter((item) => item === requestedProvider || !disabledProviders.includes(item));
 
   const errors: Json[] = [];
   for (const currentProvider of providers) {
