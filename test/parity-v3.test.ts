@@ -93,8 +93,8 @@ test("SerpBase search provider is explicit and normalized", async () => {
   });
 });
 
-test("extraction auto order is Tavily Exa Linkup Parallel Firecrawl You Keenable", () => {
-  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY, ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable"]);
+test("extraction auto order ends with the Keenable and Serper fallbacks", () => {
+  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY, ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"]);
 });
 
 test("Parallel extraction provider is normalized", async () => {

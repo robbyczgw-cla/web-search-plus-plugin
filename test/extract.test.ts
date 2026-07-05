@@ -308,8 +308,13 @@ test("register exposes web_extract_plus tool", () => {
 
 test("web_extract_plus checkFn requires extract-capable provider", () => {
   const registered = new Map<string, any>();
-  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { serperApiKey: "serper-test" } });
+  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { braveApiKey: "brave-test" } });
   assert.equal(registered.get("web_extract_plus").checkFn(), false);
+
+  // Serper is an extraction provider since the v2.9 sync (scrape.serper.dev).
+  registered.clear();
+  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { serperApiKey: "serper-test" } });
+  assert.equal(registered.get("web_extract_plus").checkFn(), true);
 
   registered.clear();
   register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { firecrawlApiKey: "fc-test" } });

@@ -8,6 +8,7 @@ import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
 import { __resetProviderStatsForTests, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
+import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
 
 export { deduplicateResultsAcrossProviders } from "./research.ts";
 export { CANONICAL_DOMAIN_RULES, buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
@@ -57,6 +58,11 @@ const PARAMETERS_SCHEMA = {
       type: "string",
       enum: ["day", "week", "month", "year"],
       description: "Unified recency filter. Providers with native date filters receive the mapped value; providers without support run the normal search and report freshness.applied=false in metadata.",
+    },
+    search_type: {
+      type: "string",
+      enum: ["search", "news"],
+      description: "Result vertical. Serper serves news natively via its /news endpoint; other providers run their normal search and report search_type.applied=false in metadata.",
     },
     include_domains: {
       type: "array",
@@ -117,6 +123,7 @@ type ToolParams = {
   depth?: "normal" | "deep" | "deep-reasoning";
   time_range?: "hour" | "day" | "week" | "month" | "year";
   freshness?: "day" | "week" | "month" | "year";
+  search_type?: "search" | "news";
   include_domains?: string[];
   exclude_domains?: string[];
   quality_report?: boolean;
@@ -502,6 +509,37 @@ export function freshnessMetadata(provider: string, requested: string): Json {
   const native = PROVIDER_FRESHNESS_FORMATS[provider]?.[requested];
   if (native != null) return { requested, applied: true, provider, native_value: native };
   return { requested, applied: false, provider, reason: `provider ${provider} does not support freshness` };
+}
+
+// =============================================================================
+// Unified search type — web vs. news vertical (Hermes v2.9 parity)
+// =============================================================================
+
+export const SEARCH_TYPE_VALUES = ["search", "news"] as const;
+
+// Providers whose API natively serves a Google-tab-style result vertical.
+// Providers absent from this table always run their normal web search and
+// report search_type.applied=false in metadata.
+export const PROVIDER_SEARCH_TYPES: Record<string, Record<string, string>> = {
+  // searchSerper: endpoint path https://google.serper.dev/<type>
+  serper: { search: "search", news: "news" },
+};
+
+export function normalizeSearchType(value?: string | null): string | null {
+  if (value == null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return null;
+  if (!(SEARCH_TYPE_VALUES as readonly string[]).includes(normalized)) {
+    throw new Error(`Invalid search_type value: ${JSON.stringify(value)}. Valid values: ${SEARCH_TYPE_VALUES.join(", ")}`);
+  }
+  return normalized;
+}
+
+// Describe whether a provider applied the requested search type.
+export function searchTypeMetadata(provider: string, requested: string): Json {
+  const native = PROVIDER_SEARCH_TYPES[provider]?.[requested];
+  if (native != null) return { requested, applied: true, provider, native_value: native };
+  return { requested, applied: false, provider, reason: `provider ${provider} does not support search_type ${requested}` };
 }
 
 function normalizeBraveCountry(value?: string): string {
@@ -931,12 +969,24 @@ export class QueryAnalyzer {
   }
 }
 
-async function searchSerper(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
-  const body: Json = { q: query, gl: "us", hl: "en", num: maxResults, autocorrect: true };
+async function searchSerper(query: string, apiKey: string, maxResults: number, timeRange?: string, locale?: ResolvedLocale, searchType: string = "search"): Promise<SearchResponse> {
+  const body: Json = { q: query, gl: locale?.country || "us", hl: locale?.language || "en", num: maxResults, autocorrect: true };
   const tbsMap: Record<string, string> = { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" };
   if (timeRange && tbsMap[timeRange]) body.tbs = tbsMap[timeRange];
-  const data = await httpJson("https://google.serper.dev/search", { method: "POST", headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const results = (data.organic || []).slice(0, maxResults).map((item: any, i: number) => ({ title: item.title || "", url: item.link || "", snippet: item.snippet || "", score: Number((1 - i * 0.1).toFixed(2)), date: item.date }));
+  const data = await httpJson(`https://google.serper.dev/${searchType}`, { method: "POST", headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  // /news answers carry results under "news" (title/link/snippet/date/source/
+  // imageUrl/position) instead of "organic"; reading only "organic" used to
+  // silently return zero results for the news vertical.
+  const rawItems = searchType === "news" ? data.news || [] : data.organic || [];
+  const results = rawItems.slice(0, maxResults).map((item: any, i: number) => {
+    const result: SearchResult = { title: item.title || "", url: item.link || "", snippet: item.snippet || "", score: Number((1 - i * 0.1).toFixed(2)), date: item.date };
+    if (searchType === "news") {
+      if (item.source != null) result.source = item.source;
+      if (item.imageUrl) result.thumbnail = item.imageUrl;
+      if (item.position != null) result.position = item.position;
+    }
+    return result;
+  });
   const answer = data?.answerBox?.answer || data?.answerBox?.snippet || data?.knowledgeGraph?.description || results[0]?.snippet || "";
   return { provider: "serper", query, results, images: [], answer, knowledge_graph: data.knowledgeGraph, related_searches: (data.relatedSearches || []).map((r: any) => r.query) };
 }
@@ -1009,9 +1059,9 @@ async function searchLinkup(query: string, apiKey: string, maxResults: number, i
   return { provider: "linkup", query, results, images: data.images || [], answer: data.answer || "", metadata: { depth: body.depth, output_type: body.outputType } };
 }
 
-async function searchQuerit(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
+async function searchQuerit(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[], locale?: ResolvedLocale): Promise<SearchResponse> {
   const timeMap: Record<string, string> = { day: "d1", week: "w1", month: "m1", year: "y1" };
-  const filters: Json = { languages: { include: ["en"] }, geo: { countries: { include: ["US"] } } };
+  const filters: Json = { languages: { include: [locale?.language || "en"] }, geo: { countries: { include: [(locale?.country || "us").toUpperCase()] } } };
   if (includeDomains?.length || excludeDomains?.length) {
     filters.sites = {};
     if (includeDomains?.length) filters.sites.include = includeDomains;
@@ -1060,8 +1110,8 @@ function mapFirecrawlTimeRange(timeRange?: string): string | undefined {
   return timeRange ? tbsMap[timeRange] || timeRange : undefined;
 }
 
-async function searchFirecrawl(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
-  const body: Json = { query, limit: maxResults, sources: ["web"], timeout: 30000, ignoreInvalidURLs: false, country: "US" };
+async function searchFirecrawl(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[], locale?: ResolvedLocale): Promise<SearchResponse> {
+  const body: Json = { query, limit: maxResults, sources: ["web"], timeout: 30000, ignoreInvalidURLs: false, country: (locale?.country || "us").toUpperCase() };
   const tbs = mapFirecrawlTimeRange(timeRange);
   if (tbs) body.tbs = tbs;
   if (includeDomains?.length) body.query += ` ${includeDomains.map((domain) => `site:${domain}`).join(" ")}`;
@@ -1187,13 +1237,13 @@ async function searchKiloPerplexity(query: string, apiKey: string, maxResults: n
   return searchPerplexityCompatible("kilo-perplexity", query, apiKey, maxResults, timeRange);
 }
 
-async function searchYou(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
+async function searchYou(query: string, apiKey: string, maxResults: number, timeRange?: string, locale?: ResolvedLocale): Promise<SearchResponse> {
   const url = new URL("https://ydc-index.io/v1/search");
   url.searchParams.set("query", query);
   url.searchParams.set("count", String(maxResults));
   url.searchParams.set("safesearch", "moderate");
-  url.searchParams.set("country", "US");
-  url.searchParams.set("language", "EN");
+  url.searchParams.set("country", (locale?.country || "us").toUpperCase());
+  url.searchParams.set("language", (locale?.language || "en").toUpperCase());
   if (timeRange) url.searchParams.set("freshness", timeRange);
   const data = await httpJson(url.toString(), { method: "GET", headers: { "X-API-KEY": apiKey, Accept: "application/json" } });
   const web = data?.results?.web || [];
@@ -1243,12 +1293,12 @@ async function searchKeenable(query: string, apiKey: string | undefined, maxResu
   return { provider: "keenable", query, results, images: [], answer: results[0]?.snippet || "", metadata };
 }
 
-async function searchSearxng(query: string, instanceUrl: string, maxResults: number, timeRange: string | undefined, runtimeConfig: RuntimeConfig): Promise<SearchResponse> {
+async function searchSearxng(query: string, instanceUrl: string, maxResults: number, timeRange: string | undefined, runtimeConfig: RuntimeConfig, locale?: ResolvedLocale): Promise<SearchResponse> {
   const base = await validateSearxngUrl(instanceUrl, runtimeConfig);
   const url = new URL(`${base}/search`);
   url.searchParams.set("q", query);
   url.searchParams.set("format", "json");
-  url.searchParams.set("language", "en");
+  url.searchParams.set("language", locale?.language || "en");
   url.searchParams.set("safesearch", "0");
   if (timeRange) url.searchParams.set("time_range", timeRange);
   const data = await httpJson(url.toString(), { method: "GET", headers: { Accept: "application/json" } });
@@ -1328,8 +1378,10 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
     const requestedProvider = normalizeRequestedProvider(params.provider);
     let freshness: string | null = null;
+    let searchType: string | null = null;
     try {
       freshness = normalizeFreshness(params.freshness);
+      searchType = normalizeSearchType(params.search_type);
     } catch (error: any) {
       return { ok: false, payload: { error: `Search failed: ${String(error?.message || error)}` } };
     }
@@ -1401,23 +1453,24 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     const runProvider = async (p: ProviderName): Promise<SearchResponse> => {
       const key = validateApiKey(p, runtimeConfig);
-      if (p === "serper") return searchSerper(query, key, count, timeRange);
-      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, time_range: timeRange });
+      const locale = providerSupportsLocale(p) ? resolveLocale(p, runtimeConfig, query) : undefined;
+      if (p === "serper") return searchSerper(query, key, count, timeRange, locale, PROVIDER_SEARCH_TYPES.serper[searchType || "search"] || "search");
+      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
       if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
       if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
-      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains, locale);
       if (p === "exa") {
         const exaDepth = (params.depth || exaDepthHint || "normal") as "normal" | "deep" | "deep-reasoning";
         return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
       }
-      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains);
+      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
       if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
       if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
       if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
       if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
-      if (p === "you") return searchYou(query, key, count, timeRange);
+      if (p === "you") return searchYou(query, key, count, timeRange, locale);
       if (p === "keenable") return searchKeenable(query, key || undefined, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
-      return searchSearxng(query, key, count, timeRange, runtimeConfig);
+      return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
     };
 
     if (params.mode === "research") {
@@ -1474,6 +1527,12 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
           freshness: { requested: freshness, per_provider: researchProviders.map((p) => freshnessMetadata(p, freshness!)) },
         };
       }
+      if (searchType && searchType !== "search") {
+        result.metadata = {
+          ...(result.metadata || {}),
+          search_type: { requested: searchType, per_provider: researchProviders.map((p) => searchTypeMetadata(p, searchType!)) },
+        };
+      }
       routingInfo = { ...routingInfo, mode: "research", provider: "research" };
       if (cooldownSkips.length) routingInfo.cooldown_skips = cooldownSkips;
       if (routingConfigResult.warning) routingInfo.config_warning = routingConfigResult.warning;
@@ -1484,6 +1543,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     const cacheContext = {
       time_range: timeRange,
+      search_type: searchType || "search",
+      locale: providerSupportsLocale(provider) ? (({ country, language }) => ({ country, language }))(resolveLocale(provider, runtimeConfig, query)) : null,
       include_domains: includeDomains ? [...includeDomains].sort() : null,
       exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
       exa_depth: params.depth || exaDepthHint || "normal",
@@ -1582,6 +1643,14 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     if (freshness) {
       result.metadata = { ...(result.metadata || {}), freshness: freshnessMetadata(successfulProvider, freshness) };
+    }
+    if (searchType && searchType !== "search") {
+      result.metadata = { ...(result.metadata || {}), search_type: searchTypeMetadata(successfulProvider, searchType) };
+    }
+    if (providerSupportsLocale(successfulProvider)) {
+      // Locale transparency (freshness-metadata pattern): report the resolved
+      // locale and per-value source for providers with locale parameters.
+      result.metadata = { ...(result.metadata || {}), locale: resolveLocale(successfulProvider, runtimeConfig, query).metadata };
     }
 
     result.routing = routingInfo;

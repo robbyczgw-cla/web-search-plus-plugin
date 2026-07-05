@@ -18,7 +18,8 @@ test.beforeEach(() => {
 
 test("keenable is registered as lowest-priority provider", () => {
   assert.equal(DEFAULT_PROVIDER_PRIORITY[DEFAULT_PROVIDER_PRIORITY.length - 1], "keenable");
-  assert.equal(EXTRACT_PROVIDER_PRIORITY[EXTRACT_PROVIDER_PRIORITY.length - 1], "keenable");
+  // Serper's webpage scraper sits after keenable as the extraction last resort.
+  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY.slice(-2), ["keenable", "serper"]);
 });
 
 test("keyed keenable search uses the authenticated endpoint", async (t) => {

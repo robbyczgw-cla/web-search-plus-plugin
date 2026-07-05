@@ -4,7 +4,7 @@ import type { RuntimeConfig } from "./runtime-config.ts";
 
 type Json = Record<string, any>;
 
-export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable";
+export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable" | "serper";
 export type ExtractFormat = "markdown" | "html";
 
 export type ExtractImage = {
@@ -38,8 +38,8 @@ export type ExtractResponse = {
 };
 
 // Extraction fallback order: Tavily-first stays; Keenable is a low-priority
-// fallback so it never displaces a configured keyed provider.
-export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable"];
+// fallback and Serper's webpage scraper is a last-resort fallback at the end.
+export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -47,7 +47,7 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper"],
       description: "Force a provider, or use auto fallback routing (default: auto)",
     },
     format: {
@@ -145,6 +145,7 @@ function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeC
     you: runtimeConfig.youApiKey,
     parallel: runtimeConfig.parallelApiKey,
     keenable: runtimeConfig.keenableApiKey,
+    serper: runtimeConfig.serperApiKey,
   };
   return keyMap[provider];
 }
@@ -404,6 +405,13 @@ export async function extractExa(
   return { provider: "exa", results };
 }
 
+// Default Parallel full_content budgets: high enough that long pages are
+// evaluated fairly against other extraction providers instead of being
+// silently capped. Operators can lower them via
+// pluginConfig.parallelMaxCharsPerResult / parallelMaxCharsTotal.
+export const PARALLEL_MAX_CHARS_PER_RESULT = 60000;
+export const PARALLEL_MAX_CHARS_TOTAL = 120000;
+
 export async function extractParallel(
   urls: string[],
   apiKey: string,
@@ -411,6 +419,7 @@ export async function extractParallel(
   _includeImages = false,
   includeRawHtml = false,
   _renderJs = false,
+  budgets: { maxCharsPerResult?: number; maxCharsTotal?: number } = {},
   apiUrl = "https://api.parallel.ai/v1beta/tasks/extract",
   timeout = 30,
 ): Promise<ExtractResponse> {
@@ -419,8 +428,8 @@ export async function extractParallel(
     headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
       urls,
-      max_chars_total: 20000,
-      advanced_settings: { full_content: { max_chars_per_result: 8000 } },
+      max_chars_total: budgets.maxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
+      advanced_settings: { full_content: { max_chars_per_result: budgets.maxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT } },
     }),
   }, timeout);
 
@@ -565,6 +574,51 @@ export async function extractKeenable(
   return { provider: "keenable", results };
 }
 
+// Extract page content via Serper's webpage scraper. POST
+// {"url": ..., "includeMarkdown": true} with the X-API-KEY header; the answer
+// carries "text" plus optional "markdown", "metadata", "jsonld" and "credits".
+// The endpoint accepts one URL per call, so multi-URL requests loop with
+// per-URL error items. The scraper returns no raw HTML; html/raw-html/render-js
+// options are accepted for tool compatibility but have no upstream effect.
+export async function extractSerper(
+  urls: string[],
+  apiKey: string,
+  _outputFormat: ExtractFormat = "markdown",
+  _includeImages = false,
+  _includeRawHtml = false,
+  _renderJs = false,
+  apiUrl = "https://scrape.serper.dev",
+  timeout = 30,
+): Promise<ExtractResponse> {
+  const results: ExtractResult[] = [];
+  for (const url of urls) {
+    try {
+      const data = await requestJson(apiUrl, {
+        method: "POST",
+        headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ url, includeMarkdown: true }),
+      }, timeout);
+      if (data?.error) {
+        results.push(normalizeExtractResult("serper", url, "", "", undefined, { error: String(data.error) }));
+        continue;
+      }
+      // Field names are parsed tolerantly in case Serper renames them.
+      const markdown = String(data?.markdown || "");
+      const text = String(data?.text || data?.content || "");
+      const content = markdown || text;
+      const metadata = data?.metadata && typeof data.metadata === "object" ? data.metadata : {};
+      const title = String(metadata.title || data?.title || "");
+      const extra: Json = { metadata: Object.keys(metadata).length ? metadata : undefined };
+      if (data?.jsonld != null) extra.jsonld = data.jsonld;
+      if (data?.credits != null) extra.credits = data.credits;
+      results.push(normalizeExtractResult("serper", url, title, content, content, extra));
+    } catch (error: any) {
+      results.push(normalizeExtractResult("serper", url, "", "", undefined, { error: String(error?.message || error) }));
+    }
+  }
+  return { provider: "serper", results };
+}
+
 export async function extractPlus(
   urls: string[],
   provider: ExtractProviderName | "auto" = "auto",
@@ -637,11 +691,16 @@ export async function extractPlus(
       } else if (currentProvider === "linkup") {
         result = await extractLinkup(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "parallel") {
-        result = await extractParallel(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractParallel(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs, {
+          maxCharsPerResult: runtimeConfig.parallelMaxCharsPerResult,
+          maxCharsTotal: runtimeConfig.parallelMaxCharsTotal,
+        });
       } else if (currentProvider === "firecrawl") {
         result = await extractFirecrawl(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "keenable") {
         result = await extractKeenable(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
+      } else if (currentProvider === "serper") {
+        result = await extractSerper(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       } else {
         result = await extractYou(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       }
