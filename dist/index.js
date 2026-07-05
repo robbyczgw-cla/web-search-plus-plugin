@@ -3,7 +3,73 @@ import crypto from "crypto";
 import dns2 from "dns/promises";
 import net2 from "net";
 
-// node_modules/openclaw/dist/config-schema-CNBEzHkZ.js
+// node_modules/openclaw/dist/plugin-cache-primitives-BXH3UUqE.js
+var PluginLruCache = class {
+  #defaultMaxEntries;
+  #maxEntries;
+  #entries = /* @__PURE__ */ new Map();
+  constructor(defaultMaxEntries) {
+    this.#defaultMaxEntries = normalizeMaxEntries(defaultMaxEntries, 1);
+    this.#maxEntries = this.#defaultMaxEntries;
+  }
+  get maxEntries() {
+    return this.#maxEntries;
+  }
+  get size() {
+    return this.#entries.size;
+  }
+  setMaxEntriesForTest(value) {
+    this.#maxEntries = typeof value === "number" ? normalizeMaxEntries(value, this.#defaultMaxEntries) : this.#defaultMaxEntries;
+    this.#evictOldestEntries();
+  }
+  clear() {
+    this.#entries.clear();
+  }
+  get(cacheKey) {
+    const cached = this.getResult(cacheKey);
+    return cached.hit ? cached.value : void 0;
+  }
+  getResult(cacheKey) {
+    if (!this.#entries.has(cacheKey)) return { hit: false };
+    const cached = this.#entries.get(cacheKey);
+    this.#entries.delete(cacheKey);
+    this.#entries.set(cacheKey, cached);
+    return {
+      hit: true,
+      value: cached
+    };
+  }
+  set(cacheKey, value) {
+    if (this.#entries.has(cacheKey)) this.#entries.delete(cacheKey);
+    this.#entries.set(cacheKey, value);
+    this.#evictOldestEntries();
+  }
+  #evictOldestEntries() {
+    while (this.#entries.size > this.#maxEntries) {
+      const oldestEntry = this.#entries.keys().next();
+      if (oldestEntry.done) break;
+      this.#entries.delete(oldestEntry.value);
+    }
+  }
+};
+function normalizeMaxEntries(value, fallback) {
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.floor(value));
+}
+
+// node_modules/openclaw/dist/ansi-Dqm1lzVL.js
+var ANSI_CSI_PATTERN = "\\x1b\\[[\\x20-\\x3f]*[\\x40-\\x7e]";
+var OSC8_PATTERN = "\\x1b\\]8;;.*?(?:\\x1b\\\\|\\x07)|\\x1b\\]8;;(?:\\x1b\\\\|\\x07)";
+var ANSI_CSI_REGEX = new RegExp(ANSI_CSI_PATTERN, "g");
+var OSC8_REGEX = new RegExp(OSC8_PATTERN, "g");
+var graphemeSegmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter(void 0, { granularity: "grapheme" }) : null;
+
+// node_modules/openclaw/dist/schema-validator-CwMY3Tzl.js
+import { createRequire } from "node:module";
+var require2 = createRequire(import.meta.url);
+var schemaCache = new PluginLruCache(512);
+
+// node_modules/openclaw/dist/config-schema-Crc2mMHj.js
 function error(message) {
   return {
     success: false,
@@ -35,7 +101,7 @@ function emptyPluginConfigSchema() {
   };
 }
 
-// node_modules/openclaw/dist/plugin-entry-Bf1JrfrU.js
+// node_modules/openclaw/dist/plugin-entry-DmhVEOw1.js
 function createCachedLazyValueGetter(value, fallback) {
   let resolved = false;
   let cached;
