@@ -12,6 +12,7 @@
 - Added opt-in semantic spans (`spans`/`spans_query`) with deterministic lexical ranking, non-overlapping passages, NFC Unicode-codepoint half-open offsets, and `within_preview` flags. (Hermes v3.1.0)
 - Added calibrated result-set diversity diagnostics (registrable domains, canonical URLs, snippet trigrams, provider entropy) and opt-in Research duplicate re-ranking via `qualityDiversityRerank`. (Hermes v3.1.0)
 - Added a derived `self_hosted` routing profile for SearXNG/Keenable, readiness errors, explicit-profile override diagnostics, extraction auto-allow enforcement, and onboarding status/preset support. (Hermes v3.1.0)
+- Added a bounded Streamable HTTP MCP transport for the Hound sidecar: strict loopback endpoint validation, redirects disabled, finite deadlines, response-size limits, sanitized failure codes, and best-effort session termination. (Hermes v3.2.0)
 
 ### Fixed
 - Removed stale Perplexity/Kilo credential, freshness, setup, and provider claims from active package metadata and documentation after the source-only provider removal. Historical changelog entries remain intact. (Hermes v3.0.2)

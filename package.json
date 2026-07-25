@@ -29,6 +29,7 @@
     "extract.ts",
     "research.ts",
     "span-extraction.ts",
+    "hound-transport.ts",
     "quality.ts",
     "diversity.ts",
     "provider-stats.ts",
