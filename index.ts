@@ -47,6 +47,11 @@ const PARAMETERS_SCHEMA = {
       enum: SEARCH_PROVIDER_ENUM,
       description: "Force a provider, or use auto routing (default: auto)",
     },
+    routing_override_provider: {
+      type: "string",
+      enum: SEARCH_PROVIDER_ENUM.filter((provider) => provider !== "auto"),
+      description: "Disable automatic search routing and force this provider for this request. Reported visibly in routing.override_provider.",
+    },
     count: { type: "number", description: "Number of results (default: 5)" },
     depth: {
       type: "string",
@@ -127,6 +132,7 @@ const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "q
 type ToolParams = {
   query: string;
   provider?: ProviderName | "auto";
+  routing_override_provider?: ProviderName;
   count?: number;
   depth?: "normal" | "deep" | "deep-reasoning";
   time_range?: "hour" | "day" | "week" | "month" | "year";
@@ -1325,7 +1331,12 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
 
     const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
-    const requestedProvider = normalizeRequestedProvider(params.provider);
+    const routingOverride = params.routing_override_provider == null ? null : normalizeRequestedProvider(params.routing_override_provider);
+    if (routingOverride === "auto") return { ok: false, payload: { error: "Search failed: routing_override_provider must name a provider" } };
+    if (routingOverride && params.provider && params.provider !== "auto" && params.provider !== routingOverride) {
+      return { ok: false, payload: { error: "Search failed: provider and routing_override_provider disagree" } };
+    }
+    const requestedProvider = routingOverride || normalizeRequestedProvider(params.provider);
     let freshness: string | null = null;
     let searchType: string | null = null;
     try {
@@ -1399,6 +1410,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     routingInfo = {
       ...routingInfo,
       profile: routingConfig.profile,
+      ...(routingOverride ? { override_provider: routingOverride, override_mode: "forced_provider" } : {}),
       ...(routingConfig.profile === "self_hosted" && requestedProvider !== "auto"
         ? { explicit_profile_override: true }
         : {}),
@@ -1851,9 +1863,11 @@ export function register(api: any) {
           const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
           const runtimeConfig = getRuntimeConfig(pluginConfig);
           const routingPreferences = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
+          const routingOverride = typeof params?.routing_override_provider === "string" ? params.routing_override_provider : null;
+          if (routingOverride && params?.provider && params.provider !== "auto" && params.provider !== routingOverride) throw new Error("provider and routing_override_provider disagree");
           const result = await extractPlus(
             Array.isArray(params?.urls) ? params.urls : typeof params?.urls === "string" ? [params.urls] : [],
-            params?.provider || "auto",
+            routingOverride || params?.provider || "auto",
             params?.format === "html" ? "html" : "markdown",
             Boolean(params?.include_images),
             Boolean(params?.include_raw_html),
@@ -1870,6 +1884,7 @@ export function register(api: any) {
               deadlineSeconds: params?.deadline_seconds,
             },
           );
+          if (routingOverride) result.routing = { ...(result.routing || { requested_provider: routingOverride }), override_provider: routingOverride, override_mode: "forced_provider" };
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error: any) {
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };

@@ -200,6 +200,23 @@ test("web_search_plus uses strict default provider mode when auto routing is dis
   );
 });
 
+test("routing_override_provider forces a visible deterministic provider", async () => {
+  const { file } = makeRoutingConfigPath();
+  const registered = withRegistered({ routingConfigPath: file, serperApiKey: "serper-test", braveApiKey: "brave-test" });
+  await withMockedFetch(
+    (url) => {
+      assert.match(url, /serper/);
+      return mockJsonResponse({ organic: [{ title: "Forced", link: "https://example.com/forced", snippet: "forced source" }] });
+    },
+    async () => {
+      const payload = JSON.parse((await registered.get("web_search_plus").execute("override", { query: "anything", provider: "auto", routing_override_provider: "serper" })).content[0].text);
+      assert.equal(payload.provider, "serper");
+      assert.equal(payload.routing.override_provider, "serper");
+      assert.equal(payload.routing.override_mode, "forced_provider");
+    },
+  );
+});
+
 test("invalid provider config falls back to defaults", async () => {
   const { file } = makeRoutingConfigPath();
   const registered = withRegistered({ routingConfigPath: file, routingPreferences: { disabled_providers: ["bogus"] } });

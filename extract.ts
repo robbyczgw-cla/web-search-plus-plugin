@@ -157,6 +157,11 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
       enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
       description: "Force a provider, or use auto fallback routing (default: auto)",
     },
+    routing_override_provider: {
+      type: "string",
+      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
+      description: "Disable automatic extraction routing and force this provider for this request. Reported visibly in routing.override_provider.",
+    },
     format: {
       type: "string",
       enum: ["markdown", "html"],

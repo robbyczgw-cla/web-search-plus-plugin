@@ -90,6 +90,8 @@ Set `spans: true` to add up to three deterministic, non-overlapping passages per
 
 The same tool includes passive shadow-quality aggregates from completed successful search requests (result/domain counts, thin snippets, and degraded outcomes). They are observational only and never change routing or returned sources.
 
+Use `routing_override_provider` on `web_search_plus` or `web_extract_plus` to force a configured provider for one call and disable automatic selection. The response's `routing.override_provider` makes that override explicit.
+
 Use explicit OpenClaw plugin config fields. The runtime uses only plugin config fields for credentials.
 
 ### Search provider fields

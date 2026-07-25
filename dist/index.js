@@ -878,6 +878,11 @@ var EXTRACT_PARAMETERS_SCHEMA = {
       enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
       description: "Force a provider, or use auto fallback routing (default: auto)"
     },
+    routing_override_provider: {
+      type: "string",
+      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
+      description: "Disable automatic extraction routing and force this provider for this request. Reported visibly in routing.override_provider."
+    },
     format: {
       type: "string",
       enum: ["markdown", "html"],
@@ -2449,6 +2454,11 @@ var PARAMETERS_SCHEMA = {
       enum: SEARCH_PROVIDER_ENUM,
       description: "Force a provider, or use auto routing (default: auto)"
     },
+    routing_override_provider: {
+      type: "string",
+      enum: SEARCH_PROVIDER_ENUM.filter((provider) => provider !== "auto"),
+      description: "Disable automatic search routing and force this provider for this request. Reported visibly in routing.override_provider."
+    },
     count: { type: "number", description: "Number of results (default: 5)" },
     depth: {
       type: "string",
@@ -3813,7 +3823,12 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     const query = String(params.query || "").trim();
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
     const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
-    const requestedProvider = normalizeRequestedProvider(params.provider);
+    const routingOverride = params.routing_override_provider == null ? null : normalizeRequestedProvider(params.routing_override_provider);
+    if (routingOverride === "auto") return { ok: false, payload: { error: "Search failed: routing_override_provider must name a provider" } };
+    if (routingOverride && params.provider && params.provider !== "auto" && params.provider !== routingOverride) {
+      return { ok: false, payload: { error: "Search failed: provider and routing_override_provider disagree" } };
+    }
+    const requestedProvider = routingOverride || normalizeRequestedProvider(params.provider);
     let freshness = null;
     let searchType = null;
     try {
@@ -3879,6 +3894,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     routingInfo = {
       ...routingInfo,
       profile: routingConfig.profile,
+      ...routingOverride ? { override_provider: routingOverride, override_mode: "forced_provider" } : {},
       ...routingConfig.profile === "self_hosted" && requestedProvider !== "auto" ? { explicit_profile_override: true } : {}
     };
     if (provider === "exa" && params.depth) exaDepthHint = params.depth;
@@ -4291,9 +4307,11 @@ function register(api) {
           const pluginConfig = api.pluginConfig ?? {};
           const runtimeConfig = getRuntimeConfig(pluginConfig);
           const routingPreferences = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
+          const routingOverride = typeof params?.routing_override_provider === "string" ? params.routing_override_provider : null;
+          if (routingOverride && params?.provider && params.provider !== "auto" && params.provider !== routingOverride) throw new Error("provider and routing_override_provider disagree");
           const result = await extractPlus(
             Array.isArray(params?.urls) ? params.urls : typeof params?.urls === "string" ? [params.urls] : [],
-            params?.provider || "auto",
+            routingOverride || params?.provider || "auto",
             params?.format === "html" ? "html" : "markdown",
             Boolean(params?.include_images),
             Boolean(params?.include_raw_html),
@@ -4310,6 +4328,7 @@ function register(api) {
               deadlineSeconds: params?.deadline_seconds
             }
           );
+          if (routingOverride) result.routing = { ...result.routing || { requested_provider: routingOverride }, override_provider: routingOverride, override_mode: "forced_provider" };
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error2) {
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error2?.message || error2) })) }] };
