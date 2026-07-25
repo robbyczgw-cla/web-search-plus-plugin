@@ -103,6 +103,7 @@ const ROUTING_CONFIG_ACTIONS = [
   "enable_provider",
   "set_confidence_threshold",
   "set_profile",
+  "set_auto_allow",
   "reset",
 ];
 
@@ -1341,9 +1342,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const routingConfig = applyRoutingProfile(routingConfigResult.config);
     const configuredProviders = ALL_PROVIDERS.filter((p) => providerIsConfigured(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider) => !routingConfig.disabled_providers.includes(provider));
-    const autoEnabledProviders = routingConfig.profile === "self_hosted"
-      ? enabledProviders.filter((candidate) => routingConfig.auto_allow[candidate] !== false)
-      : enabledProviders;
+    const autoEnabledProviders = enabledProviders.filter((candidate) => routingConfig.auto_allow[candidate] !== false);
     const braveOptions = {
       safesearch: runtimeConfig.braveSafesearch,
     };
@@ -1360,12 +1359,14 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (!enabledProviders.length) {
         return { ok: false, payload: { error: "Search failed: all configured providers are disabled in routing preferences" } };
       }
-      if (routingConfig.profile === "self_hosted" && !autoEnabledProviders.length) {
+      if (!autoEnabledProviders.length) {
         return {
           ok: false,
           payload: {
-            error: "Search failed: self_hosted profile requires pluginConfig.searxngInstanceUrl or Keenable credentials/public-tier opt-in",
-            routing: { requested_provider: "auto", profile: "self_hosted" },
+            error: routingConfig.profile === "self_hosted"
+              ? "Search failed: self_hosted profile requires pluginConfig.searxngInstanceUrl or Keenable credentials/public-tier opt-in"
+              : "Search failed: no configured providers are allowed for automatic routing; select one explicitly or enable auto_allow",
+            routing: { requested_provider: "auto", profile: routingConfig.profile },
           },
         };
       }
@@ -1435,7 +1436,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (p === "you") return searchYou(query, key, count, timeRange, locale);
       if (p === "keenable") return searchKeenable(query, key || undefined, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
       if (p === "hound") {
-        if (searchType !== "search") throw new ProviderConfigError("Hound supports search_type=search only");
+        if (searchType && searchType !== "search") throw new ProviderConfigError("Hound supports search_type=search only");
         return searchHound(
           query,
           key,
@@ -1754,6 +1755,13 @@ function executeRoutingConfigAction(pluginConfig: Record<string, any>, params: R
     if (profile !== "standard" && profile !== "self_hosted") throw new Error("set_profile requires profile=standard or self_hosted");
     return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
       config.profile = profile;
+    }));
+  }
+  if (action === "set_auto_allow") {
+    if (typeof params?.enabled !== "boolean") throw new Error("set_auto_allow requires enabled=true or false");
+    const provider = normalizeProviderName(params?.provider);
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.auto_allow = { ...config.auto_allow, [provider]: params.enabled };
     }));
   }
   throw new Error(`Unsupported routing config action: ${action}`);
