@@ -905,6 +905,23 @@ function selectResearchProviders(primaryProvider, providerPriority, availablePro
   }
   return ordered;
 }
+function withResearchDeadline(promise, remainingSeconds) {
+  if (remainingSeconds == null) return promise;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("research_deadline_exceeded")), Math.max(1, remainingSeconds * 1e3));
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error2) => {
+        clearTimeout(timer);
+        reject(error2);
+      }
+    );
+  });
+}
 async function runResearchMode(options) {
   const { query, researchProviders, executeSearch: executeSearch2, extractUrls, maxResults } = options;
   const maxExtractUrls = options.maxExtractUrls ?? 3;
@@ -913,20 +930,30 @@ async function runResearchMode(options) {
   const start = now();
   const budgetExhausted = () => timeBudgetSeconds != null && now() - start >= timeBudgetSeconds;
   const providerErrors = [];
+  const providerAttempts = /* @__PURE__ */ new Map();
   const launched = [];
   for (const [index, provider] of researchProviders.entries()) {
     if (budgetExhausted()) {
-      providerErrors.push({ provider, error: "skipped: research time budget exhausted" });
+      const error2 = "skipped: research time budget exhausted";
+      providerErrors.push({ provider, error: error2 });
+      providerAttempts.set(index, { provider, outcome: "skipped", result_count: 0, error: error2 });
       continue;
     }
-    launched.push({ index, provider, promise: executeSearch2(provider) });
+    const elapsed = now() - start;
+    const remaining = timeBudgetSeconds == null ? null : Math.max(0, timeBudgetSeconds - elapsed);
+    launched.push({ index, provider, promise: withResearchDeadline(executeSearch2(provider), remaining) });
   }
   const resultsByIndex = /* @__PURE__ */ new Map();
   for (const { index, provider, promise } of launched) {
     try {
-      resultsByIndex.set(index, [provider, await promise]);
+      const response = await promise;
+      resultsByIndex.set(index, [provider, response]);
+      providerAttempts.set(index, { provider, outcome: "success", result_count: (response.results || []).length });
     } catch (error2) {
-      providerErrors.push({ provider, error: String(error2?.message || error2) });
+      const deadlineExceeded = String(error2?.message || error2) === "research_deadline_exceeded";
+      const message = deadlineExceeded ? "cancelled: research time budget exceeded after provider start" : String(error2?.message || error2);
+      providerErrors.push({ provider, error: message });
+      providerAttempts.set(index, { provider, outcome: deadlineExceeded ? "cancelled" : "failed", result_count: 0, error: message });
     }
   }
   const providerResults = [...resultsByIndex.keys()].sort((a, b) => a - b).map((index) => resultsByIndex.get(index));
@@ -951,18 +978,22 @@ async function runResearchMode(options) {
     }
   }
   const routing = {
-    providers_queried: providerResults.map(([provider]) => provider),
+    providers_queried: launched.map(({ provider }) => provider),
+    provider_attempts: [...providerAttempts.entries()].sort(([left], [right]) => left - right).map(([, attempt]) => attempt),
     provider_errors: providerErrors,
     extraction_provider: extracted.provider ?? null
   };
   if (extractionError) routing.extraction_error = extractionError;
   const sourceSummaries = extracted.results || [];
+  const status = providerResults.length === 0 ? "failed" : providerErrors.length > 0 || extractionError ? "degraded" : "success";
   return {
+    status,
     mode: "research",
     provider: "research",
     query,
     results: deduped,
     source_summaries: sourceSummaries,
+    ...status === "failed" ? { error: "All research providers failed" } : {},
     routing,
     metadata: {
       dedup_count: dedupCount,

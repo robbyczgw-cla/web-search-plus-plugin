@@ -76,7 +76,7 @@ For canonical-source classes (official/vendor-release, docs/api, official/regula
 
 ## Research mode
 
-`web_search_plus(mode="research")` queries up to 3 providers concurrently, deduplicates across them, and extracts the top `research_extract_count` URLs (default 3) into `source_summaries` for grounding. Use `research_providers` to pick providers explicitly and `research_time_budget` (seconds, default 55) to cap wall-clock cost. Failures are best-effort diagnostics, not hard errors.
+`web_search_plus(mode="research")` queries up to 3 providers concurrently, deduplicates across them, and extracts the top `research_extract_count` URLs (default 3) into `source_summaries` for grounding. Use `research_providers` to pick providers explicitly and `research_time_budget` (seconds, default 55) to cap wall-clock cost. `routing.provider_attempts` preserves per-provider outcomes; partial evidence is degraded and total fan-out failure is a failed envelope.
 
 ## Usage guidance
 

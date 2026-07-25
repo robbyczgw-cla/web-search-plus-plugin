@@ -11,6 +11,7 @@
 
 ### Fixed
 - Removed stale Perplexity/Kilo credential, freshness, setup, and provider claims from active package metadata and documentation after the source-only provider removal. Historical changelog entries remain intact. (Hermes v3.0.2)
+- Restored the full Research attempt envelope: each provider launch/skip records provenance and outcome, started deadline overruns are classified as cancelled, partial failures degrade the response, and total fan-out failure returns `status="failed"` instead of a successful empty result. The single post-merge quality pass remains authoritative. (Hermes v3.0.2)
 
 ## [3.2.0] - 2026-07-05
 

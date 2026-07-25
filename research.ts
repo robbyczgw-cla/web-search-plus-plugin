@@ -72,6 +72,31 @@ export type RunResearchModeOptions = {
   nowFn?: () => number;
 };
 
+type ResearchAttempt = {
+  provider: string;
+  outcome: "success" | "failed" | "skipped" | "cancelled";
+  result_count: number;
+  error?: string;
+};
+
+function withResearchDeadline<T>(promise: Promise<T>, remainingSeconds: number | null): Promise<T> {
+  if (remainingSeconds == null) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("research_deadline_exceeded")), Math.max(1, remainingSeconds * 1000));
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 // Research mode is intentionally best-effort: provider/extraction failures produce
 // diagnostics and partial search results instead of throwing away the whole response.
 // Provider searches run concurrently so wall-clock cost tracks the slowest single
@@ -89,21 +114,33 @@ export async function runResearchMode(options: RunResearchModeOptions): Promise<
   const budgetExhausted = () => timeBudgetSeconds != null && now() - start >= timeBudgetSeconds;
 
   const providerErrors: Json[] = [];
+  const providerAttempts = new Map<number, ResearchAttempt>();
   const launched: Array<{ index: number; provider: string; promise: Promise<ResearchSearchResponse> }> = [];
   for (const [index, provider] of researchProviders.entries()) {
     if (budgetExhausted()) {
-      providerErrors.push({ provider, error: "skipped: research time budget exhausted" });
+      const error = "skipped: research time budget exhausted";
+      providerErrors.push({ provider, error });
+      providerAttempts.set(index, { provider, outcome: "skipped", result_count: 0, error });
       continue;
     }
-    launched.push({ index, provider, promise: executeSearch(provider) });
+    const elapsed = now() - start;
+    const remaining = timeBudgetSeconds == null ? null : Math.max(0, timeBudgetSeconds - elapsed);
+    launched.push({ index, provider, promise: withResearchDeadline(executeSearch(provider), remaining) });
   }
 
   const resultsByIndex = new Map<number, [string, ResearchSearchResponse]>();
   for (const { index, provider, promise } of launched) {
     try {
-      resultsByIndex.set(index, [provider, await promise]);
+      const response = await promise;
+      resultsByIndex.set(index, [provider, response]);
+      providerAttempts.set(index, { provider, outcome: "success", result_count: (response.results || []).length });
     } catch (error: any) {
-      providerErrors.push({ provider, error: String(error?.message || error) });
+      const deadlineExceeded = String(error?.message || error) === "research_deadline_exceeded";
+      const message = deadlineExceeded
+        ? "cancelled: research time budget exceeded after provider start"
+        : String(error?.message || error);
+      providerErrors.push({ provider, error: message });
+      providerAttempts.set(index, { provider, outcome: deadlineExceeded ? "cancelled" : "failed", result_count: 0, error: message });
     }
   }
   const providerResults = [...resultsByIndex.keys()].sort((a, b) => a - b).map((index) => resultsByIndex.get(index)!);
@@ -130,20 +167,28 @@ export async function runResearchMode(options: RunResearchModeOptions): Promise<
   }
 
   const routing: Json = {
-    providers_queried: providerResults.map(([provider]) => provider),
+    providers_queried: launched.map(({ provider }) => provider),
+    provider_attempts: [...providerAttempts.entries()].sort(([left], [right]) => left - right).map(([, attempt]) => attempt),
     provider_errors: providerErrors,
     extraction_provider: extracted.provider ?? null,
   };
   if (extractionError) routing.extraction_error = extractionError;
 
   const sourceSummaries = extracted.results || [];
+  const status = providerResults.length === 0
+    ? "failed"
+    : providerErrors.length > 0 || extractionError
+      ? "degraded"
+      : "success";
 
   return {
+    status,
     mode: "research",
     provider: "research",
     query,
     results: deduped,
     source_summaries: sourceSummaries,
+    ...(status === "failed" ? { error: "All research providers failed" } : {}),
     routing,
     metadata: {
       dedup_count: dedupCount,

@@ -180,7 +180,7 @@ For routing classes where source authority beats snippet luck (`official/vendor-
 3. Deduplicates results across providers.
 4. Extracts the top `research_extract_count` URLs (default 3, max 5) via `web_extract_plus` auto fallback into `source_summaries`.
 
-Research mode is best-effort: provider or extraction failures produce diagnostics in `routing.provider_errors` / `routing.extraction_error` instead of failing the whole call. A `research_time_budget` (seconds, default 55) gates which providers launch and whether extraction runs. Quality reports are always attached.
+Research mode is best-effort: each launched/skipped provider is recorded in `routing.provider_attempts`; provider or extraction failures produce diagnostics in `routing.provider_errors` / `routing.extraction_error`. Partial evidence returns `status="degraded"`, while total fan-out failure returns a complete `status="failed"` envelope. A `research_time_budget` (seconds, default 55) gates launches, cancels the response wait for started overruns, and gates extraction. Quality reports are attached once after the merge.
 
 ```json
 {
