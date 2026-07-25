@@ -545,6 +545,7 @@ export type ExtractContextOptions = {
   maxContextChars?: number;
   spans?: boolean;
   spansQuery?: string;
+  autoAllow?: Partial<Record<ExtractProviderName, boolean>>;
 };
 
 function normalizedCodepoints(content: string): string[] {
@@ -798,7 +799,10 @@ export async function extractPlus(
     : [requestedProvider, ...configuredPriority.filter((item) => item !== requestedProvider)] as ExtractProviderName[];
   // Routing preferences' disabled_providers also apply to extraction fallback;
   // an explicitly requested provider is still tried first, matching search semantics.
-  const providers = baseProviders.filter((item) => item === requestedProvider || !disabledProviders.includes(item));
+  const providers = baseProviders.filter((item) =>
+    (item === requestedProvider || !disabledProviders.includes(item))
+    && (requestedProvider !== "auto" || contextOptions.autoAllow?.[item] !== false)
+  );
 
   const errors: Json[] = [];
   for (const currentProvider of providers) {

@@ -21,6 +21,7 @@ const PROVIDERS = [
 
 const PRESETS = {
   starter: ["you", "serper", "linkup"],
+  "self-hosted": ["searxng", "keenable"],
   full: PROVIDERS.map((p) => p.name),
 };
 
@@ -96,6 +97,7 @@ async function main() {
       capabilities: configured.map((p) => ({ provider: p.name, capability: p.capability, guarded: p.guarded })),
       tools: ["web_search_plus", "web_extract_plus", "web_routing_config_plus"],
       answer_tool_removed: true,
+      self_hosted_ready: Boolean(config.searxngInstanceUrl || config.keenableApiKey || config.keenableAllowPublic === true),
     }, opts.json);
     return;
   }
@@ -113,6 +115,10 @@ async function main() {
     const preset = opts.preset || "full";
     if (!PRESETS[preset]) throw new Error(`Unknown preset: ${preset}`);
     const config = await setupProviders(opts.config, PRESETS[preset]);
+    if (preset === "self-hosted") {
+      config.routingPreferences = { ...(config.routingPreferences || {}), profile: "self_hosted" };
+      writeConfig(opts.config, config);
+    }
     print({ config_path: opts.config, configured_providers: configuredProviders(config).map((p) => p.name) }, opts.json);
     return;
   }

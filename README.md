@@ -157,6 +157,8 @@ Guarded providers require `auto_allow=true` in routing preferences: SerpBase, Qu
 
 Search `provider_priority` and extraction `extract_provider_priority` are independent. Partial extraction lists are completed in the public Tavily-first order, and can be updated with `web_routing_config_plus(action="set_extract_provider_priority", providers=[...])`.
 
+`web_routing_config_plus(action="set_profile", profile="self_hosted")` derives a local-first routing view: SearXNG then Keenable for search, and Keenable first for extraction. Other providers are excluded from automatic selection and fallback but remain available when explicitly requested. Auto mode fails with a clear readiness error until `searxngInstanceUrl`, `keenableApiKey`, or the opted-in Keenable public tier is configured. Return to the normal pool with `profile="standard"`. The setup CLI also exposes `--preset self-hosted`.
+
 Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source), and a deterministic `diversity` score. The score combines registrable-domain coverage, canonical-URL uniqueness, snippet-trigram diversity, and provider mix. Set `qualityDiversityRerank: true` to move near-duplicate Research candidates behind the diverse head without removing results.
 
 Auto routing additionally learns from recent provider behavior: every call records latency, result volume, and errors into an in-memory rolling window, and routing scores get a bounded (±1.0) adjustment (`routing.adaptive_adjustments`) once enough fresh samples exist — enough to break ties, never enough to override a clear query-class winner.

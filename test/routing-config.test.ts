@@ -89,6 +89,67 @@ test("web_routing_config_plus supports set/show/reset actions", async () => {
   assert.equal(reset.backup_path, undefined);
 });
 
+test("self_hosted profile derives local auto routing and preserves explicit overrides", async () => {
+  const { file } = makeRoutingConfigPath();
+  const registered = withRegistered({
+    routingConfigPath: file,
+    keenableAllowPublic: true,
+    serperApiKey: "serper-test",
+  });
+  const configTool = registered.get("web_routing_config_plus");
+  const profileResponse = JSON.parse((await configTool.execute("cfg-profile", {
+    action: "set_profile",
+    profile: "self_hosted",
+  })).content[0].text);
+  assert.equal(profileResponse.config.profile, "self_hosted");
+  assert.deepEqual(profileResponse.effective_config.provider_priority.slice(0, 2), ["searxng", "keenable"]);
+  assert.equal(profileResponse.effective_config.auto_allow.serper, false);
+
+  await withMockedFetch(
+    (url) => {
+      if (url.includes("api.keenable.ai/v1/search/public")) {
+        return mockJsonResponse({ results: [{ title: "Local", url: "https://example.com/local", snippet: "local result" }] });
+      }
+      if (url.includes("google.serper.dev")) {
+        return mockJsonResponse({ organic: [{ title: "Explicit", link: "https://example.com/explicit", snippet: "explicit result" }] });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    async (calls) => {
+      const search = registered.get("web_search_plus");
+      const automatic = JSON.parse((await search.execute("self-hosted-auto", {
+        query: "local-first query",
+        provider: "auto",
+      })).content[0].text);
+      assert.equal(automatic.provider, "keenable");
+      assert.equal(automatic.routing.profile, "self_hosted");
+
+      const explicit = JSON.parse((await search.execute("self-hosted-explicit", {
+        query: "explicit query",
+        provider: "serper",
+      })).content[0].text);
+      assert.equal(explicit.provider, "serper");
+      assert.equal(explicit.routing.explicit_profile_override, true);
+      assert.equal(calls.length, 2);
+    },
+  );
+});
+
+test("self_hosted profile fails auto mode clearly when no local provider is ready", async () => {
+  const { file } = makeRoutingConfigPath();
+  const registered = withRegistered({ routingConfigPath: file, serperApiKey: "serper-test" });
+  await registered.get("web_routing_config_plus").execute("cfg-profile-empty", {
+    action: "set_profile",
+    profile: "self_hosted",
+  });
+  const payload = JSON.parse((await registered.get("web_search_plus").execute("self-hosted-empty", {
+    query: "must stay local",
+    provider: "auto",
+  })).content[0].text);
+  assert.match(payload.error, /self_hosted profile requires/);
+  assert.equal(payload.routing.profile, "self_hosted");
+});
+
 test("web_routing_config_plus rejects search-only providers in extract priority", async () => {
   const { file } = makeRoutingConfigPath();
   const tool = withRegistered({ routingConfigPath: file }).get("web_routing_config_plus");

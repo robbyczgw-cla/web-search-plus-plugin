@@ -9,6 +9,7 @@ export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "pa
 
 export type RoutingPreferences = {
   version: 2;
+  profile: "standard" | "self_hosted";
   auto_routing: boolean;
   default_provider: ProviderName | null;
   provider_priority: ProviderName[];
@@ -30,6 +31,7 @@ export type RoutingConfigLoadResult = {
 
 export const DEFAULT_ROUTING_PREFERENCES: RoutingPreferences = {
   version: 2,
+  profile: "standard",
   auto_routing: true,
   default_provider: null,
   provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
@@ -54,6 +56,25 @@ function cloneConfig(config: RoutingPreferences): RoutingPreferences {
 
 function cloneDefaults(): RoutingPreferences {
   return cloneConfig(DEFAULT_ROUTING_PREFERENCES);
+}
+
+export function applyRoutingProfile(config: RoutingPreferences): RoutingPreferences {
+  const effective = cloneConfig(config);
+  if (effective.profile !== "self_hosted") return effective;
+  effective.provider_priority = [
+    "searxng",
+    "keenable",
+    ...DEFAULT_PROVIDER_PRIORITY.filter((provider) => provider !== "searxng" && provider !== "keenable"),
+  ];
+  effective.extract_provider_priority = [
+    "keenable",
+    ...DEFAULT_EXTRACT_PROVIDER_PRIORITY.filter((provider) => provider !== "keenable"),
+  ];
+  effective.fallback_provider = "keenable";
+  effective.auto_allow = Object.fromEntries(
+    DEFAULT_PROVIDER_PRIORITY.map((provider) => [provider, provider === "searxng" || provider === "keenable"]),
+  ) as Record<ProviderName, boolean>;
+  return effective;
 }
 
 export function normalizeProviderName(value: unknown): ProviderName {
@@ -145,6 +166,11 @@ export function validateRoutingPreferences(raw: unknown): RoutingPreferences {
   }
   const input = raw as Record<string, unknown>;
   const config = cloneDefaults();
+  if (input.profile != null) {
+    const profile = String(input.profile).trim().toLowerCase();
+    if (profile !== "standard" && profile !== "self_hosted") throw new Error(`Unknown routing profile: ${String(input.profile)}`);
+    config.profile = profile;
+  }
   config.auto_routing = input.auto_routing == null ? config.auto_routing : Boolean(input.auto_routing);
   config.default_provider = input.default_provider == null ? config.default_provider : normalizeOptionalProvider(input.default_provider);
   config.provider_priority = input.provider_priority == null ? config.provider_priority : normalizePriority(input.provider_priority);

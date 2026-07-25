@@ -76,6 +76,10 @@
         "type": "string",
         "description": "Optional namespace for in-memory routing preferences used by web_routing_config_plus. No filesystem reads are performed at runtime."
       },
+      "routingPreferences": {
+        "type": "object",
+        "description": "Initial routing preferences, including profile=standard or profile=self_hosted. Runtime updates remain in the selected in-memory namespace."
+      },
       "parallelApiKey": {
         "type": "string",
         "description": "Parallel API key for guarded search and extraction. Optional individually, but at least one provider setting in this plugin must be configured."
@@ -255,6 +259,10 @@
     "localeLanguage": {
       "label": "Default search language",
       "placeholder": "de or auto",
+      "sensitive": false
+    },
+    "routingPreferences": {
+      "label": "Initial routing preferences",
       "sensitive": false
     },
     "parallelMaxCharsPerResult": {

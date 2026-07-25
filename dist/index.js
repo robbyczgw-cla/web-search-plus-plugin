@@ -175,6 +175,7 @@ var DEFAULT_EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", 
 var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "parallel"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 2,
+  profile: "standard",
   auto_routing: true,
   default_provider: null,
   provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
@@ -196,6 +197,24 @@ function cloneConfig(config) {
 }
 function cloneDefaults() {
   return cloneConfig(DEFAULT_ROUTING_PREFERENCES);
+}
+function applyRoutingProfile(config) {
+  const effective = cloneConfig(config);
+  if (effective.profile !== "self_hosted") return effective;
+  effective.provider_priority = [
+    "searxng",
+    "keenable",
+    ...DEFAULT_PROVIDER_PRIORITY.filter((provider) => provider !== "searxng" && provider !== "keenable")
+  ];
+  effective.extract_provider_priority = [
+    "keenable",
+    ...DEFAULT_EXTRACT_PROVIDER_PRIORITY.filter((provider) => provider !== "keenable")
+  ];
+  effective.fallback_provider = "keenable";
+  effective.auto_allow = Object.fromEntries(
+    DEFAULT_PROVIDER_PRIORITY.map((provider) => [provider, provider === "searxng" || provider === "keenable"])
+  );
+  return effective;
 }
 function normalizeProviderName(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
@@ -276,6 +295,11 @@ function validateRoutingPreferences(raw) {
   }
   const input = raw;
   const config = cloneDefaults();
+  if (input.profile != null) {
+    const profile = String(input.profile).trim().toLowerCase();
+    if (profile !== "standard" && profile !== "self_hosted") throw new Error(`Unknown routing profile: ${String(input.profile)}`);
+    config.profile = profile;
+  }
   config.auto_routing = input.auto_routing == null ? config.auto_routing : Boolean(input.auto_routing);
   config.default_provider = input.default_provider == null ? config.default_provider : normalizeOptionalProvider(input.default_provider);
   config.provider_priority = input.provider_priority == null ? config.provider_priority : normalizePriority(input.provider_priority);
@@ -1029,7 +1053,9 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
     ...EXTRACT_PROVIDER_PRIORITY.filter((item) => !providerPriority.includes(item))
   ];
   const baseProviders = requestedProvider === "auto" ? configuredPriority : [requestedProvider, ...configuredPriority.filter((item) => item !== requestedProvider)];
-  const providers = baseProviders.filter((item) => item === requestedProvider || !disabledProviders.includes(item));
+  const providers = baseProviders.filter(
+    (item) => (item === requestedProvider || !disabledProviders.includes(item)) && (requestedProvider !== "auto" || contextOptions.autoAllow?.[item] !== false)
+  );
   const errors = [];
   for (const currentProvider of providers) {
     if (!EXTRACT_PROVIDER_PRIORITY.includes(currentProvider)) {
@@ -1990,6 +2016,7 @@ var ROUTING_CONFIG_ACTIONS = [
   "disable_provider",
   "enable_provider",
   "set_confidence_threshold",
+  "set_profile",
   "reset"
 ];
 var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
@@ -2000,7 +2027,8 @@ var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     provider: { type: "string", enum: [...SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto"), "none", "null"] },
     enabled: { type: "boolean", description: "Used by set_auto_routing. True enables auto routing, false switches provider:auto to strict default_provider mode." },
     providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Search or extraction priority order, depending on the selected action. Missing providers are appended in default order." },
-    confidence_threshold: { type: "number", minimum: 0, maximum: 1 }
+    confidence_threshold: { type: "number", minimum: 0, maximum: 1 },
+    profile: { type: "string", enum: ["standard", "self_hosted"] }
   }
 };
 var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable"];
@@ -3305,9 +3333,10 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : void 0;
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : void 0;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
-    const routingConfig = routingConfigResult.config;
+    const routingConfig = applyRoutingProfile(routingConfigResult.config);
     const configuredProviders = ALL_PROVIDERS.filter((p) => providerIsConfigured(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider2) => !routingConfig.disabled_providers.includes(provider2));
+    const autoEnabledProviders = routingConfig.profile === "self_hosted" ? enabledProviders.filter((candidate) => routingConfig.auto_allow[candidate] !== false) : enabledProviders;
     const braveOptions = {
       safesearch: runtimeConfig.braveSafesearch
     };
@@ -3322,8 +3351,17 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       if (!enabledProviders.length) {
         return { ok: false, payload: { error: "Search failed: all configured providers are disabled in routing preferences" } };
       }
+      if (routingConfig.profile === "self_hosted" && !autoEnabledProviders.length) {
+        return {
+          ok: false,
+          payload: {
+            error: "Search failed: self_hosted profile requires pluginConfig.searxngInstanceUrl or Keenable credentials/public-tier opt-in",
+            routing: { requested_provider: "auto", profile: "self_hosted" }
+          }
+        };
+      }
       if (!routingConfig.auto_routing) {
-        const strictDefault = pickStrictDefaultProvider(enabledProviders, routingConfig);
+        const strictDefault = pickStrictDefaultProvider(autoEnabledProviders, routingConfig);
         if (!strictDefault) {
           return { ok: false, payload: { error: "Search failed: auto routing is disabled but default_provider is missing, disabled, or not configured" } };
         }
@@ -3331,7 +3369,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         strictProviderMode = true;
         routingInfo = { requested_provider: "auto", auto_routed: false, provider, fixed_provider_mode: true, reason: "auto_routing_disabled" };
       } else {
-        const selection = selectAutoProvider(query, enabledProviders, routingConfig);
+        const selection = selectAutoProvider(query, autoEnabledProviders, routingConfig);
         provider = selection.provider;
         routingInfo = selection.routing;
         exaDepthHint = selection.routing.exa_depth || "normal";
@@ -3345,8 +3383,13 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       validateApiKey(provider, runtimeConfig);
       routingInfo = { requested_provider: provider, auto_routed: false, provider, fixed_provider_mode: true, reason: "explicit_provider" };
     }
+    routingInfo = {
+      ...routingInfo,
+      profile: routingConfig.profile,
+      ...routingConfig.profile === "self_hosted" && requestedProvider !== "auto" ? { explicit_profile_override: true } : {}
+    };
     if (provider === "exa" && params.depth) exaDepthHint = params.depth;
-    const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, enabledProviders, routingConfig);
+    const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, autoEnabledProviders, routingConfig);
     const eligibleProviders = [];
     const cooldownSkips = [];
     if (strictProviderMode) {
@@ -3418,7 +3461,18 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
             throw error2;
           }
         },
-        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers, routingConfig.extract_provider_priority),
+        extractUrls: (urls) => extractPlus(
+          urls,
+          "auto",
+          "markdown",
+          false,
+          false,
+          false,
+          runtimeConfig,
+          routingConfig.disabled_providers,
+          routingConfig.extract_provider_priority,
+          { autoAllow: routingConfig.auto_allow }
+        ),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
@@ -3557,7 +3611,8 @@ function routingConfigStatus(loadResult) {
     source: loadResult.source,
     warning: loadResult.warning,
     quarantine_path: loadResult.quarantine_path,
-    config: loadResult.config
+    config: loadResult.config,
+    effective_config: applyRoutingProfile(loadResult.config)
   });
 }
 function updateRoutingPreferences(pluginConfig, mutator) {
@@ -3635,6 +3690,13 @@ function executeRoutingConfigAction(pluginConfig, params) {
       config.confidence_threshold = Number(params?.confidence_threshold);
     }));
   }
+  if (action === "set_profile") {
+    const profile = String(params?.profile || "").trim().toLowerCase();
+    if (profile !== "standard" && profile !== "self_hosted") throw new Error("set_profile requires profile=standard or self_hosted");
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.profile = profile;
+    }));
+  }
   throw new Error(`Unsupported routing config action: ${action}`);
 }
 function register(api) {
@@ -3689,6 +3751,7 @@ function register(api) {
         try {
           const pluginConfig = api.pluginConfig ?? {};
           const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const routingPreferences = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
           const result = await extractPlus(
             Array.isArray(params?.urls) ? params.urls : typeof params?.urls === "string" ? [params.urls] : [],
             params?.provider || "auto",
@@ -3697,13 +3760,14 @@ function register(api) {
             Boolean(params?.include_raw_html),
             Boolean(params?.render_js),
             runtimeConfig,
-            loadRoutingPreferences(pluginConfig).config.disabled_providers,
-            loadRoutingPreferences(pluginConfig).config.extract_provider_priority,
+            routingPreferences.disabled_providers,
+            routingPreferences.extract_provider_priority,
             {
               maxUrls: params?.max_urls,
               maxContextChars: params?.max_context_chars,
               spans: params?.spans === true,
-              spansQuery: typeof params?.spans_query === "string" ? params.spans_query : void 0
+              spansQuery: typeof params?.spans_query === "string" ? params.spans_query : void 0,
+              autoAllow: routingPreferences.auto_allow
             }
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
