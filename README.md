@@ -61,8 +61,6 @@ Runtime credentials still come from explicit OpenClaw plugin config fields. The 
 - **Firecrawl** — search with scrape-friendly metadata and vendor/source pages
 - **Parallel** — search and extraction; guarded in auto routing
 - **SerpBase** — Google-style alternate search; guarded in auto routing
-- **Perplexity** — direct answer-style web results via `https://api.perplexity.ai/chat/completions`; guarded in auto routing
-- **Kilo Perplexity** — gateway route via `https://api.kilo.ai/api/gateway/chat/completions`; guarded in auto routing
 - **You.com** — current web / RAG-style snippets
 - **SearXNG** — self-hosted metasearch
 - **Keenable** — independent web index; keyed or opt-in keyless public tier, lowest-priority fallback
@@ -97,8 +95,6 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `firecrawlApiKey`
 - `parallelApiKey`
 - `serpbaseApiKey`
-- `perplexityApiKey`
-- `kilocodeApiKey`
 - `youApiKey`
 - `searxngInstanceUrl`
 - `keenableApiKey`
@@ -152,8 +148,8 @@ Classes:
 - oss-discovery → Exa similar-page discovery
 - answer/synthesis → flags `answer_mode_recommended`; it does **not** resurrect `web_answer_plus`
 
-Default conservative auto pool: You.com, Serper, Exa, Firecrawl, Tavily, Linkup.
-Guarded providers require `auto_allow=true` in routing preferences: SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity. Brave is in the default Classic auto pool for independent-index source diversity; operators can still set `auto_allow.brave=false`.
+Default conservative auto pool: You.com, Serper, Brave, Exa, Firecrawl, Tavily, Linkup.
+Guarded providers require `auto_allow=true` in routing preferences: SerpBase, Querit, Parallel. Brave is in the default Classic auto pool for independent-index source diversity; operators can still set `auto_allow.brave=false`.
 
 Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, and `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source) for canonical-source routing classes.
 

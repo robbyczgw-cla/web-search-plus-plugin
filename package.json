@@ -1,7 +1,7 @@
 {
   "name": "web-search-plus-plugin-v2",
   "version": "3.2.0",
-  "description": "OpenClaw plugin: one clean set of web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction across Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, Perplexity direct, Kilo Perplexity gateway, You.com, SearXNG, and Keenable.",
+  "description": "OpenClaw plugin: one clean set of source-only web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction across Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, You.com, SearXNG, and Keenable.",
   "type": "module",
   "main": "index.ts",
   "scripts": {
@@ -52,7 +52,6 @@
     "exa",
     "exa-deep",
     "firecrawl",
-    "perplexity",
     "you",
     "searxng",
     "web-search",

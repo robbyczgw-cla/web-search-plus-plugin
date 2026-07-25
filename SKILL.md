@@ -43,8 +43,6 @@ Search providers:
 - `firecrawlApiKey`
 - `parallelApiKey`
 - `serpbaseApiKey`
-- `perplexityApiKey`
-- `kilocodeApiKey`
 - `youApiKey`
 - `searxngInstanceUrl`
 - `keenableApiKey`
@@ -65,8 +63,8 @@ Extra settings:
 
 Auto routing is class-aware and benchmark-backed. Key classes: multilingual/current, local/shopping, docs/api, academic/arxiv, community/reddit, security/cve, official/vendor-release, official/regulatory, finance/IR, weather/factual, oss-discovery, and answer/synthesis.
 
-Default auto pool: You.com, Serper, Exa, Firecrawl, Tavily, Linkup.
-Guarded providers require `auto_allow[provider]=true` for auto routing: SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity. Brave is auto-allowed by default for independent-index source diversity and can still be disabled explicitly.
+Default auto pool: You.com, Serper, Brave, Exa, Firecrawl, Tavily, Linkup.
+Guarded providers require `auto_allow[provider]=true` for auto routing: SerpBase, Querit, Parallel. Brave is auto-allowed by default for independent-index source diversity and can still be disabled explicitly.
 
 Every search routing object exposes `language_hint`, `routing_class`, and `routing_policy`. Pass `quality_report: true` for provider scores, result quality hints, fallback diagnostics, and `authority_signals` (canonical/demoted domain hits and primary-source top-result flag). Recent provider latency/success behavior feeds bounded adaptive score adjustments (`routing.adaptive_adjustments`).
 
@@ -83,8 +81,3 @@ For canonical-source classes (official/vendor-release, docs/api, official/regula
 Prefer `web_search_plus` for live/current info, prices, weather, sports, schedules, and finding raw sources. Use `mode="research"` for grounding-heavy questions that benefit from multiple providers plus extracted full text. Use `web_extract_plus` once URLs are known.
 
 OpenClaw plugin config remains the source of truth for credentials; runtime code does not rely on direct `.env` reads.
-
-Perplexity provider split:
-
-- `perplexity` → direct Perplexity API (`perplexityApiKey`)
-- `kilo-perplexity` / `kilo_perplexity` → Kilo gateway (`kilocodeApiKey`)

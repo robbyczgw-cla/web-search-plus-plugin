@@ -15,8 +15,6 @@ const PROVIDERS = [
   { name: "querit", field: "queritApiKey", capability: "multilingual/current AI search; guarded in auto routing", starter: false, guarded: true },
   { name: "parallel", field: "parallelApiKey", capability: "Parallel search and extraction; guarded in auto routing", starter: false, guarded: true },
   { name: "serpbase", field: "serpbaseApiKey", capability: "Google-style alternate search; guarded in auto routing", starter: false, guarded: true },
-  { name: "perplexity", field: "perplexityApiKey", capability: "answer-style source search via direct Perplexity; guarded in auto routing", starter: false, guarded: true },
-  { name: "kilo-perplexity", field: "kilocodeApiKey", capability: "Kilo gateway Perplexity-compatible search; guarded in auto routing", starter: false, guarded: true },
   { name: "searxng", field: "searxngInstanceUrl", capability: "self-hosted privacy metasearch", starter: false, guarded: false },
   { name: "keenable", field: "keenableApiKey", capability: "independent web index search and extraction; keyless public tier via keenableAllowPublic=true", starter: false, guarded: false },
 ];

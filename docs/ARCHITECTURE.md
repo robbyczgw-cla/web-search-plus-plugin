@@ -18,9 +18,11 @@
 │  │        → Retry/Fallback → Dedup → Plugin Entry        │  │
 │  └───────────────────────────┬────────────────────────────┘  │
 │                              ↓                               │
-│      ┌───────┬────────┬────────┬──────┬────────────┬──────┬───────┐
-│      │Serper │ Tavily │ Querit │ Exa  │ Perplexity │ You  │SearXNG│
-│      └───────┴────────┴────────┴──────┴────────────┴──────┴───────┘
+│      ┌───────┬───────┬────────┬────────┬──────┬────────┬──────────┐
+│      │Serper │ Brave │ Tavily │ Linkup │ Exa  │ Querit │Firecrawl│
+│      ├───────┼───────┼────────┼────────┼──────┼────────┼──────────┤
+│      │Parallel│SerpBase│ You.com│SearXNG│Keenable│ source-only    │
+│      └───────┴───────┴────────┴────────┴──────┴────────┴──────────┘
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -135,12 +137,17 @@ Each provider has a dedicated adapter function in `index.ts`.
 
 Current providers:
 - Serper
+- Brave
 - Tavily
+- Linkup
 - Querit
 - Exa
-- Perplexity
+- Firecrawl
+- Parallel
+- SerpBase
 - You.com
 - SearXNG
+- Keenable
 
 Each adapter is responsible for:
 - auth handling
@@ -190,7 +197,7 @@ The registered tool currently supports:
 | Parameter | Type | Notes |
 |-----------|------|-------|
 | `query` | string | Required search query |
-| `provider` | string | `serper`, `tavily`, `querit`, `exa`, `perplexity`, `you`, `searxng`, or `auto` |
+| `provider` | string | `serper`, `brave`, `tavily`, `linkup`, `querit`, `exa`, `firecrawl`, `parallel`, `serpbase`, `you`, `searxng`, `keenable`, or `auto` |
 | `count` | number | Result count, clamped to safe limits |
 | `depth` | string | Exa depth: `normal`, `deep`, `deep-reasoning` |
 | `time_range` | string | `day`, `week`, `month`, `year` where supported |

@@ -2,7 +2,7 @@
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
   "version": "3.2.0",
-  "description": "One clean set of web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, Perplexity direct, Kilo Perplexity gateway, You.com, SearXNG, and Keenable.",
+  "description": "One clean set of source-only web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, You.com, SearXNG, and Keenable.",
   "contracts": {
     "tools": [
       "web_search_plus",
