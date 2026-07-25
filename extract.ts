@@ -2,6 +2,7 @@ import dns from "dns/promises";
 import net from "net";
 import type { RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_EXTRACT_PROVIDER_PRIORITY, type ExtractProviderName } from "./routing-config.ts";
+import { selectSpans, type SemanticSpan } from "./span-extraction.ts";
 
 type Json = Record<string, any>;
 
@@ -25,6 +26,8 @@ export type ExtractResult = {
   error?: string;
   truncated?: boolean;
   original_chars?: number;
+  span_contract_version?: 1;
+  spans?: Array<SemanticSpan & { within_preview: boolean }>;
 };
 
 export type ExtractResponse = {
@@ -86,6 +89,14 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
       minimum: 1000,
       maximum: 200000,
       description: "Aggregate inline content budget in Unicode codepoints (default/operator ceiling: 60000)",
+    },
+    spans: {
+      type: "boolean",
+      description: "Return deterministic query-conditioned passages with Unicode codepoint offsets",
+    },
+    spans_query: {
+      type: "string",
+      description: "Optional ranking query for spans; lexical-density ranking is used when omitted",
     },
   },
 };
@@ -532,6 +543,8 @@ export const HARD_EXTRACT_MAX_CONTEXT_CHARS = 200000;
 export type ExtractContextOptions = {
   maxUrls?: number;
   maxContextChars?: number;
+  spans?: boolean;
+  spansQuery?: string;
 };
 
 function normalizedCodepoints(content: string): string[] {
@@ -834,6 +847,9 @@ export async function extractPlus(
       const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
       const contentItems = resultList.filter((item) => !item?.error && typeof item?.content === "string");
       const sanitizedContent = contentItems.map((item) => sanitizeExtractContent(item.content).normalize("NFC"));
+      const selectedSpans = contextOptions.spans
+        ? sanitizedContent.map((content) => selectSpans(content, contextOptions.spansQuery))
+        : [];
       const allocations = fairShareAllocations(
         sanitizedContent.map((content) => codepointLength(content)),
         maxContextChars,
@@ -863,6 +879,13 @@ export async function extractPlus(
             : globallyTruncated
               ? normalizedCodepoints(sanitizeExtractContent(item.raw_content)).slice(0, allocations[index]).join("")
               : formatTruncatedExtractContent(item.raw_content, charLimit).content;
+        }
+        if (contextOptions.spans) {
+          item.span_contract_version = 1;
+          item.spans = selectedSpans[index].map((span) => ({
+            ...span,
+            within_preview: item.content.includes(span.text),
+          }));
         }
       });
       const warnings: Json[] = [...(result.warnings || [])];

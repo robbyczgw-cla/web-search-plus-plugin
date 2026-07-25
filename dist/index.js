@@ -325,6 +325,153 @@ function resetRoutingPreferences(pluginConfig = {}) {
 // extract.ts
 import dns from "dns/promises";
 import net from "net";
+
+// span-extraction.ts
+var TOKEN_RE = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu;
+var PARAGRAPH_BREAK_RE = /(?:\r?\n[\t \f\v]*){2,}/g;
+var SENTENCE_END_RE = /(?<=[.!?])(?:["'’)\]]*)\s+/gu;
+function codepoints(text) {
+  return Array.from(text);
+}
+function codeUnitToCodepointMap(text) {
+  const map = new Array(text.length + 1).fill(0);
+  let codeUnitIndex = 0;
+  let codepointIndex = 0;
+  for (const point of text) {
+    for (let offset = 0; offset < point.length; offset += 1) {
+      map[codeUnitIndex + offset] = codepointIndex;
+    }
+    codeUnitIndex += point.length;
+    codepointIndex += 1;
+    map[codeUnitIndex] = codepointIndex;
+  }
+  return map;
+}
+function trimCandidate(points, start, end) {
+  while (start < end && /\s/u.test(points[start])) start += 1;
+  while (end > start && /\s/u.test(points[end - 1])) end -= 1;
+  return start < end ? { start, end, text: points.slice(start, end).join("") } : null;
+}
+function splitLongSegment(points, start, end, limit) {
+  const pieces = [];
+  let cursor = start;
+  while (cursor < end) {
+    let boundary = Math.min(end, cursor + limit);
+    if (boundary < end) {
+      const earliestBreak = cursor + Math.max(1, Math.floor(limit / 2));
+      for (let index = boundary; index >= earliestBreak; index -= 1) {
+        if (/\s/u.test(points[index - 1])) {
+          boundary = index;
+          break;
+        }
+      }
+    }
+    const candidate = trimCandidate(points, cursor, boundary);
+    if (candidate) pieces.push(candidate);
+    cursor = boundary;
+    while (cursor < end && /\s/u.test(points[cursor])) cursor += 1;
+  }
+  return pieces;
+}
+function findRanges(text, expression, start = 0, end = text.length) {
+  const mapping = codeUnitToCodepointMap(text);
+  const ranges = [];
+  expression.lastIndex = start;
+  let cursor = start;
+  let match;
+  while ((match = expression.exec(text)) && match.index < end) {
+    ranges.push([mapping[cursor], mapping[match.index]]);
+    cursor = match.index + match[0].length;
+    if (!match[0].length) expression.lastIndex += 1;
+  }
+  ranges.push([mapping[cursor], mapping[end]]);
+  return ranges;
+}
+function candidates(text, maxSpanChars) {
+  const points = codepoints(text);
+  const mapping = codeUnitToCodepointMap(text);
+  const paragraphRanges = findRanges(text, PARAGRAPH_BREAK_RE);
+  const all = [];
+  for (const [paragraphStart, paragraphEnd] of paragraphRanges) {
+    const paragraphStartUnits = text.slice(0, mapping.findIndex((value) => value === paragraphStart)).length;
+    let paragraphEndUnits = text.length;
+    for (let index = paragraphStartUnits; index < mapping.length; index += 1) {
+      if (mapping[index] === paragraphEnd) {
+        paragraphEndUnits = index;
+        break;
+      }
+    }
+    const sentenceRanges = findRanges(text, SENTENCE_END_RE, paragraphStartUnits, paragraphEndUnits);
+    const sentenceCandidates = [];
+    for (const [start, end] of sentenceRanges) {
+      const candidate = trimCandidate(points, start, end);
+      if (!candidate) continue;
+      if (candidate.end - candidate.start <= maxSpanChars) {
+        sentenceCandidates.push(candidate);
+      } else {
+        sentenceCandidates.push(...splitLongSegment(points, candidate.start, candidate.end, maxSpanChars));
+      }
+    }
+    all.push(...sentenceCandidates);
+    for (let index = 0; index + 1 < sentenceCandidates.length; index += 1) {
+      const start = sentenceCandidates[index].start;
+      const end = sentenceCandidates[index + 1].end;
+      if (end - start <= maxSpanChars) {
+        all.push({ start, end, text: points.slice(start, end).join("") });
+      }
+    }
+  }
+  return [...new Map(all.map((candidate) => [`${candidate.start}:${candidate.end}`, candidate])).values()].sort((left, right) => left.start - right.start || left.end - right.end);
+}
+function tokens(text) {
+  return [...text.matchAll(TOKEN_RE)].map((match) => match[0].toLocaleLowerCase());
+}
+function lexicalScore(candidate, query, total) {
+  const candidateTokens = tokens(candidate.text);
+  if (!candidateTokens.length) return 0;
+  const uniqueTokens = new Set(candidateTokens);
+  const lexicalDensity = Math.min(candidateTokens.length, 80) / Math.max(1, codepoints(candidate.text).length / 8);
+  const diversity = uniqueTokens.size / candidateTokens.length;
+  const densityScore = Math.min(1, lexicalDensity / 4) + 0.2 * diversity;
+  const positionPrior = 0.08 * (1 - candidate.start / Math.max(1, total));
+  const queryTokens = tokens(query);
+  if (!queryTokens.length) return densityScore + positionPrior;
+  const queryUnique = new Set(queryTokens);
+  const termOverlap = [...queryUnique].filter((token) => uniqueTokens.has(token)).length / queryUnique.size;
+  const queryShingles = new Set(queryTokens.slice(0, -1).map((token, index) => `${token}\0${queryTokens[index + 1]}`));
+  const candidateShingles = new Set(candidateTokens.slice(0, -1).map((token, index) => `${token}\0${candidateTokens[index + 1]}`));
+  const shingleOverlap = queryShingles.size ? [...queryShingles].filter((shingle) => candidateShingles.has(shingle)).length / queryShingles.size : 0;
+  const occurrences = [...queryUnique].reduce(
+    (sum, token) => sum + candidateTokens.filter((candidateToken) => candidateToken === token).length,
+    0
+  );
+  const occurrenceBonus = Math.min(1, occurrences / Math.max(1, queryTokens.length));
+  return 4 * termOverlap + 2 * shingleOverlap + 0.5 * occurrenceBonus + 0.2 * densityScore + positionPrior;
+}
+function selectSpans(text, query, options = {}) {
+  const maxSpans = options.maxSpans ?? 3;
+  const maxSpanChars = options.maxSpanChars ?? 600;
+  if (!Number.isInteger(maxSpans) || !Number.isInteger(maxSpanChars)) throw new TypeError("Span limits must be integers");
+  if (maxSpans <= 0 || maxSpanChars <= 0) return [];
+  const normalized = text.normalize("NFC");
+  const normalizedQuery = (query || "").normalize("NFC").trim();
+  const ranked = candidates(normalized, maxSpanChars).map((candidate) => {
+    const score = options.ranker ? options.ranker(candidate.text, normalizedQuery) : lexicalScore(candidate, normalizedQuery, codepoints(normalized).length);
+    if (!Number.isFinite(score)) throw new Error("Span ranker scores must be finite numbers");
+    return { candidate, score };
+  });
+  ranked.sort((left, right) => right.score - left.score || left.candidate.start - right.candidate.start || left.candidate.end - right.candidate.end);
+  const selected = [];
+  for (const item of ranked) {
+    if (selected.some(({ candidate }) => item.candidate.start < candidate.end && candidate.start < item.candidate.end)) continue;
+    selected.push(item);
+    if (selected.length >= maxSpans) break;
+  }
+  selected.sort((left, right) => left.candidate.start - right.candidate.start);
+  return selected.map(({ candidate, score }) => ({ ...candidate, score }));
+}
+
+// extract.ts
 var EXTRACT_PROVIDER_PRIORITY = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 var EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
@@ -355,6 +502,14 @@ var EXTRACT_PARAMETERS_SCHEMA = {
       minimum: 1e3,
       maximum: 2e5,
       description: "Aggregate inline content budget in Unicode codepoints (default/operator ceiling: 60000)"
+    },
+    spans: {
+      type: "boolean",
+      description: "Return deterministic query-conditioned passages with Unicode codepoint offsets"
+    },
+    spans_query: {
+      type: "string",
+      description: "Optional ranking query for spans; lexical-density ranking is used when omitted"
     }
   }
 };
@@ -693,13 +848,13 @@ function sanitizeExtractContent(content) {
   return out;
 }
 function splitExtractContent(content, limit) {
-  const codepoints = normalizedCodepoints(content);
+  const codepoints2 = normalizedCodepoints(content);
   const headChars = Math.min(Math.max(1, Math.floor(limit * 2 / 3)), Math.max(1, limit - 1));
   const tailChars = Math.min(Math.max(1, Math.floor(limit * 0.2)), Math.max(1, limit - headChars));
-  if (headChars + tailChars >= codepoints.length) return { head: codepoints.join(""), tail: "", omittedChars: 0 };
-  const head = codepoints.slice(0, headChars).join("").replace(/\s+$/, "");
-  const tail = codepoints.slice(-tailChars).join("").replace(/^\s+/, "");
-  return { head, tail, omittedChars: Math.max(0, codepoints.length - codepointLength(head) - codepointLength(tail)) };
+  if (headChars + tailChars >= codepoints2.length) return { head: codepoints2.join(""), tail: "", omittedChars: 0 };
+  const head = codepoints2.slice(0, headChars).join("").replace(/\s+$/, "");
+  const tail = codepoints2.slice(-tailChars).join("").replace(/^\s+/, "");
+  return { head, tail, omittedChars: Math.max(0, codepoints2.length - codepointLength(head) - codepointLength(tail)) };
 }
 function formatTruncatedExtractContent(content, limit) {
   const cleaned = sanitizeExtractContent(content).normalize("NFC");
@@ -917,6 +1072,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
       const contentItems = resultList.filter((item) => !item?.error && typeof item?.content === "string");
       const sanitizedContent = contentItems.map((item) => sanitizeExtractContent(item.content).normalize("NFC"));
+      const selectedSpans = contextOptions.spans ? sanitizedContent.map((content) => selectSpans(content, contextOptions.spansQuery)) : [];
       const allocations = fairShareAllocations(
         sanitizedContent.map((content) => codepointLength(content)),
         maxContextChars
@@ -940,6 +1096,13 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         }
         if (item.raw_content) {
           item.raw_content = item.raw_content === originalContent ? item.content : globallyTruncated ? normalizedCodepoints(sanitizeExtractContent(item.raw_content)).slice(0, allocations[index]).join("") : formatTruncatedExtractContent(item.raw_content, charLimit).content;
+        }
+        if (contextOptions.spans) {
+          item.span_contract_version = 1;
+          item.spans = selectedSpans[index].map((span) => ({
+            ...span,
+            within_preview: item.content.includes(span.text)
+          }));
         }
       });
       const warnings = [...result.warnings || []];
@@ -1776,11 +1939,11 @@ function __resetRuntimeStateForTests() {
 }
 function chooseTieWinner(query, winners, priority) {
   const orderedWinners = priority.filter((provider) => winners.includes(provider));
-  const candidates = orderedWinners.length ? orderedWinners : [...winners].sort();
-  if (candidates.length <= 1) return candidates[0];
-  const digest = sha256(`${query}|${candidates.join("|")}`);
-  const idx = parseInt(digest.slice(0, 8), 16) % candidates.length;
-  return candidates[idx];
+  const candidates2 = orderedWinners.length ? orderedWinners : [...winners].sort();
+  if (candidates2.length <= 1) return candidates2[0];
+  const digest = sha256(`${query}|${candidates2.join("|")}`);
+  const idx = parseInt(digest.slice(0, 8), 16) % candidates2.length;
+  return candidates2[idx];
 }
 function normalizeRequestedProvider(value) {
   if (!value || value === "auto") return "auto";
@@ -3325,7 +3488,9 @@ function register(api) {
             loadRoutingPreferences(pluginConfig).config.extract_provider_priority,
             {
               maxUrls: params?.max_urls,
-              maxContextChars: params?.max_context_chars
+              maxContextChars: params?.max_context_chars,
+              spans: params?.spans === true,
+              spansQuery: typeof params?.spans_query === "string" ? params.spans_query : void 0
             }
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };

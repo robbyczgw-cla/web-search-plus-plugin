@@ -28,6 +28,7 @@
     "index.ts",
     "extract.ts",
     "research.ts",
+    "span-extraction.ts",
     "quality.ts",
     "provider-stats.ts",
     "search-locale.ts",

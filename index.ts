@@ -1765,6 +1765,8 @@ export function register(api: any) {
             {
               maxUrls: params?.max_urls,
               maxContextChars: params?.max_context_chars,
+              spans: params?.spans === true,
+              spansQuery: typeof params?.spans_query === "string" ? params.spans_query : undefined,
             },
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };

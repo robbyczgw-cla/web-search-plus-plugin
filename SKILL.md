@@ -30,6 +30,8 @@ web-search-plus-setup setup --preset starter --config ./web-search-plus-plugin.c
 
 Tavily is the default first extraction provider in auto mode. The fallback chain is Tavily → Exa → Linkup → Parallel → Firecrawl → You.com → Keenable → Serper (webpage scraper). Extraction targets are validated against private/internal destinations by default. Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; request-side `max_urls`/`max_context_chars` can lower those limits and operator settings can impose ceilings. Oversized pages return a head/tail window governed by `extractCharLimit`.
 
+Use `spans=true` for deterministic query-conditioned passages. `spans_query` supplies the ranking query; offsets are half-open Unicode-codepoint positions into the complete cleaned NFC text, and `within_preview` says whether each passage is present in the inline preview.
+
 ## Config fields
 
 Search providers:

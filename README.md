@@ -80,6 +80,8 @@ Auto fallback order:
 
 Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net. Extraction targets are validated against private/internal destinations by default (see `extractAllowPrivateUrls`). Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; `max_urls` and `max_context_chars` may request lower limits, while `extractMaxUrls` and `extractMaxContextChars` set operator ceilings. Oversized pages return a head/tail window governed by `extractCharLimit`, and inline base64 images are replaced with `[IMAGE: alt]` placeholders.
 
+Set `spans: true` to add up to three deterministic, non-overlapping passages per successful result. `spans_query` conditions lexical ranking. Span offsets address the complete cleaned NFC text in Unicode codepoints using half-open `[start,end)` ranges; `within_preview` reports whether the selected text survived inline truncation.
+
 ## Configuration
 
 Use explicit OpenClaw plugin config fields. The runtime uses only plugin config fields for credentials.
