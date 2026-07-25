@@ -5,6 +5,7 @@ import type { RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_EXTRACT_PROVIDER_PRIORITY, type ExtractProviderName } from "./routing-config.ts";
 import { selectSpans, type SemanticSpan } from "./span-extraction.ts";
 import { extractHound } from "./hound-provider.ts";
+import { preflightDeadline } from "./budget-preflight.ts";
 
 type Json = Record<string, any>;
 
@@ -47,6 +48,7 @@ export type ExtractResponse = {
       omitted_url_count: number;
       max_urls: number;
       max_context_chars: number;
+      deadline_seconds: number;
       context_chars_returned: number;
       truncated: boolean;
     };
@@ -175,6 +177,7 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
       maximum: 200000,
       description: "Aggregate inline content budget in Unicode codepoints (default/operator ceiling: 60000)",
     },
+    deadline_seconds: { type: "integer", minimum: 1, maximum: 180, description: "Request deadline for extraction provider starts in seconds (default/operator ceiling: 30)." },
     spans: {
       type: "boolean",
       description: "Return deterministic query-conditioned passages with Unicode codepoint offsets",
@@ -632,6 +635,7 @@ export type ExtractContextOptions = {
   spans?: boolean;
   spansQuery?: string;
   autoAllow?: Partial<Record<ExtractProviderName, boolean>>;
+  deadlineSeconds?: number;
 };
 
 function normalizedCodepoints(content: string): string[] {
@@ -829,6 +833,7 @@ export async function extractPlus(
 
   let requestedMaxUrls: number;
   let requestedMaxContextChars: number;
+  let deadlineSeconds: number;
   try {
     requestedMaxUrls = boundedInteger(contextOptions.maxUrls, DEFAULT_EXTRACT_MAX_URLS, 1, HARD_EXTRACT_MAX_URLS);
     requestedMaxContextChars = boundedInteger(
@@ -837,6 +842,7 @@ export async function extractPlus(
       MIN_EXTRACT_MAX_CONTEXT_CHARS,
       HARD_EXTRACT_MAX_CONTEXT_CHARS,
     );
+    deadlineSeconds = preflightDeadline(contextOptions.deadlineSeconds, runtimeConfig.extractDeadlineSeconds);
   } catch (error: any) {
     return {
       provider: requestedProvider,
@@ -852,6 +858,7 @@ export async function extractPlus(
   );
   const maxUrls = Math.min(requestedMaxUrls, operatorMaxUrls);
   const maxContextChars = Math.min(requestedMaxContextChars, operatorMaxContextChars);
+  const deadlineAt = Date.now() + deadlineSeconds * 1000;
   const allCleanedUrls = urls.map((url) => (typeof url === "string" ? url.trim() : url));
   const cleanedUrls = allCleanedUrls.slice(0, maxUrls);
   const omittedUrls = allCleanedUrls.slice(maxUrls) as string[];
@@ -907,6 +914,7 @@ export async function extractPlus(
       parallel_max_chars_per_result: runtimeConfig.parallelMaxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT,
       parallel_max_chars_total: runtimeConfig.parallelMaxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
       hound_max_content_chars: runtimeConfig.houndMaxContentChars ?? null,
+      deadline_seconds: deadlineSeconds,
     },
     provider_policy: {
       priority: configuredPriority,
@@ -925,6 +933,10 @@ export async function extractPlus(
 
   const errors: Json[] = [];
   for (const currentProvider of providers) {
+    if (Date.now() >= deadlineAt) {
+      errors.push({ provider: currentProvider, error: "deadline_exceeded_before_provider_start" });
+      break;
+    }
     if (!EXTRACT_PROVIDER_PRIORITY.includes(currentProvider)) {
       errors.push({ provider: currentProvider, error: `Provider ${currentProvider} does not support extraction` });
       continue;
@@ -1068,6 +1080,7 @@ export async function extractPlus(
             omitted_url_count: omittedUrls.length,
             max_urls: maxUrls,
             max_context_chars: maxContextChars,
+            deadline_seconds: deadlineSeconds,
             context_chars_returned: contentItems.reduce((sum, { item }) => sum + codepointLength(item.content), 0),
             truncated,
           },

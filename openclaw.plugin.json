@@ -132,6 +132,10 @@
         "type": "number",
         "description": "Maximum process-local LRU entries for completed extraction requests (default 64, range 1-500). Entries are discarded when the host restarts."
       },
+      "extractDeadlineSeconds": {
+        "type": "number",
+        "description": "Operator ceiling for request-scoped extraction deadline in seconds (default 30, range 1-180). This is not a daily quota."
+      },
       "localeCountry": {
         "type": "string",
         "description": "Default search country (ISO 3166-1 alpha-2, e.g. \"at\") for locale-capable providers (Serper, Brave, Querit, Firecrawl, You.com). Explicit location hints in the query still win. Without this the providers keep their us defaults."

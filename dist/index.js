@@ -162,6 +162,7 @@ function getRuntimeConfig(pluginConfig) {
     extractMaxUrls: maybePositiveInt(pluginConfig?.extractMaxUrls),
     extractMaxContextChars: maybePositiveInt(pluginConfig?.extractMaxContextChars),
     extractCacheMaxEntries: maybeBoundedInt(pluginConfig?.extractCacheMaxEntries, 1, 500),
+    extractDeadlineSeconds: maybeBoundedInt(pluginConfig?.extractDeadlineSeconds, 1, 180),
     localeCountry: maybeString(pluginConfig?.localeCountry),
     localeLanguage: maybeString(pluginConfig?.localeLanguage),
     parallelMaxCharsPerResult: maybePositiveInt(pluginConfig?.parallelMaxCharsPerResult),
@@ -794,6 +795,20 @@ async function extractHound(urls, endpoint, outputFormat = "markdown", includeIm
   return { provider: "hound", results };
 }
 
+// budget-preflight.ts
+var MAX_RESEARCH_FANOUT = 3;
+var MAX_EXTRACT_DEADLINE_SECONDS = 180;
+var DEFAULT_EXTRACT_DEADLINE_SECONDS = 30;
+function preflightDeadline(requested, operatorCeiling) {
+  const requestedValue = requested == null ? void 0 : Number(requested);
+  const ceiling = operatorCeiling == null ? DEFAULT_EXTRACT_DEADLINE_SECONDS : Number(operatorCeiling);
+  if (requestedValue != null && (!Number.isInteger(requestedValue) || requestedValue < 1) || !Number.isFinite(ceiling) || ceiling < 1) throw new Error("deadline_seconds must be a positive integer");
+  return Math.min(MAX_EXTRACT_DEADLINE_SECONDS, Math.floor(requestedValue ?? ceiling), Math.floor(ceiling));
+}
+function preflightResearchFanout(providers) {
+  return { providers: providers.slice(0, MAX_RESEARCH_FANOUT), omitted: Math.max(0, providers.length - MAX_RESEARCH_FANOUT), max_fanout: MAX_RESEARCH_FANOUT };
+}
+
 // extract.ts
 var EXTRACT_CACHE_VERSION = 1;
 var DEFAULT_EXTRACT_CACHE_MAX_ENTRIES = 64;
@@ -883,6 +898,7 @@ var EXTRACT_PARAMETERS_SCHEMA = {
       maximum: 2e5,
       description: "Aggregate inline content budget in Unicode codepoints (default/operator ceiling: 60000)"
     },
+    deadline_seconds: { type: "integer", minimum: 1, maximum: 180, description: "Request deadline for extraction provider starts in seconds (default/operator ceiling: 30)." },
     spans: {
       type: "boolean",
       description: "Return deterministic query-conditioned passages with Unicode codepoint offsets"
@@ -1359,6 +1375,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
   }
   let requestedMaxUrls;
   let requestedMaxContextChars;
+  let deadlineSeconds;
   try {
     requestedMaxUrls = boundedInteger(contextOptions.maxUrls, DEFAULT_EXTRACT_MAX_URLS, 1, HARD_EXTRACT_MAX_URLS);
     requestedMaxContextChars = boundedInteger(
@@ -1367,6 +1384,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       MIN_EXTRACT_MAX_CONTEXT_CHARS,
       HARD_EXTRACT_MAX_CONTEXT_CHARS
     );
+    deadlineSeconds = preflightDeadline(contextOptions.deadlineSeconds, runtimeConfig.extractDeadlineSeconds);
   } catch (error2) {
     return {
       provider: requestedProvider,
@@ -1382,6 +1400,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
   );
   const maxUrls = Math.min(requestedMaxUrls, operatorMaxUrls);
   const maxContextChars = Math.min(requestedMaxContextChars, operatorMaxContextChars);
+  const deadlineAt = Date.now() + deadlineSeconds * 1e3;
   const allCleanedUrls = urls.map((url) => typeof url === "string" ? url.trim() : url);
   const cleanedUrls = allCleanedUrls.slice(0, maxUrls);
   const omittedUrls = allCleanedUrls.slice(maxUrls);
@@ -1428,7 +1447,8 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       extract_char_limit: runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT,
       parallel_max_chars_per_result: runtimeConfig.parallelMaxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT,
       parallel_max_chars_total: runtimeConfig.parallelMaxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
-      hound_max_content_chars: runtimeConfig.houndMaxContentChars ?? null
+      hound_max_content_chars: runtimeConfig.houndMaxContentChars ?? null,
+      deadline_seconds: deadlineSeconds
     },
     provider_policy: {
       priority: configuredPriority,
@@ -1446,6 +1466,10 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
   if (cached) return cached;
   const errors = [];
   for (const currentProvider of providers) {
+    if (Date.now() >= deadlineAt) {
+      errors.push({ provider: currentProvider, error: "deadline_exceeded_before_provider_start" });
+      break;
+    }
     if (!EXTRACT_PROVIDER_PRIORITY.includes(currentProvider)) {
       errors.push({ provider: currentProvider, error: `Provider ${currentProvider} does not support extraction` });
       continue;
@@ -1574,6 +1598,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
             omitted_url_count: omittedUrls.length,
             max_urls: maxUrls,
             max_context_chars: maxContextChars,
+            deadline_seconds: deadlineSeconds,
             context_chars_returned: contentItems.reduce((sum, { item }) => sum + codepointLength(item.content), 0),
             truncated
           }
@@ -3875,6 +3900,8 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
           3
         );
       }
+      const researchFanout = preflightResearchFanout(researchProviders);
+      researchProviders = researchFanout.providers;
       if (!researchProviders.length) {
         return { ok: false, payload: sanitizeOutput({ error: "No configured providers available for research mode", provider, query, routing: routingInfo, cooldown_skips: cooldownSkips }) };
       }
@@ -3915,6 +3942,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
         diversityRerank: runtimeConfig.qualityDiversityRerank === true
       });
+      result2.metadata = { ...result2.metadata || {}, budget_preflight: { research: researchFanout, daily_quota: "not_supported_without_persistent_ledger" } };
       if (freshness) {
         result2.metadata = {
           ...result2.metadata || {},
@@ -4219,7 +4247,8 @@ function register(api) {
               maxContextChars: params?.max_context_chars,
               spans: params?.spans === true,
               spansQuery: typeof params?.spans_query === "string" ? params.spans_query : void 0,
-              autoAllow: routingPreferences.auto_allow
+              autoAllow: routingPreferences.auto_allow,
+              deadlineSeconds: params?.deadline_seconds
             }
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };

@@ -11,6 +11,7 @@ import { scoreDiversity } from "./diversity.ts";
 import { searchHound } from "./hound-provider.ts";
 import { __resetProviderStatsForTests, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
 import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
+import { preflightResearchFanout } from "./budget-preflight.ts";
 
 export { deduplicateResultsAcrossProviders } from "./research.ts";
 export { CANONICAL_DOMAIN_RULES, buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
@@ -1472,6 +1473,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
           3,
         );
       }
+      const researchFanout = preflightResearchFanout(researchProviders);
+      researchProviders = researchFanout.providers;
       if (!researchProviders.length) {
         return { ok: false, payload: sanitizeOutput({ error: "No configured providers available for research mode", provider, query, routing: routingInfo, cooldown_skips: cooldownSkips }) };
       }
@@ -1513,6 +1516,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
         diversityRerank: runtimeConfig.qualityDiversityRerank === true,
       });
+      result.metadata = { ...(result.metadata || {}), budget_preflight: { research: researchFanout, daily_quota: "not_supported_without_persistent_ledger" } };
 
       if (freshness) {
         result.metadata = {
@@ -1849,6 +1853,7 @@ export function register(api: any) {
               spans: params?.spans === true,
               spansQuery: typeof params?.spans_query === "string" ? params.spans_query : undefined,
               autoAllow: routingPreferences.auto_allow,
+              deadlineSeconds: params?.deadline_seconds,
             },
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
