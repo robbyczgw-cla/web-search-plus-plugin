@@ -2176,11 +2176,11 @@ var processStartedAt = Date.now();
 function nowSeconds() {
   return Date.now() / 1e3;
 }
-function recordProviderOutcome(provider, latencySeconds, resultCount, error2, now) {
+function recordProviderOutcome(provider, latencySeconds, resultCount2, error2, now) {
   const sample = {
     t: Math.floor(now ?? nowSeconds()),
     lat: Math.round(Math.max(0, Number(latencySeconds) || 0) * 1e3) / 1e3,
-    n: Math.max(0, Math.floor(Number(resultCount) || 0)),
+    n: Math.max(0, Math.floor(Number(resultCount2) || 0)),
     err: Boolean(error2)
   };
   const samples = providerSamples.get(provider) || [];
@@ -2387,6 +2387,43 @@ function resolveLocale(provider, runtimeConfig, query) {
     country,
     language,
     metadata: { country, language, source: { country: countrySource, language: languageSource } }
+  };
+}
+
+// shadow-quality.ts
+var startedAt = Date.now();
+var observations = 0;
+var resultCount = 0;
+var domainCount = 0;
+var thinSnippets = 0;
+var degraded = 0;
+function recordShadowQualityObservation(payload) {
+  const results = Array.isArray(payload?.results) ? payload.results : [];
+  const domains = /* @__PURE__ */ new Set();
+  for (const result of results) {
+    try {
+      domains.add(new URL(String(result?.url || "")).hostname.replace(/^www\./, "").toLowerCase());
+    } catch {
+    }
+    if (String(result?.snippet || "").length < 40) thinSnippets += 1;
+  }
+  observations += 1;
+  resultCount += results.length;
+  domainCount += domains.size;
+  if (payload?.status === "degraded" || payload?.status === "failed") degraded += 1;
+}
+function getShadowQualitySnapshot() {
+  return {
+    scope: "process_local",
+    process_started_at: new Date(startedAt).toISOString(),
+    observations,
+    aggregate: {
+      average_result_count: observations ? Number((resultCount / observations).toFixed(3)) : 0,
+      average_domain_count: observations ? Number((domainCount / observations).toFixed(3)) : 0,
+      thin_snippet_rate: resultCount ? Number((thinSnippets / resultCount).toFixed(3)) : 0,
+      degraded_or_failed_rate: observations ? Number((degraded / observations).toFixed(3)) : 0
+    },
+    note: "Passive observations only; they do not alter routing or results."
   };
 }
 
@@ -3921,15 +3958,15 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         query,
         researchProviders,
         executeSearch: async (p) => {
-          const startedAt = Date.now();
+          const startedAt2 = Date.now();
           try {
             const response = await executeWithRetry(() => runProvider(p));
-            recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, (response.results || []).length, false);
+            recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, (response.results || []).length, false);
             resetProviderHealth(p);
             return response;
           } catch (error2) {
             if (!(error2 instanceof ProviderConfigError)) {
-              recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, 0, true);
+              recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, 0, true);
               markProviderFailure(p, String(error2?.message || error2), error2?.retryAfter);
             }
             throw error2;
@@ -3994,17 +4031,17 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     const errors = [];
     const successes = [];
     for (const p of eligibleProviders) {
-      const startedAt = Date.now();
+      const startedAt2 = Date.now();
       try {
         const result2 = await executeWithRetry(() => runProvider(p));
-        recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, (result2.results || []).length, false);
+        recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, (result2.results || []).length, false);
         resetProviderHealth(p);
         successes.push([p, result2]);
         if (strictProviderMode || (result2.results || []).length >= count || errors.length === 0) break;
       } catch (error2) {
         const message = sanitizeOutput(String(error2?.message || error2));
         const isConfigError = error2 instanceof ProviderConfigError;
-        if (!isConfigError) recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, 0, true);
+        if (!isConfigError) recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, 0, true);
         const skipCooldown = strictProviderMode || isConfigError;
         const cooldown = skipCooldown ? { cooldown_seconds: 0 } : markProviderFailure(p, message, error2?.retryAfter);
         errors.push({ provider: p, error: message, ...skipCooldown ? {} : { cooldown_seconds: cooldown.cooldown_seconds } });
@@ -4188,7 +4225,7 @@ function register(api) {
       description: "Read-only process-local provider health from adaptive routing samples. Reports only what this host process has observed since it started; no HTTP endpoint or persisted history is used.",
       parameters: { type: "object", properties: {} },
       async execute() {
-        return { content: [{ type: "text", text: JSON.stringify(getProviderHealthSnapshot(ALL_PROVIDERS)) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot() }) }] };
       }
     },
     { optional: true }
@@ -4207,6 +4244,7 @@ function register(api) {
             const failure = result.payload;
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(failure)) }] };
           }
+          recordShadowQualityObservation(result.payload);
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result.payload)) }] };
         } catch (error2) {
           return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` }] };

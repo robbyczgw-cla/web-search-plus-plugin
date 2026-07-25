@@ -88,6 +88,8 @@ Set `spans: true` to add up to three deterministic, non-overlapping passages per
 
 `web_search_health_plus` is a read-only tool for the adaptive provider samples collected by the current host process. It reports its process start time and only in-process observations; it does not run an HTTP server or retain history after restart.
 
+The same tool includes passive shadow-quality aggregates from completed successful search requests (result/domain counts, thin snippets, and degraded outcomes). They are observational only and never change routing or returned sources.
+
 Use explicit OpenClaw plugin config fields. The runtime uses only plugin config fields for credentials.
 
 ### Search provider fields

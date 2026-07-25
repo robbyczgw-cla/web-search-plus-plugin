@@ -12,6 +12,7 @@ import { searchHound } from "./hound-provider.ts";
 import { __resetProviderStatsForTests, getProviderHealthSnapshot, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
 import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
 import { preflightResearchFanout } from "./budget-preflight.ts";
+import { getShadowQualitySnapshot, recordShadowQualityObservation } from "./shadow-quality.ts";
 
 export { deduplicateResultsAcrossProviders } from "./research.ts";
 export { CANONICAL_DOMAIN_RULES, buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
@@ -1778,7 +1779,7 @@ export function register(api: any) {
       description: "Read-only process-local provider health from adaptive routing samples. Reports only what this host process has observed since it started; no HTTP endpoint or persisted history is used.",
       parameters: { type: "object", properties: {} },
       async execute() {
-        return { content: [{ type: "text", text: JSON.stringify(getProviderHealthSnapshot(ALL_PROVIDERS)) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot() }) }] };
       },
     },
     { optional: true },
@@ -1799,6 +1800,7 @@ export function register(api: any) {
             const failure = result.payload as Json;
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(failure)) }] };
           }
+          recordShadowQualityObservation(result.payload as Json);
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result.payload)) }] };
         } catch (error: any) {
           return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error?.message || error))}` }] };

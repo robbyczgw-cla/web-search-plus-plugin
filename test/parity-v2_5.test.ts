@@ -25,6 +25,7 @@ import {
   __resetProviderStatsForTests,
 } from "../provider-stats.ts";
 import { extractPlus } from "../extract.ts";
+import { __resetShadowQualityForTests, getShadowQualitySnapshot, recordShadowQualityObservation } from "../shadow-quality.ts";
 import { __resetRoutingPreferencesForTests } from "../routing-config.ts";
 
 function makeApi(pluginConfig: Record<string, any>) {
@@ -131,6 +132,16 @@ test("provider health snapshot is explicitly scoped to this process", () => {
   assert.match(snapshot.process_started_at, /T/);
   assert.equal(snapshot.providers.tavily.samples, 1);
   assert.equal(snapshot.providers.exa.samples, 0);
+});
+
+test("shadow quality aggregates observations without becoming a routing input", () => {
+  __resetShadowQualityForTests();
+  recordShadowQualityObservation({ status: "degraded", results: [{ url: "https://example.com/a", snippet: "short" }, { url: "https://other.example/b", snippet: "a sufficiently detailed snippet for the quality aggregate" }] });
+  const snapshot = getShadowQualitySnapshot();
+  assert.equal(snapshot.scope, "process_local");
+  assert.equal(snapshot.observations, 1);
+  assert.equal(snapshot.aggregate.average_domain_count, 2);
+  assert.equal(snapshot.aggregate.thin_snippet_rate, 0.5);
 });
 
 test("stale samples no longer influence the adjustment", () => {

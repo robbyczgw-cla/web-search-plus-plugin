@@ -6,6 +6,7 @@
 - Added opt-in full-text continuation through `web_extract_plus(content_ref, content_start, content_end)`. Full text is held only by the existing process-local LRU entry; each reference is content-versioned and expires on eviction or host restart. (Hermes v3.2 round 2)
 - Added request-scoped budget preflight for Research fan-out (maximum three providers), Extract fan-out/context ceilings, and Extract provider-start deadlines. Daily quota accounting is intentionally not implemented because it needs a persistent ledger. (Hermes v3.2 round 2)
 - Added `web_search_health_plus`, a read-only in-process provider-health tool with explicit process start/scope metadata; no console server or cross-restart buckets are created. (Hermes v3.2 round 2)
+- Added passive process-local shadow-quality aggregates to the health tool. They observe completed requests only and never influence provider routing or result content. (Hermes v3.2 round 2)
 
 ### Breaking Changes
 - Removed the Perplexity and Kilo Perplexity Chat Completions adapters from the public provider schema and runtime. They do not expose a verified source-only mode and must not be projected as search evidence. (Hermes v3.0.0)
