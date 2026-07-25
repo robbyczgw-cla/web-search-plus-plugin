@@ -126,7 +126,7 @@
       },
       "extractCharLimit": {
         "type": "number",
-        "description": "Inline character budget per extracted page before head/tail truncation (default 15000, minimum 1000)."
+        "description": "Per-result inline character budget applied after aggregate prefix allocation and before head/tail truncation (default 15000, minimum 1000)."
       },
       "extractMaxUrls": {
         "type": "number",
@@ -134,7 +134,7 @@
       },
       "extractMaxContextChars": {
         "type": "number",
-        "description": "Operator ceiling for aggregate inline extraction content in Unicode codepoints (default 60000, range 1000-200000)."
+        "description": "Operator ceiling for aggregate inline extraction prefixes in Unicode codepoints, applied before per-result head/tail truncation (default 60000, range 1000-200000)."
       },
       "extractCacheMaxEntries": {
         "type": "number",

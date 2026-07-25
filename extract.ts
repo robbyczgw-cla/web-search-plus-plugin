@@ -235,7 +235,7 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
       type: "integer",
       minimum: 1000,
       maximum: 200000,
-      description: "Aggregate inline content budget in Unicode codepoints (default/operator ceiling: 60000)",
+      description: "Aggregate inline content prefix budget in Unicode codepoints, applied before the per-result head/tail window (default/operator ceiling: 60000)",
     },
     deadline_seconds: { type: "integer", minimum: 1, maximum: 180, description: "Request deadline for extraction provider starts in seconds (default/operator ceiling: 30)." },
     spans: {
@@ -1089,30 +1089,26 @@ export async function extractPlus(
       );
       let truncated = false;
       contentItems.forEach(({ item, resultIndex }, index) => {
-        const originalContent = item.content;
         const fullContent = sanitizedContent[index];
         const fullLength = codepointLength(fullContent);
         const globallyTruncated = fullLength > allocations[index];
-        const formatted = globallyTruncated
-          ? {
-              content: normalizedCodepoints(fullContent).slice(0, allocations[index]).join(""),
-              truncated: true,
-              originalChars: fullLength,
-            }
-          : formatTruncatedExtractContent(fullContent, charLimit);
+        // Hermes applies both limits in order: the aggregate allocation is a
+        // deterministic source prefix, then the per-result limit windows that
+        // prefix into its head and tail.
+        const budgetedContent = globallyTruncated
+          ? normalizedCodepoints(fullContent).slice(0, allocations[index]).join("")
+          : fullContent;
+        const formatted = formatTruncatedExtractContent(budgetedContent, charLimit);
         item.content = formatted.content;
-        if (formatted.truncated) {
+        if (globallyTruncated || formatted.truncated) {
           item.truncated = true;
-          item.original_chars = formatted.originalChars;
+          item.original_chars = fullLength;
           truncated = true;
         }
-        if (item.raw_content) {
-          item.raw_content = item.raw_content === originalContent
-            ? item.content
-            : globallyTruncated
-              ? normalizedCodepoints(sanitizeExtractContent(item.raw_content)).slice(0, allocations[index]).join("")
-              : formatTruncatedExtractContent(item.raw_content, charLimit).content;
-        }
+        // Match Hermes' outward compatibility projection: provider raw text
+        // remains in the process-local full-text record, while inline
+        // raw_content mirrors the already-budgeted content.
+        if ("raw_content" in item) item.raw_content = item.content;
         if (contextOptions.spans) {
           item.span_contract_version = 1;
           item.spans = selectedSpans[index].map((span) => ({

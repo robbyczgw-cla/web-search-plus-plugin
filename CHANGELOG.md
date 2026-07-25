@@ -28,6 +28,8 @@
 - Added an OpenClaw-specific Hound sidecar guide covering the separately pinned installation, loopback-only transport, explicit verification, auto-routing opt-in, privacy, caching, and attribution. (Hermes v3.2.0)
 
 ### Fixed
+- Made inline extraction `raw_content` mirror the final budgeted `content`, while preserving distinct full provider raw text behind process-local content references.
+- Applied the aggregate extraction budget as a deterministic prefix before the per-result head/tail window, with returned character accounting based on the final inline text.
 - Made `routing_override_provider` strict for extraction and Research source extraction, including cache identity, so a failed forced provider can never return another provider's content.
 - Bounded Hound response streams while reading chunked bodies, and detached best-effort session teardown behind a 250 ms abort deadline.
 - Pointed the npm entrypoint at the bundled runtime, excluded the internal porting plan from the package, and completed the five-tool README/SKILL inventory.

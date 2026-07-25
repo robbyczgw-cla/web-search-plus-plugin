@@ -984,7 +984,7 @@ var EXTRACT_PARAMETERS_SCHEMA = {
       type: "integer",
       minimum: 1e3,
       maximum: 2e5,
-      description: "Aggregate inline content budget in Unicode codepoints (default/operator ceiling: 60000)"
+      description: "Aggregate inline content prefix budget in Unicode codepoints, applied before the per-result head/tail window (default/operator ceiling: 60000)"
     },
     deadline_seconds: { type: "integer", minimum: 1, maximum: 180, description: "Request deadline for extraction provider starts in seconds (default/operator ceiling: 30)." },
     spans: {
@@ -1637,24 +1637,18 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       );
       let truncated = false;
       contentItems.forEach(({ item, resultIndex }, index) => {
-        const originalContent = item.content;
         const fullContent = sanitizedContent[index];
         const fullLength = codepointLength(fullContent);
         const globallyTruncated = fullLength > allocations[index];
-        const formatted = globallyTruncated ? {
-          content: normalizedCodepoints(fullContent).slice(0, allocations[index]).join(""),
-          truncated: true,
-          originalChars: fullLength
-        } : formatTruncatedExtractContent(fullContent, charLimit);
+        const budgetedContent = globallyTruncated ? normalizedCodepoints(fullContent).slice(0, allocations[index]).join("") : fullContent;
+        const formatted = formatTruncatedExtractContent(budgetedContent, charLimit);
         item.content = formatted.content;
-        if (formatted.truncated) {
+        if (globallyTruncated || formatted.truncated) {
           item.truncated = true;
-          item.original_chars = formatted.originalChars;
+          item.original_chars = fullLength;
           truncated = true;
         }
-        if (item.raw_content) {
-          item.raw_content = item.raw_content === originalContent ? item.content : globallyTruncated ? normalizedCodepoints(sanitizeExtractContent(item.raw_content)).slice(0, allocations[index]).join("") : formatTruncatedExtractContent(item.raw_content, charLimit).content;
-        }
+        if ("raw_content" in item) item.raw_content = item.content;
         if (contextOptions.spans) {
           item.span_contract_version = 1;
           item.spans = selectedSpans[index].map((span) => ({
@@ -4438,7 +4432,7 @@ function register(api) {
   api.registerTool(
     {
       name: "web_extract_plus",
-      description: "Extract URL content across configured providers, including optional local Hound MCP, with bounded automatic fallback, per-URL errors, and unified output. routing_override_provider makes one strict provider attempt with no fallback.",
+      description: "Extract URL content across configured providers, including optional local Hound MCP, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig = api.pluginConfig ?? {};

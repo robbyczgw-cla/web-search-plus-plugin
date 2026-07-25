@@ -1894,7 +1894,7 @@ export function register(api: any) {
     {
       name: "web_extract_plus",
       description:
-        "Extract URL content across configured providers, including optional local Hound MCP, with bounded automatic fallback, per-URL errors, and unified output. routing_override_provider makes one strict provider attempt with no fallback.",
+        "Extract URL content across configured providers, including optional local Hound MCP, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;

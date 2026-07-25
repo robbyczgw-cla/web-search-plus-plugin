@@ -30,7 +30,7 @@ Run:
 web-search-plus-setup setup --preset starter --config ./web-search-plus-plugin.config.json
 ```
 
-Tavily is the default first extraction provider in auto mode. The fallback chain is Tavily → Exa → Linkup → Parallel → Firecrawl → You.com → Keenable → Serper (webpage scraper) → Hound. Hound is a separately installed local MCP sidecar and remains explicit-only until deliberately auto-allowed. Extraction targets are validated against private/internal destinations by default. Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; request-side `max_urls`/`max_context_chars` can lower those limits and operator settings can impose ceilings. Oversized pages return a head/tail window governed by `extractCharLimit`. A `full_content_ref` can be read with the same tool using `content_start`/`content_end` (maximum 60,000 Unicode codepoints). If a distinct provider `raw_content` exists, first read reports its length and `raw_content_start`/`raw_content_end` read its separately-addressed range. Both ranges are valid only until the process-local LRU entry expires or the host restarts.
+Tavily is the default first extraction provider in auto mode. The fallback chain is Tavily → Exa → Linkup → Parallel → Firecrawl → You.com → Keenable → Serper (webpage scraper) → Hound. Hound is a separately installed local MCP sidecar and remains explicit-only until deliberately auto-allowed. Extraction targets are validated against private/internal destinations by default. Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; request-side `max_urls`/`max_context_chars` can lower those limits and operator settings can impose ceilings. The aggregate budget first selects a deterministic prefix; `extractCharLimit` then turns an oversized prefix into the documented head/tail window with a truncation marker. Inline `raw_content` mirrors the final budgeted `content`; a distinct provider raw text is retained only behind `full_content_ref`. Read that reference with the same tool using `content_start`/`content_end` (maximum 60,000 Unicode codepoints). If distinct provider raw text exists, the reference read reports its length and `raw_content_start`/`raw_content_end` read its separately-addressed range. Both ranges are valid only until the process-local LRU entry expires or the host restarts.
 
 Use `spans=true` for deterministic query-conditioned passages. `spans_query` supplies the ranking query; offsets are half-open Unicode-codepoint positions into the complete cleaned NFC text, and `within_preview` says whether each passage is present in the inline preview.
 
@@ -60,7 +60,7 @@ Extra settings:
 - `keenableAllowPublic` (opt-in keyless Keenable public tier)
 - `houndTimeoutSeconds` / `houndMaxResponseBytes` / `houndMaxContentChars` (bounded Hound MCP limits)
 - `extractAllowPrivateUrls` (opt-in private/internal extraction targets)
-- `extractCharLimit` (inline extract budget, default 15000)
+- `extractCharLimit` (per-result inline budget after aggregate prefix allocation, default 15000)
 - `extractMaxUrls` (operator URL ceiling, default 10)
 - `extractMaxContextChars` (operator aggregate context ceiling, default 60000)
 - `extractCacheMaxEntries` (process-local extraction LRU capacity, default 64; entries disappear on host restart)
