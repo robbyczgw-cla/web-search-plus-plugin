@@ -308,6 +308,36 @@ test("extract cache counts provider content without raw_content only once", asyn
   );
 });
 
+test("extract full-content references address distinct raw content with its own offsets", async () => {
+  __resetExtractCacheForTests();
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com/distinct-raw", content: "abcdefghij", raw_content: "uvwxyz" }] }),
+    async () => {
+      const response = await extractPlus(["https://example.com/distinct-raw"], "tavily", "markdown", false, false, false, { tavilyApiKey: "tvly-test" });
+      const reference = response.results[0].full_content_ref!;
+      assert.deepEqual(readCachedExtractContent(reference, 2, 5), {
+        content_ref: reference,
+        range: { start: 2, end: 5, total_chars: 10 },
+        content: "cde",
+        raw_content_available: true,
+        raw_content_chars: 6,
+        provider: "tavily",
+      });
+      assert.deepEqual(readCachedExtractContent(reference, 2, 5, 1, 4), {
+        content_ref: reference,
+        range: { start: 2, end: 5, total_chars: 10 },
+        content: "cde",
+        raw_content_available: true,
+        raw_content_chars: 6,
+        raw_content_range: { start: 1, end: 4, total_chars: 6 },
+        raw_content: "vwx",
+        provider: "tavily",
+      });
+      assert.throws(() => readCachedExtractContent(reference, 0, 1, 7, 8), /raw_content_start/);
+    },
+  );
+});
+
 test("extractFirecrawl include_images parses markdown and og image", async () => {
   await withMockedFetch(
     () => mockJsonResponse({
@@ -417,6 +447,7 @@ test("register exposes web_extract_plus tool", () => {
   // URLs and a full-content reference are alternate inputs to the same tool.
   assert.equal(schema.required, undefined);
   assert.ok(schema.properties.content_ref);
+  assert.ok(schema.properties.raw_content_start);
   assert.ok(schema.properties.provider.enum.includes("firecrawl"));
   assert.ok(schema.properties.provider.enum.includes("linkup"));
   assert.ok(schema.properties.provider.enum.includes("exa"));

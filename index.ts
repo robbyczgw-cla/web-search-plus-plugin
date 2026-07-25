@@ -1902,6 +1902,8 @@ export function register(api: any) {
               params.content_ref,
               params?.content_start == null ? 0 : Number(params.content_start),
               params?.content_end == null ? undefined : Number(params.content_end),
+              params?.raw_content_start == null ? undefined : Number(params.raw_content_start),
+              params?.raw_content_end == null ? undefined : Number(params.raw_content_end),
             );
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(content)) }] };
           }

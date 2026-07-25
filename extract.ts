@@ -144,7 +144,7 @@ function codepointSlice(content: string, start: number, end: number): string {
 
 // References are capabilities only for the lifetime of their LRU entry. They
 // are not persisted and cannot be reconstructed after eviction or restart.
-export function readCachedExtractContent(reference: string, start = 0, end?: number): Json {
+export function readCachedExtractContent(reference: string, start = 0, end?: number, rawStart?: number, rawEnd?: number): Json {
   const match = /^wspx:(\d+):([a-f0-9]{64}):(\d+):([a-f0-9]{16})$/.exec(String(reference || ""));
   if (!match || Number(match[1]) !== EXTRACT_CACHE_VERSION) throw new Error("Unknown or expired extraction content reference");
   const entry = extractCache.get(match[2]);
@@ -159,7 +159,31 @@ export function readCachedExtractContent(reference: string, start = 0, end?: num
   }
   extractCache.delete(match[2]);
   extractCache.set(match[2], entry!);
-  return { content_ref: reference, range: { start, end: resolvedEnd, total_chars: totalChars }, content: codepointSlice(record.content, start, resolvedEnd), raw_content: codepointSlice(record.raw_content ?? record.content, start, resolvedEnd), provider: record.provider };
+  const response: Json = {
+    content_ref: reference,
+    range: { start, end: resolvedEnd, total_chars: totalChars },
+    content: codepointSlice(record.content, start, resolvedEnd),
+    provider: record.provider,
+  };
+  if (record.raw_content == null) {
+    response.raw_content = codepointSlice(record.content, start, resolvedEnd);
+    return response;
+  }
+  const rawTotalChars = Array.from(record.raw_content).length;
+  response.raw_content_available = true;
+  response.raw_content_chars = rawTotalChars;
+  if (rawStart == null && rawEnd == null) return response;
+  const resolvedRawStart = rawStart == null ? 0 : rawStart;
+  if (!Number.isInteger(resolvedRawStart) || resolvedRawStart < 0 || resolvedRawStart > rawTotalChars) {
+    throw new Error("raw_content_start must be a valid Unicode codepoint offset");
+  }
+  const resolvedRawEnd = rawEnd == null ? Math.min(rawTotalChars, resolvedRawStart + MAX_FULLTEXT_RANGE_CHARS) : rawEnd;
+  if (!Number.isInteger(resolvedRawEnd) || resolvedRawEnd < resolvedRawStart || resolvedRawEnd > rawTotalChars || resolvedRawEnd - resolvedRawStart > MAX_FULLTEXT_RANGE_CHARS) {
+    throw new Error(`raw_content_end must select at most ${MAX_FULLTEXT_RANGE_CHARS} Unicode codepoints`);
+  }
+  response.raw_content_range = { start: resolvedRawStart, end: resolvedRawEnd, total_chars: rawTotalChars };
+  response.raw_content = codepointSlice(record.raw_content, resolvedRawStart, resolvedRawEnd);
+  return response;
 }
 
 export function __resetExtractCacheForTests(): void {
@@ -176,6 +200,8 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     content_ref: { type: "string", description: "Process-local full-content reference returned by a prior extraction; valid only while its cache entry remains live." },
     content_start: { type: "integer", minimum: 0, description: "Unicode codepoint offset at which to read a referenced full text (default 0)." },
     content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a referenced full text (maximum range 60000)." },
+    raw_content_start: { type: "integer", minimum: 0, description: "Unicode codepoint offset for a distinct provider raw text returned by content_ref." },
+    raw_content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a distinct provider raw text (maximum range 60000)." },
     provider: {
       type: "string",
       enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
@@ -517,8 +543,9 @@ export async function extractTavily(
   const results: ExtractResult[] = [];
   for (const item of Array.isArray(data?.results) ? data.results : []) {
     const url = String(item?.url || "");
-    const content = String(item?.raw_content || item?.content || "");
-    results.push(normalizeExtractResult("tavily", url, String(item?.title || ""), content, content, {
+    const content = String(item?.content || item?.raw_content || "");
+    const rawContent = String(item?.raw_content || item?.content || "");
+    results.push(normalizeExtractResult("tavily", url, String(item?.title || ""), content, rawContent, {
       images: includeImages ? normalizeImages(item?.images) : undefined,
       metadata: item?.metadata && typeof item.metadata === "object" ? item.metadata : undefined,
     }));
