@@ -62,6 +62,7 @@ Extra settings:
 - `extractMaxUrls` (operator URL ceiling, default 10)
 - `extractMaxContextChars` (operator aggregate context ceiling, default 60000)
 - `extractCacheMaxEntries` (process-local extraction LRU capacity, default 64; entries disappear on host restart)
+- `extractCacheMaxChars` (process-local full-text budget in Unicode codepoints, default 4,000,000; oversized responses have no `full_content_ref`)
 - `localeCountry` / `localeLanguage` (default search locale; `"auto"` language enables query inference)
 - `parallelMaxCharsPerResult` / `parallelMaxCharsTotal` (Parallel extract budgets)
 - `qualityBlockedDomains` / `qualityAllowedDomains` (spam/mirror blocklist overrides)

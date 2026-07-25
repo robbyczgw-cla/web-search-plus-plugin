@@ -32,6 +32,7 @@ export type RuntimeConfig = {
   extractMaxContextChars?: number;
   // Process-local extraction LRU capacity. No entries survive a host restart.
   extractCacheMaxEntries?: number;
+  extractCacheMaxChars?: number;
   extractDeadlineSeconds?: number;
   // Default search locale (ISO 3166-1 alpha-2 country, ISO 639-1 language or
   // "auto" for conservative query language inference). Without these the
@@ -79,6 +80,7 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     extractMaxUrls: maybePositiveInt(pluginConfig?.extractMaxUrls),
     extractMaxContextChars: maybePositiveInt(pluginConfig?.extractMaxContextChars),
     extractCacheMaxEntries: maybeBoundedInt(pluginConfig?.extractCacheMaxEntries, 1, 500),
+    extractCacheMaxChars: maybeBoundedInt(pluginConfig?.extractCacheMaxChars, 1, 20_000_000),
     extractDeadlineSeconds: maybeBoundedInt(pluginConfig?.extractDeadlineSeconds, 1, 180),
     localeCountry: maybeString(pluginConfig?.localeCountry),
     localeLanguage: maybeString(pluginConfig?.localeLanguage),

@@ -242,6 +242,72 @@ test("extract full-content references page the cached full text and expire with 
   );
 });
 
+test("extract cache evicts the least-recent full text when its character budget is exceeded", async () => {
+  __resetExtractCacheForTests();
+  let responseIndex = 0;
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com", raw_content: ["aa", "bb", "cc"][responseIndex++] }] }),
+    async () => {
+      const config = { tavilyApiKey: "tvly-test", extractCacheMaxEntries: 10, extractCacheMaxChars: 4 };
+      const first = await extractPlus(["https://example.com/a"], "tavily", "markdown", false, false, false, config);
+      const second = await extractPlus(["https://example.com/b"], "tavily", "markdown", false, false, false, config);
+      await extractPlus(["https://example.com/c"], "tavily", "markdown", false, false, false, config);
+      assert.throws(() => readCachedExtractContent(first.results[0].full_content_ref!), /expired/);
+      assert.equal(readCachedExtractContent(second.results[0].full_content_ref!).content, "bb");
+    },
+  );
+});
+
+test("extract cache access refreshes LRU order before character-budget eviction", async () => {
+  __resetExtractCacheForTests();
+  let responseIndex = 0;
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com", raw_content: ["aa", "bb", "cc"][responseIndex++] }] }),
+    async () => {
+      const config = { tavilyApiKey: "tvly-test", extractCacheMaxEntries: 10, extractCacheMaxChars: 4 };
+      const first = await extractPlus(["https://example.com/a"], "tavily", "markdown", false, false, false, config);
+      const second = await extractPlus(["https://example.com/b"], "tavily", "markdown", false, false, false, config);
+      await extractPlus(["https://example.com/a"], "tavily", "markdown", false, false, false, config);
+      await extractPlus(["https://example.com/c"], "tavily", "markdown", false, false, false, config);
+      assert.equal(readCachedExtractContent(first.results[0].full_content_ref!).content, "aa");
+      assert.throws(() => readCachedExtractContent(second.results[0].full_content_ref!), /expired/);
+    },
+  );
+});
+
+test("extract cache skips a full-text entry larger than its character budget", async () => {
+  __resetExtractCacheForTests();
+  let responseIndex = 0;
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com", raw_content: ["abc", "abcde", "abcde"][responseIndex++] }] }),
+    async (calls) => {
+      const config = { tavilyApiKey: "tvly-test", extractCacheMaxChars: 4 };
+      const cached = await extractPlus(["https://example.com/small"], "tavily", "markdown", false, false, false, config);
+      const first = await extractPlus(["https://example.com/large"], "tavily", "markdown", false, false, false, config);
+      const second = await extractPlus(["https://example.com/large"], "tavily", "markdown", false, false, false, config);
+      assert.equal(first.results[0].full_content_ref, undefined);
+      assert.equal(second.results[0].full_content_ref, undefined);
+      assert.equal(readCachedExtractContent(cached.results[0].full_content_ref!).content, "abc");
+      assert.equal(calls.length, 3);
+    },
+  );
+});
+
+test("extract cache counts provider content without raw_content only once", async () => {
+  __resetExtractCacheForTests();
+  await withMockedFetch(
+    (url) => mockJsonResponse({ results: [{ url, raw_content: "abc" }] }),
+    async (calls) => {
+      const config = { tavilyApiKey: "tvly-test", extractCacheMaxChars: 3 };
+      const first = await extractPlus(["https://example.com/no-raw-duplicate"], "tavily", "markdown", false, false, false, config);
+      const second = await extractPlus(["https://example.com/no-raw-duplicate"], "tavily", "markdown", false, false, false, config);
+      assert.equal(calls.length, 1);
+      assert.equal(readCachedExtractContent(first.results[0].full_content_ref!).raw_content, "abc");
+      assert.equal(second.results[0].full_content_ref, first.results[0].full_content_ref);
+    },
+  );
+});
+
 test("extractFirecrawl include_images parses markdown and og image", async () => {
   await withMockedFetch(
     () => mockJsonResponse({

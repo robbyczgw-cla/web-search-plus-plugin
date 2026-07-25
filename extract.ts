@@ -65,8 +65,11 @@ export type ExtractResponse = {
 
 export const EXTRACT_CACHE_VERSION = 1;
 export const DEFAULT_EXTRACT_CACHE_MAX_ENTRIES = 64;
+// Four million codepoints keeps several ordinary full-text pages available
+// without allowing this process-local cache to retain unbounded host memory.
+export const DEFAULT_EXTRACT_CACHE_MAX_CHARS = 4_000_000;
 
-type FullTextRecord = { content: string; raw_content: string; provider: ExtractProviderName };
+type FullTextRecord = { content: string; raw_content?: string; provider: ExtractProviderName };
 type ExtractCacheEntry = { response: ExtractResponse; fullText: Array<FullTextRecord | undefined> };
 const extractCache = new Map<string, ExtractCacheEntry>();
 
@@ -98,16 +101,37 @@ function extractCacheGet(key: string): ExtractResponse | null {
   return cloneResponse(entry.response);
 }
 
-function extractCachePut(key: string, response: ExtractResponse, fullText: Array<FullTextRecord | undefined>, maxEntries: number): void {
+function fullTextChars(fullText: Array<FullTextRecord | undefined>): number {
+  return fullText.reduce((total, record) => total + (record ? codepointLength(record.content) + codepointLength(record.raw_content ?? "") : 0), 0);
+}
+
+function extractCachePut(
+  key: string,
+  response: ExtractResponse,
+  fullText: Array<FullTextRecord | undefined>,
+  maxEntries: number,
+  maxChars: number,
+): boolean {
+  const entryChars = fullTextChars(fullText);
   extractCache.delete(key);
+  // An entry that cannot fit on its own is not cached: retaining it would
+  // empty useful entries while still exceeding the configured memory budget.
+  if (entryChars > maxChars) return false;
   extractCache.set(key, { response: cloneResponse(response), fullText: structuredClone(fullText) });
-  while (extractCache.size > maxEntries) extractCache.delete(extractCache.keys().next().value!);
+  let cacheChars = [...extractCache.values()].reduce((total, entry) => total + fullTextChars(entry.fullText), 0);
+  while (extractCache.size > maxEntries || cacheChars > maxChars) {
+    const oldestKey = extractCache.keys().next().value!;
+    const oldest = extractCache.get(oldestKey)!;
+    cacheChars -= fullTextChars(oldest.fullText);
+    extractCache.delete(oldestKey);
+  }
+  return extractCache.has(key);
 }
 
 export const MAX_FULLTEXT_RANGE_CHARS = 60000;
 
 function contentVersion(record: FullTextRecord): string {
-  return crypto.createHash("sha256").update(`${record.provider}\u0000${record.content}\u0000${record.raw_content}`).digest("hex").slice(0, 16);
+  return crypto.createHash("sha256").update(`${record.provider}\u0000${record.content}\u0000${record.raw_content ?? record.content}`).digest("hex").slice(0, 16);
 }
 
 function fullTextReference(cacheKey: string, index: number, record: FullTextRecord): string {
@@ -135,7 +159,7 @@ export function readCachedExtractContent(reference: string, start = 0, end?: num
   }
   extractCache.delete(match[2]);
   extractCache.set(match[2], entry!);
-  return { content_ref: reference, range: { start, end: resolvedEnd, total_chars: totalChars }, content: codepointSlice(record.content, start, resolvedEnd), raw_content: codepointSlice(record.raw_content, start, resolvedEnd), provider: record.provider };
+  return { content_ref: reference, range: { start, end: resolvedEnd, total_chars: totalChars }, content: codepointSlice(record.content, start, resolvedEnd), raw_content: codepointSlice(record.raw_content ?? record.content, start, resolvedEnd), provider: record.provider };
 }
 
 export function __resetExtractCacheForTests(): void {
@@ -1012,12 +1036,16 @@ export async function extractPlus(
         .filter(({ item }) => !item?.error && typeof item?.content === "string");
       const fullText = resultList.map((item): FullTextRecord | undefined => {
         if (item?.error || typeof item?.content !== "string") return undefined;
+        const content = sanitizeExtractContent(item.content).normalize("NFC");
+        const rawContent = sanitizeExtractContent(typeof item.raw_content === "string" ? item.raw_content : item.content).normalize("NFC");
         return {
-          content: sanitizeExtractContent(item.content).normalize("NFC"),
-          raw_content: sanitizeExtractContent(typeof item.raw_content === "string" ? item.raw_content : item.content).normalize("NFC"),
+          content,
+          raw_content: rawContent === content ? undefined : rawContent,
           provider: item.provider,
         };
       });
+      const cacheMaxChars = runtimeConfig.extractCacheMaxChars ?? DEFAULT_EXTRACT_CACHE_MAX_CHARS;
+      const cacheableFullText = fullTextChars(fullText) <= cacheMaxChars;
       const sanitizedContent = contentItems.map(({ item }) => sanitizeExtractContent(item.content).normalize("NFC"));
       const selectedSpans = contextOptions.spans
         ? sanitizedContent.map((content) => selectSpans(content, contextOptions.spansQuery))
@@ -1060,7 +1088,7 @@ export async function extractPlus(
           }));
         }
         const full = fullText[resultIndex];
-        if (full) {
+        if (full && cacheableFullText && !contextOptions.cacheBypass) {
           item.full_content_ref = fullTextReference(cacheKey, resultIndex, full);
           item.full_content_chars = codepointLength(full.content);
         }
@@ -1107,7 +1135,15 @@ export async function extractPlus(
       };
       // Only successful/degraded provider output is cacheable. Failed calls
       // carry transient diagnostics and must be retried on a later request.
-      if (!contextOptions.cacheBypass) extractCachePut(cacheKey, response, fullText, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
+      if (!contextOptions.cacheBypass && cacheableFullText) {
+        extractCachePut(
+          cacheKey,
+          response,
+          fullText,
+          runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES,
+          cacheMaxChars,
+        );
+      }
       return response;
     } catch (error: any) {
       errors.push({ provider: currentProvider, error: String(error?.message || error) });
