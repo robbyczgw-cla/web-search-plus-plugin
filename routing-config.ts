@@ -1,9 +1,9 @@
-export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "perplexity" | "kilo-perplexity" | "you" | "searxng" | "parallel" | "serpbase" | "keenable";
+export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "you" | "searxng" | "parallel" | "serpbase" | "keenable";
 
 // Keenable stays last: it never displaces a configured keyed provider.
-export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng", "keenable"];
+export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "searxng", "keenable"];
 
-export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
+export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "parallel"];
 
 export type RoutingPreferences = {
   version: 2;
@@ -53,7 +53,6 @@ function cloneDefaults(): RoutingPreferences {
 
 export function normalizeProviderName(value: unknown): ProviderName {
   const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
-  if (normalized === "kilo-perplexity") return "kilo-perplexity";
   if ((DEFAULT_PROVIDER_PRIORITY as string[]).includes(normalized)) return normalized as ProviderName;
   throw new Error(`Unknown provider: ${String(value || "")}`);
 }

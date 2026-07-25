@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+- Removed the Perplexity and Kilo Perplexity Chat Completions adapters from the public provider schema and runtime. They do not expose a verified source-only mode and must not be projected as search evidence. (Hermes v3.0.0)
+
 ### Changed
 - Promoted Brave Search into the default Classic Routing v2 auto pool for independent-index source diversity. Explicit `auto_allow.brave=false` still opts it out. (Hermes v3.0.0)
 

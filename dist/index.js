@@ -146,8 +146,6 @@ function getRuntimeConfig(pluginConfig) {
     queritApiKey: maybeString(pluginConfig?.queritApiKey),
     exaApiKey: maybeString(pluginConfig?.exaApiKey),
     firecrawlApiKey: maybeString(pluginConfig?.firecrawlApiKey),
-    perplexityApiKey: maybeString(pluginConfig?.perplexityApiKey),
-    kilocodeApiKey: maybeString(pluginConfig?.kilocodeApiKey),
     youApiKey: maybeString(pluginConfig?.youApiKey),
     parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
     serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
@@ -169,8 +167,8 @@ function maybePositiveInt(value) {
 }
 
 // routing-config.ts
-var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng", "keenable"];
-var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
+var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "searxng", "keenable"];
+var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "parallel"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 2,
   auto_routing: true,
@@ -195,7 +193,6 @@ function cloneDefaults() {
 }
 function normalizeProviderName(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
-  if (normalized === "kilo-perplexity") return "kilo-perplexity";
   if (DEFAULT_PROVIDER_PRIORITY.includes(normalized)) return normalized;
   throw new Error(`Unknown provider: ${String(value || "")}`);
 }
@@ -1368,7 +1365,7 @@ var TRANSIENT_HTTP_CODES = /* @__PURE__ */ new Set([408, 425, 429, 500, 502, 503
 var FAILURE_DECAY_SECONDS = 1800;
 var RATE_LIMIT_MAX_ATTEMPTS = 2;
 var MAX_RETRY_AFTER_WAIT_SECONDS = 30;
-var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable", "kilo_perplexity", "auto"];
+var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "auto"];
 var PARAMETERS_SCHEMA = {
   type: "object",
   required: ["query"],
@@ -1447,7 +1444,7 @@ var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     confidence_threshold: { type: "number", minimum: 0, maximum: 1 }
   }
 };
-var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable"];
+var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable"];
 var ProviderConfigError = class extends Error {
 };
 var ProviderRequestError = class extends Error {
@@ -1685,8 +1682,6 @@ function getApiKey(provider, runtimeConfig) {
     exa: runtimeConfig.exaApiKey,
     linkup: runtimeConfig.linkupApiKey,
     firecrawl: runtimeConfig.firecrawlApiKey,
-    perplexity: runtimeConfig.perplexityApiKey,
-    "kilo-perplexity": runtimeConfig.kilocodeApiKey,
     you: runtimeConfig.youApiKey,
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
@@ -1703,8 +1698,6 @@ function validateApiKey(provider, runtimeConfig) {
   const key = getApiKey(provider, runtimeConfig);
   if (!key) {
     if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
-    if (provider === "perplexity") throw new ProviderConfigError("Missing API key for perplexity (PERPLEXITY_API_KEY or pluginConfig.perplexityApiKey)");
-    if (provider === "kilo-perplexity") throw new ProviderConfigError("Missing API key for kilo-perplexity (KILOCODE_API_KEY or pluginConfig.kilocodeApiKey)");
     if (provider === "keenable") {
       if (runtimeConfig.keenableAllowPublic === true) return "";
       throw new ProviderConfigError("Keenable requires an API key (pluginConfig.keenableApiKey) or the opt-in public tier (pluginConfig.keenableAllowPublic=true)");
@@ -1732,9 +1725,6 @@ var PROVIDER_FRESHNESS_FORMATS = {
   serpbase: { day: "day", week: "week", month: "month", year: "year" },
   // searchYou: freshness query param (native values match the unified ones)
   you: { day: "day", week: "week", month: "month", year: "year" },
-  // searchPerplexityCompatible: body.search_recency_filter
-  perplexity: { day: "day", week: "week", month: "month", year: "year" },
-  "kilo-perplexity": { day: "day", week: "week", month: "month", year: "year" },
   // searchSearxng: time_range query param
   searxng: { day: "day", week: "week", month: "month", year: "year" }
 };
@@ -2064,25 +2054,6 @@ var RAG_SIGNALS = {
   "\\bstatus of\\b": 3,
   "\\bsituation (in|with|around)\\b": 3.5
 };
-var DIRECT_ANSWER_SIGNALS = {
-  "\\bwhat is\\b": 3,
-  "\\bwhat are\\b": 2.5,
-  "\\bcurrent status\\b": 4,
-  "\\bstatus of\\b": 3.5,
-  "\\bstatus\\b": 2.5,
-  "\\bwhat happened with\\b": 4,
-  "\\bwhat'?s happening with\\b": 4,
-  "\\bas of (today|now)\\b": 4,
-  "\\bthis weekend\\b": 3.5,
-  "\\bevents? in\\b": 3.5,
-  "\\bthings to do in\\b": 4,
-  "\\bnear me\\b": 3,
-  "\\bcan you (tell me|summarize|explain)\\b": 3.5,
-  "\\bwann\\b": 3,
-  "\\bwer\\b": 3,
-  "\\bwo\\b": 2.5,
-  "\\bwie viele\\b": 3
-};
 var PRIVACY_SIGNALS = {
   "\\bprivate(ly)?\\b": 4,
   "\\banonymous(ly)?\\b": 4,
@@ -2326,7 +2297,6 @@ var QueryAnalyzer = class {
     const rag = this.calculateSignalScore(query, RAG_SIGNALS);
     const privacy = this.calculateSignalScore(query, PRIVACY_SIGNALS);
     const linkupSource = this.calculateSignalScore(query, LINKUP_SOURCE_SIGNALS);
-    const direct = this.calculateSignalScore(query, DIRECT_ANSWER_SIGNALS);
     const exaDeep = this.calculateSignalScore(query, EXA_DEEP_SIGNALS);
     const exaDeepReasoning = this.calculateSignalScore(query, EXA_DEEP_REASONING_SIGNALS);
     const brandBonus = this.detectProductBrandCombo(query);
@@ -2355,8 +2325,6 @@ var QueryAnalyzer = class {
       firecrawl: discovery.total + research.total * 0.35 + recency.score * 0.25,
       parallel: research.total * 0.5 + discovery.total * 0.5,
       serpbase: shopping.total + localNews.total + recency.score * 0.35,
-      perplexity: direct.total + localNews.total * 0.4 + recency.score * 0.55,
-      "kilo-perplexity": direct.total + localNews.total * 0.4 + recency.score * 0.55,
       you: rag.total + recency.score * 0.25,
       searxng: privacy.total,
       // Keenable is a last-resort fallback: no query-class signals boost it.
@@ -2372,8 +2340,6 @@ var QueryAnalyzer = class {
       firecrawl: [...discovery.matches, ...research.matches],
       parallel: [...research.matches, ...discovery.matches],
       serpbase: [...shopping.matches, ...localNews.matches],
-      perplexity: direct.matches,
-      "kilo-perplexity": direct.matches,
       you: rag.matches,
       searxng: privacy.matches,
       keenable: []
@@ -2639,40 +2605,6 @@ async function searchParallel(query, apiKey, maxResults, includeDomains, exclude
   });
   return { provider: "parallel", query, results, images: [], answer: results[0]?.snippet || "", metadata: { search_id: data.search_id, session_id: data.session_id } };
 }
-async function searchPerplexityCompatible(provider, query, apiKey, maxResults, timeRange) {
-  const body = {
-    model: provider === "perplexity" ? "sonar-pro" : "perplexity/sonar-pro",
-    messages: [
-      { role: "system", content: "Answer with concise factual summary and include source URLs." },
-      { role: "user", content: query }
-    ],
-    temperature: 0.2
-  };
-  if (timeRange) body.search_recency_filter = timeRange;
-  const url = provider === "perplexity" ? "https://api.perplexity.ai/chat/completions" : "https://api.kilo.ai/api/gateway/chat/completions";
-  const data = await httpJson(url, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const answer = String(data?.choices?.[0]?.message?.content || "").trim();
-  let citations = Array.isArray(data?.citations) ? data.citations : [];
-  if (!citations.length) {
-    const matches = answer.match(/https?:\/\/[^\s)\]}>"']+/g) || [];
-    citations = [...new Set(matches)];
-  }
-  const results = [];
-  const answerTitle = provider === "perplexity" ? "Perplexity Answer" : "Kilo Perplexity Answer";
-  if (answer) results.push({ title: `${answerTitle}: ${query.slice(0, 80)}`, url: "https://www.perplexity.ai", snippet: answer.replace(/\[\d+\]/g, "").trim().slice(0, 500), score: 1 });
-  for (const [i, citation] of citations.slice(0, Math.max(0, maxResults - 1)).entries()) {
-    const url2 = typeof citation === "string" ? citation : citation?.url || "";
-    const title = typeof citation === "string" ? titleFromUrl2(url2) : citation?.title || titleFromUrl2(url2);
-    results.push({ title, url: url2, snippet: `Source cited in Perplexity answer [citation ${i + 1}]`, score: Number((0.9 - i * 0.1).toFixed(3)) });
-  }
-  return { provider, query, results, images: [], answer, metadata: { model: body.model, usage: data.usage || {} } };
-}
-async function searchPerplexity(query, apiKey, maxResults, timeRange) {
-  return searchPerplexityCompatible("perplexity", query, apiKey, maxResults, timeRange);
-}
-async function searchKiloPerplexity(query, apiKey, maxResults, timeRange) {
-  return searchPerplexityCompatible("kilo-perplexity", query, apiKey, maxResults, timeRange);
-}
 async function searchYou(query, apiKey, maxResults, timeRange, locale) {
   const url = new URL("https://ydc-index.io/v1/search");
   url.searchParams.set("query", query);
@@ -2882,8 +2814,6 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
       if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
       if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
-      if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
-      if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange, locale);
       if (p === "keenable") return searchKeenable(query, key || void 0, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
       return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);

@@ -60,14 +60,6 @@
         "type": "string",
         "description": "Firecrawl API key for web search with optional page extraction metadata and Google-style recency/domain filtering. Optional individually, but at least one provider setting in this plugin must be configured."
       },
-      "perplexityApiKey": {
-        "type": "string",
-        "description": "Perplexity direct API key for answer-style search via api.perplexity.ai. Optional individually, but at least one provider setting in this plugin must be configured."
-      },
-      "kilocodeApiKey": {
-        "type": "string",
-        "description": "Kilo Perplexity gateway API key for answer-style search via api.kilo.ai. Optional individually, but at least one provider setting in this plugin must be configured."
-      },
       "youApiKey": {
         "type": "string",
         "description": "You.com API key for general web and answer-oriented search. Optional individually, but at least one provider setting in this plugin must be configured."
@@ -179,18 +171,6 @@
     "firecrawlApiKey": {
       "label": "Firecrawl API Key",
       "placeholder": "fc-...",
-      "sensitive": true
-    },
-    "perplexityApiKey": {
-      "label": "Perplexity API Key",
-      "placeholder": "pplx-...",
-      "description": "Direct Perplexity provider key used for api.perplexity.ai/chat/completions.",
-      "sensitive": true
-    },
-    "kilocodeApiKey": {
-      "label": "Kilo Perplexity API Key",
-      "placeholder": "...",
-      "description": "Kilo Perplexity gateway key used for api.kilo.ai/api/gateway/chat/completions.",
       "sensitive": true
     },
     "youApiKey": {

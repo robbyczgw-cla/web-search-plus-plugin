@@ -7,8 +7,6 @@ export type RuntimeConfig = {
   queritApiKey?: string;
   exaApiKey?: string;
   firecrawlApiKey?: string;
-  perplexityApiKey?: string;
-  kilocodeApiKey?: string;
   youApiKey?: string;
   parallelApiKey?: string;
   serpbaseApiKey?: string;
@@ -50,8 +48,6 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     queritApiKey: maybeString(pluginConfig?.queritApiKey),
     exaApiKey: maybeString(pluginConfig?.exaApiKey),
     firecrawlApiKey: maybeString(pluginConfig?.firecrawlApiKey),
-    perplexityApiKey: maybeString(pluginConfig?.perplexityApiKey),
-    kilocodeApiKey: maybeString(pluginConfig?.kilocodeApiKey),
     youApiKey: maybeString(pluginConfig?.youApiKey),
     parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
     serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
