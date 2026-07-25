@@ -7,8 +7,15 @@ export const DEFAULT_EXTRACT_DEADLINE_SECONDS = 30;
 export function preflightDeadline(requested: unknown, operatorCeiling: unknown): number {
   const requestedValue = requested == null ? undefined : Number(requested);
   const ceiling = operatorCeiling == null ? DEFAULT_EXTRACT_DEADLINE_SECONDS : Number(operatorCeiling);
-  if ((requestedValue != null && (!Number.isInteger(requestedValue) || requestedValue < 1)) || !Number.isFinite(ceiling) || ceiling < 1) throw new Error("deadline_seconds must be a positive integer");
-  return Math.min(MAX_EXTRACT_DEADLINE_SECONDS, Math.floor(requestedValue ?? ceiling), Math.floor(ceiling));
+  if (requestedValue != null && (!Number.isInteger(requestedValue) || requestedValue < 1)) {
+    throw new Error("deadline_seconds must be a positive integer");
+  }
+  // RuntimeConfig normalizes extractDeadlineSeconds before this path, but
+  // direct callers receive the same positive-integer contract and diagnosis.
+  if (!Number.isInteger(ceiling) || ceiling < 1) {
+    throw new Error("operator deadline ceiling must be a positive integer");
+  }
+  return Math.min(MAX_EXTRACT_DEADLINE_SECONDS, requestedValue ?? ceiling, ceiling);
 }
 
 export function preflightResearchFanout<T>(providers: T[]): { providers: T[]; omitted: number; max_fanout: number } {

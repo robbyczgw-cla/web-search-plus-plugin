@@ -162,6 +162,7 @@ function getRuntimeConfig(pluginConfig) {
     extractMaxUrls: maybePositiveInt(pluginConfig?.extractMaxUrls),
     extractMaxContextChars: maybePositiveInt(pluginConfig?.extractMaxContextChars),
     extractCacheMaxEntries: maybeBoundedInt(pluginConfig?.extractCacheMaxEntries, 1, 500),
+    extractCacheMaxChars: maybeBoundedInt(pluginConfig?.extractCacheMaxChars, 1, 2e7),
     extractDeadlineSeconds: maybeBoundedInt(pluginConfig?.extractDeadlineSeconds, 1, 180),
     localeCountry: maybeString(pluginConfig?.localeCountry),
     localeLanguage: maybeString(pluginConfig?.localeLanguage),
@@ -802,8 +803,13 @@ var DEFAULT_EXTRACT_DEADLINE_SECONDS = 30;
 function preflightDeadline(requested, operatorCeiling) {
   const requestedValue = requested == null ? void 0 : Number(requested);
   const ceiling = operatorCeiling == null ? DEFAULT_EXTRACT_DEADLINE_SECONDS : Number(operatorCeiling);
-  if (requestedValue != null && (!Number.isInteger(requestedValue) || requestedValue < 1) || !Number.isFinite(ceiling) || ceiling < 1) throw new Error("deadline_seconds must be a positive integer");
-  return Math.min(MAX_EXTRACT_DEADLINE_SECONDS, Math.floor(requestedValue ?? ceiling), Math.floor(ceiling));
+  if (requestedValue != null && (!Number.isInteger(requestedValue) || requestedValue < 1)) {
+    throw new Error("deadline_seconds must be a positive integer");
+  }
+  if (!Number.isInteger(ceiling) || ceiling < 1) {
+    throw new Error("operator deadline ceiling must be a positive integer");
+  }
+  return Math.min(MAX_EXTRACT_DEADLINE_SECONDS, requestedValue ?? ceiling, ceiling);
 }
 function preflightResearchFanout(providers) {
   return { providers: providers.slice(0, MAX_RESEARCH_FANOUT), omitted: Math.max(0, providers.length - MAX_RESEARCH_FANOUT), max_fanout: MAX_RESEARCH_FANOUT };
@@ -812,6 +818,7 @@ function preflightResearchFanout(providers) {
 // extract.ts
 var EXTRACT_CACHE_VERSION = 1;
 var DEFAULT_EXTRACT_CACHE_MAX_ENTRIES = 64;
+var DEFAULT_EXTRACT_CACHE_MAX_CHARS = 4e6;
 var extractCache = /* @__PURE__ */ new Map();
 function stableJson(value) {
   if (Array.isArray(value)) return value.map(stableJson);
@@ -833,14 +840,26 @@ function extractCacheGet(key) {
   extractCache.set(key, entry);
   return cloneResponse(entry.response);
 }
-function extractCachePut(key, response, fullText, maxEntries) {
+function fullTextChars(fullText) {
+  return fullText.reduce((total, record) => total + (record ? codepointLength(record.content) + codepointLength(record.raw_content ?? "") : 0), 0);
+}
+function extractCachePut(key, response, fullText, maxEntries, maxChars) {
+  const entryChars = fullTextChars(fullText);
   extractCache.delete(key);
+  if (entryChars > maxChars) return false;
   extractCache.set(key, { response: cloneResponse(response), fullText: structuredClone(fullText) });
-  while (extractCache.size > maxEntries) extractCache.delete(extractCache.keys().next().value);
+  let cacheChars = [...extractCache.values()].reduce((total, entry) => total + fullTextChars(entry.fullText), 0);
+  while (extractCache.size > maxEntries || cacheChars > maxChars) {
+    const oldestKey = extractCache.keys().next().value;
+    const oldest = extractCache.get(oldestKey);
+    cacheChars -= fullTextChars(oldest.fullText);
+    extractCache.delete(oldestKey);
+  }
+  return extractCache.has(key);
 }
 var MAX_FULLTEXT_RANGE_CHARS = 6e4;
 function contentVersion(record) {
-  return crypto.createHash("sha256").update(`${record.provider}\0${record.content}\0${record.raw_content}`).digest("hex").slice(0, 16);
+  return crypto.createHash("sha256").update(`${record.provider}\0${record.content}\0${record.raw_content ?? record.content}`).digest("hex").slice(0, 16);
 }
 function fullTextReference(cacheKey, index, record) {
   return `wspx:${EXTRACT_CACHE_VERSION}:${cacheKey}:${index}:${contentVersion(record)}`;
@@ -848,7 +867,7 @@ function fullTextReference(cacheKey, index, record) {
 function codepointSlice(content, start, end) {
   return Array.from(content).slice(start, end).join("");
 }
-function readCachedExtractContent(reference, start = 0, end) {
+function readCachedExtractContent(reference, start = 0, end, rawStart, rawEnd) {
   const match = /^wspx:(\d+):([a-f0-9]{64}):(\d+):([a-f0-9]{16})$/.exec(String(reference || ""));
   if (!match || Number(match[1]) !== EXTRACT_CACHE_VERSION) throw new Error("Unknown or expired extraction content reference");
   const entry = extractCache.get(match[2]);
@@ -863,7 +882,31 @@ function readCachedExtractContent(reference, start = 0, end) {
   }
   extractCache.delete(match[2]);
   extractCache.set(match[2], entry);
-  return { content_ref: reference, range: { start, end: resolvedEnd, total_chars: totalChars }, content: codepointSlice(record.content, start, resolvedEnd), raw_content: codepointSlice(record.raw_content, start, resolvedEnd), provider: record.provider };
+  const response = {
+    content_ref: reference,
+    range: { start, end: resolvedEnd, total_chars: totalChars },
+    content: codepointSlice(record.content, start, resolvedEnd),
+    provider: record.provider
+  };
+  if (record.raw_content == null) {
+    response.raw_content = codepointSlice(record.content, start, resolvedEnd);
+    return response;
+  }
+  const rawTotalChars = Array.from(record.raw_content).length;
+  response.raw_content_available = true;
+  response.raw_content_chars = rawTotalChars;
+  if (rawStart == null && rawEnd == null) return response;
+  const resolvedRawStart = rawStart == null ? 0 : rawStart;
+  if (!Number.isInteger(resolvedRawStart) || resolvedRawStart < 0 || resolvedRawStart > rawTotalChars) {
+    throw new Error("raw_content_start must be a valid Unicode codepoint offset");
+  }
+  const resolvedRawEnd = rawEnd == null ? Math.min(rawTotalChars, resolvedRawStart + MAX_FULLTEXT_RANGE_CHARS) : rawEnd;
+  if (!Number.isInteger(resolvedRawEnd) || resolvedRawEnd < resolvedRawStart || resolvedRawEnd > rawTotalChars || resolvedRawEnd - resolvedRawStart > MAX_FULLTEXT_RANGE_CHARS) {
+    throw new Error(`raw_content_end must select at most ${MAX_FULLTEXT_RANGE_CHARS} Unicode codepoints`);
+  }
+  response.raw_content_range = { start: resolvedRawStart, end: resolvedRawEnd, total_chars: rawTotalChars };
+  response.raw_content = codepointSlice(record.raw_content, resolvedRawStart, resolvedRawEnd);
+  return response;
 }
 var EXTRACT_PROVIDER_PRIORITY = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 var EXTRACT_PARAMETERS_SCHEMA = {
@@ -873,6 +916,8 @@ var EXTRACT_PARAMETERS_SCHEMA = {
     content_ref: { type: "string", description: "Process-local full-content reference returned by a prior extraction; valid only while its cache entry remains live." },
     content_start: { type: "integer", minimum: 0, description: "Unicode codepoint offset at which to read a referenced full text (default 0)." },
     content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a referenced full text (maximum range 60000)." },
+    raw_content_start: { type: "integer", minimum: 0, description: "Unicode codepoint offset for a distinct provider raw text returned by content_ref." },
+    raw_content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a distinct provider raw text (maximum range 60000)." },
     provider: {
       type: "string",
       enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
@@ -1144,8 +1189,9 @@ async function extractTavily(urls, apiKey, outputFormat = "markdown", includeIma
   const results = [];
   for (const item of Array.isArray(data?.results) ? data.results : []) {
     const url = String(item?.url || "");
-    const content = String(item?.raw_content || item?.content || "");
-    results.push(normalizeExtractResult("tavily", url, String(item?.title || ""), content, content, {
+    const content = String(item?.content || item?.raw_content || "");
+    const rawContent = String(item?.raw_content || item?.content || "");
+    results.push(normalizeExtractResult("tavily", url, String(item?.title || ""), content, rawContent, {
       images: includeImages ? normalizeImages(item?.images) : void 0,
       metadata: item?.metadata && typeof item.metadata === "object" ? item.metadata : void 0
     }));
@@ -1534,12 +1580,16 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       const contentItems = resultList.map((item, resultIndex) => ({ item, resultIndex })).filter(({ item }) => !item?.error && typeof item?.content === "string");
       const fullText = resultList.map((item) => {
         if (item?.error || typeof item?.content !== "string") return void 0;
+        const content = sanitizeExtractContent(item.content).normalize("NFC");
+        const rawContent = sanitizeExtractContent(typeof item.raw_content === "string" ? item.raw_content : item.content).normalize("NFC");
         return {
-          content: sanitizeExtractContent(item.content).normalize("NFC"),
-          raw_content: sanitizeExtractContent(typeof item.raw_content === "string" ? item.raw_content : item.content).normalize("NFC"),
+          content,
+          raw_content: rawContent === content ? void 0 : rawContent,
           provider: item.provider
         };
       });
+      const cacheMaxChars = runtimeConfig.extractCacheMaxChars ?? DEFAULT_EXTRACT_CACHE_MAX_CHARS;
+      const cacheableFullText = fullTextChars(fullText) <= cacheMaxChars;
       const sanitizedContent = contentItems.map(({ item }) => sanitizeExtractContent(item.content).normalize("NFC"));
       const selectedSpans = contextOptions.spans ? sanitizedContent.map((content) => selectSpans(content, contextOptions.spansQuery)) : [];
       const allocations = fairShareAllocations(
@@ -1574,7 +1624,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           }));
         }
         const full = fullText[resultIndex];
-        if (full) {
+        if (full && cacheableFullText && !contextOptions.cacheBypass) {
           item.full_content_ref = fullTextReference(cacheKey, resultIndex, full);
           item.full_content_chars = codepointLength(full.content);
         }
@@ -1618,7 +1668,15 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           fallback_errors: errors
         }
       };
-      if (!contextOptions.cacheBypass) extractCachePut(cacheKey, response, fullText, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
+      if (!contextOptions.cacheBypass && cacheableFullText) {
+        extractCachePut(
+          cacheKey,
+          response,
+          fullText,
+          runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES,
+          cacheMaxChars
+        );
+      }
       return response;
     } catch (error2) {
       errors.push({ provider: currentProvider, error: String(error2?.message || error2) });
@@ -4348,7 +4406,9 @@ function register(api) {
             const content = readCachedExtractContent(
               params.content_ref,
               params?.content_start == null ? 0 : Number(params.content_start),
-              params?.content_end == null ? void 0 : Number(params.content_end)
+              params?.content_end == null ? void 0 : Number(params.content_end),
+              params?.raw_content_start == null ? void 0 : Number(params.raw_content_start),
+              params?.raw_content_end == null ? void 0 : Number(params.raw_content_end)
             );
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(content)) }] };
           }
