@@ -137,6 +137,10 @@
           "type": "string"
         },
         "description": "Domains rescued from the built-in and extra blocklists."
+      },
+      "qualityDiversityRerank": {
+        "type": "boolean",
+        "description": "Opt-in: in research mode, move URL/content near-duplicate candidates behind the diverse result head without dropping them."
       }
     }
   },
@@ -269,6 +273,11 @@
     },
     "qualityAllowedDomains": {
       "label": "Rescued result domains",
+      "sensitive": false
+    },
+    "qualityDiversityRerank": {
+      "label": "Rerank research duplicates",
+      "description": "Moves near-duplicate research results behind the diverse head. Off by default.",
       "sensitive": false
     }
   }

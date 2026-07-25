@@ -34,6 +34,8 @@ export type RuntimeConfig = {
   // Parallel extraction full_content character budgets.
   parallelMaxCharsPerResult?: number;
   parallelMaxCharsTotal?: number;
+  // Opt-in: move near-duplicate research results behind the diverse head.
+  qualityDiversityRerank?: boolean;
 };
 
 function maybeString(value: unknown): string | undefined {
@@ -69,6 +71,7 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     localeLanguage: maybeString(pluginConfig?.localeLanguage),
     parallelMaxCharsPerResult: maybePositiveInt(pluginConfig?.parallelMaxCharsPerResult),
     parallelMaxCharsTotal: maybePositiveInt(pluginConfig?.parallelMaxCharsTotal),
+    qualityDiversityRerank: pluginConfig?.qualityDiversityRerank === true ? true : undefined,
   };
 }
 

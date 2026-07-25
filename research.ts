@@ -1,4 +1,5 @@
 import type { ProviderName } from "./routing-config.ts";
+import { rerankDuplicateCandidates } from "./diversity.ts";
 
 type Json = Record<string, any>;
 
@@ -70,6 +71,7 @@ export type RunResearchModeOptions = {
   maxExtractUrls?: number;
   timeBudgetSeconds?: number | null;
   nowFn?: () => number;
+  diversityRerank?: boolean;
 };
 
 type ResearchAttempt = {
@@ -146,7 +148,11 @@ export async function runResearchMode(options: RunResearchModeOptions): Promise<
   const providerResults = [...resultsByIndex.keys()].sort((a, b) => a - b).map((index) => resultsByIndex.get(index)!);
 
   const { results: deduped, dedupCount } = deduplicateResultsAcrossProviders(providerResults, maxResults);
-  const urls = deduped.map((item) => item.url).filter(Boolean).slice(0, Math.max(0, maxExtractUrls));
+  const diversityRerank = options.diversityRerank
+    ? rerankDuplicateCandidates(deduped)
+    : { results: deduped, duplicates: [] };
+  const researchResults = diversityRerank.results as ResearchSearchResult[];
+  const urls = researchResults.map((item) => item.url).filter(Boolean).slice(0, Math.max(0, maxExtractUrls));
   let extracted: { provider?: string | null; results?: Json[]; error?: string } = { provider: null, results: [] };
   let extractionError: string | null = null;
   if (urls.length) {
@@ -186,12 +192,17 @@ export async function runResearchMode(options: RunResearchModeOptions): Promise<
     mode: "research",
     provider: "research",
     query,
-    results: deduped,
+    results: researchResults,
     source_summaries: sourceSummaries,
     ...(status === "failed" ? { error: "All research providers failed" } : {}),
     routing,
     metadata: {
       dedup_count: dedupCount,
+      diversity_rerank: {
+        enabled: options.diversityRerank === true,
+        moved_candidate_count: new Set(diversityRerank.duplicates.map((item) => item.dropped_candidate)).size,
+        duplicates: diversityRerank.duplicates,
+      },
       providers_merged: providerResults.map(([provider]) => provider),
       extracted_url_count: sourceSummaries.length,
     },

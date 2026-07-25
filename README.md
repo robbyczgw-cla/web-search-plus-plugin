@@ -157,7 +157,7 @@ Guarded providers require `auto_allow=true` in routing preferences: SerpBase, Qu
 
 Search `provider_priority` and extraction `extract_provider_priority` are independent. Partial extraction lists are completed in the public Tavily-first order, and can be updated with `web_routing_config_plus(action="set_extract_provider_priority", providers=[...])`.
 
-Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, and `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source) for canonical-source routing classes.
+Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source), and a deterministic `diversity` score. The score combines registrable-domain coverage, canonical-URL uniqueness, snippet-trigram diversity, and provider mix. Set `qualityDiversityRerank: true` to move near-duplicate Research candidates behind the diverse head without removing results.
 
 Auto routing additionally learns from recent provider behavior: every call records latency, result volume, and errors into an in-memory rolling window, and routing scores get a bounded (±1.0) adjustment (`routing.adaptive_adjustments`) once enough fresh samples exist — enough to break ties, never enough to override a clear query-class winner.
 
@@ -184,7 +184,7 @@ For routing classes where source authority beats snippet luck (`official/vendor-
 3. Deduplicates results across providers.
 4. Extracts the top `research_extract_count` URLs (default 3, max 5) via `web_extract_plus` auto fallback into `source_summaries`.
 
-Research mode is best-effort: each launched/skipped provider is recorded in `routing.provider_attempts`; provider or extraction failures produce diagnostics in `routing.provider_errors` / `routing.extraction_error`. Partial evidence returns `status="degraded"`, while total fan-out failure returns a complete `status="failed"` envelope. A `research_time_budget` (seconds, default 55) gates launches, cancels the response wait for started overruns, and gates extraction. Quality reports are attached once after the merge.
+Research mode is best-effort: each launched/skipped provider is recorded in `routing.provider_attempts`; provider or extraction failures produce diagnostics in `routing.provider_errors` / `routing.extraction_error`. Partial evidence returns `status="degraded"`, while total fan-out failure returns a complete `status="failed"` envelope. A `research_time_budget` (seconds, default 55) gates launches, cancels the response wait for started overruns, and gates extraction. Quality reports are attached once after the merge. Optional `qualityDiversityRerank` moves later URL/content duplicate candidates behind the diverse result head before source extraction.
 
 ```json
 {

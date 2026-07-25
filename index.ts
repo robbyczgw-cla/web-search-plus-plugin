@@ -7,6 +7,7 @@ import { DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, loadRouti
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
+import { scoreDiversity } from "./diversity.ts";
 import { __resetProviderStatsForTests, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
 import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
 
@@ -1305,6 +1306,7 @@ function buildQualityReport(result: SearchResponse, routingInfo: Json, errors: J
     extract_recommended: extractReasons.length > 0,
     extract_reasons: extractReasons,
     authority_signals: routingClass ? buildAuthoritySignals(routingClass, results) : null,
+    diversity: scoreDiversity(results),
   };
 }
 
@@ -1455,6 +1457,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         maxResults: count,
         maxExtractUrls: researchExtractCount,
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
+        diversityRerank: runtimeConfig.qualityDiversityRerank === true,
       });
 
       if (freshness) {

@@ -10,6 +10,7 @@
 - Added independent `extract_provider_priority` routing preferences plus the `set_extract_provider_priority` config action. Partial lists append missing extraction providers in the stable Tavily-first default order without changing search priority. (Hermes v3.0.0)
 - Added bounded extraction context: request-order URL fan-out caps, operator ceilings, deterministic fair-share allocation across successful results, NFC Unicode-codepoint accounting, degraded status, and truthful omission/truncation metadata. (Hermes v3.0.0)
 - Added opt-in semantic spans (`spans`/`spans_query`) with deterministic lexical ranking, non-overlapping passages, NFC Unicode-codepoint half-open offsets, and `within_preview` flags. (Hermes v3.1.0)
+- Added calibrated result-set diversity diagnostics (registrable domains, canonical URLs, snippet trigrams, provider entropy) and opt-in Research duplicate re-ranking via `qualityDiversityRerank`. (Hermes v3.1.0)
 
 ### Fixed
 - Removed stale Perplexity/Kilo credential, freshness, setup, and provider claims from active package metadata and documentation after the source-only provider removal. Historical changelog entries remain intact. (Hermes v3.0.2)

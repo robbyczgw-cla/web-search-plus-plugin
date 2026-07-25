@@ -30,6 +30,7 @@
     "research.ts",
     "span-extraction.ts",
     "quality.ts",
+    "diversity.ts",
     "provider-stats.ts",
     "search-locale.ts",
     "routing-config.ts",

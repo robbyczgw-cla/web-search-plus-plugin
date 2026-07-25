@@ -99,6 +99,28 @@ test("runResearchMode dedupes across providers and reports provider errors", asy
   assert.equal(result.metadata.extracted_url_count, 2);
 });
 
+test("runResearchMode optionally moves content duplicates behind the diverse head", async () => {
+  const result = await runResearchMode({
+    query: "diversity",
+    researchProviders: ["a"],
+    executeSearch: async () => ({
+      results: [
+        { title: "First", url: "https://one.example/first", snippet: "same words form a repeated result snippet" },
+        { title: "Duplicate", url: "https://one.example/second", snippet: "same words form a repeated result snippet" },
+        { title: "Diverse", url: "https://two.example/third", snippet: "fresh material from another source entirely" },
+      ],
+    }),
+    extractUrls: async () => ({ provider: null, results: [] }),
+    maxResults: 5,
+    maxExtractUrls: 0,
+    diversityRerank: true,
+  });
+
+  assert.deepEqual(result.results.map((item: any) => item.title), ["First", "Diverse", "Duplicate"]);
+  assert.equal(result.metadata.diversity_rerank.enabled, true);
+  assert.equal(result.metadata.diversity_rerank.moved_candidate_count, 1);
+});
+
 test("runResearchMode time budget skips later providers and extraction deterministically", async () => {
   let clock = 0;
   const queried: string[] = [];

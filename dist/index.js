@@ -160,7 +160,8 @@ function getRuntimeConfig(pluginConfig) {
     localeCountry: maybeString(pluginConfig?.localeCountry),
     localeLanguage: maybeString(pluginConfig?.localeLanguage),
     parallelMaxCharsPerResult: maybePositiveInt(pluginConfig?.parallelMaxCharsPerResult),
-    parallelMaxCharsTotal: maybePositiveInt(pluginConfig?.parallelMaxCharsTotal)
+    parallelMaxCharsTotal: maybePositiveInt(pluginConfig?.parallelMaxCharsTotal),
+    qualityDiversityRerank: pluginConfig?.qualityDiversityRerank === true ? true : void 0
   };
 }
 function maybePositiveInt(value) {
@@ -1156,6 +1157,209 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
   };
 }
 
+// diversity.ts
+var MULTI_LABEL_SUFFIXES = /* @__PURE__ */ new Set([
+  "ac.at",
+  "ac.jp",
+  "ac.nz",
+  "ac.uk",
+  "asn.au",
+  "co.at",
+  "co.in",
+  "co.jp",
+  "co.nz",
+  "co.uk",
+  "com.au",
+  "com.br",
+  "com.cn",
+  "com.hk",
+  "com.mx",
+  "com.my",
+  "com.sg",
+  "com.tr",
+  "edu.au",
+  "edu.cn",
+  "edu.hk",
+  "edu.in",
+  "edu.my",
+  "edu.sg",
+  "ed.jp",
+  "firm.in",
+  "gen.in",
+  "go.jp",
+  "gov.au",
+  "gov.cn",
+  "gov.hk",
+  "gov.in",
+  "gov.uk",
+  "govt.nz",
+  "gv.at",
+  "id.au",
+  "ind.in",
+  "ltd.uk",
+  "me.uk",
+  "ne.jp",
+  "net.au",
+  "net.cn",
+  "net.in",
+  "net.nz",
+  "or.at",
+  "or.jp",
+  "org.au",
+  "org.cn",
+  "org.hk",
+  "org.in",
+  "org.nz",
+  "org.uk",
+  "plc.uk",
+  "priv.at",
+  "sch.uk"
+]);
+var TRACKING_PARAMETERS = /* @__PURE__ */ new Set([
+  "dclid",
+  "fbclid",
+  "gclid",
+  "igshid",
+  "mc_cid",
+  "mc_eid",
+  "mkt_tok",
+  "msclkid",
+  "oly_anon_id",
+  "oly_enc_id",
+  "ref",
+  "vero_id",
+  "yclid",
+  "_ga"
+]);
+function parsedUrl(value) {
+  if (!value || /\s/.test(value)) return null;
+  try {
+    return new URL(value.includes("://") ? value : `http://${value}`);
+  } catch {
+    return null;
+  }
+}
+function registrableDomain(value) {
+  const parsed = parsedUrl(value);
+  if (!parsed) return "";
+  const host = parsed.hostname.replace(/\.$/, "").toLowerCase();
+  if (!host || host.includes(":") || /^\d+(?:\.\d+){3}$/.test(host)) return host;
+  const labels = host.split(".").filter(Boolean);
+  if (labels.length < 2) return host;
+  const suffix = labels.slice(-2).join(".");
+  return MULTI_LABEL_SUFFIXES.has(suffix) && labels.length >= 3 ? labels.slice(-3).join(".") : suffix;
+}
+function canonicalDiversityUrl(value) {
+  const parsed = parsedUrl(value);
+  if (!parsed) return "";
+  parsed.hash = "";
+  parsed.hostname = parsed.hostname.replace(/\.$/, "").toLowerCase();
+  if (parsed.protocol === "http:" && parsed.port === "80" || parsed.protocol === "https:" && parsed.port === "443") parsed.port = "";
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  const kept = [...parsed.searchParams.entries()].filter(([name]) => !name.toLowerCase().startsWith("utm_") && !TRACKING_PARAMETERS.has(name.toLowerCase())).sort(([leftName, leftValue], [rightName, rightValue]) => leftName.localeCompare(rightName) || leftValue.localeCompare(rightValue));
+  parsed.search = "";
+  for (const [name, valuePart] of kept) parsed.searchParams.append(name, valuePart);
+  return parsed.toString().replace(/\/$/, "");
+}
+function wordTrigrams(value) {
+  const words = [...String(value || "").toLocaleLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map((match) => match[0]);
+  return new Set(words.slice(0, -2).map((word, index) => `${word}\0${words[index + 1]}\0${words[index + 2]}`));
+}
+function snippetSimilarity(left, right) {
+  const leftTrigrams = wordTrigrams(left);
+  const rightTrigrams = wordTrigrams(right);
+  if (!leftTrigrams.size || !rightTrigrams.size) return 0;
+  const intersection = [...leftTrigrams].filter((value) => rightTrigrams.has(value)).length;
+  return intersection / (/* @__PURE__ */ new Set([...leftTrigrams, ...rightTrigrams])).size;
+}
+function snippet(item) {
+  return String(item.snippet || item.description || "");
+}
+function duplicateAnalysis(results, threshold = 0.6) {
+  const canonicalSeen = /* @__PURE__ */ new Map();
+  const urlDuplicates = /* @__PURE__ */ new Map();
+  results.forEach((item, index) => {
+    const canonical = canonicalDiversityUrl(String(item.url || ""));
+    if (!canonical) return;
+    const prior = canonicalSeen.get(canonical);
+    if (prior == null) canonicalSeen.set(canonical, index);
+    else urlDuplicates.set(index, prior);
+  });
+  const contentDuplicates = /* @__PURE__ */ new Map();
+  let nearDuplicatePairs = 0;
+  results.forEach((item, index) => {
+    for (let prior = 0; prior < index; prior += 1) {
+      if (snippetSimilarity(snippet(results[prior]), snippet(item)) >= threshold) {
+        nearDuplicatePairs += 1;
+        if (!contentDuplicates.has(index)) contentDuplicates.set(index, prior);
+      }
+    }
+  });
+  const duplicates = [];
+  results.forEach((_item, index) => {
+    if (urlDuplicates.has(index)) duplicates.push({ kind: "url", kept: urlDuplicates.get(index), dropped_candidate: index });
+    if (contentDuplicates.has(index)) duplicates.push({ kind: "content", kept: contentDuplicates.get(index), dropped_candidate: index });
+  });
+  return { duplicates, urlDuplicates: urlDuplicates.size, nearDuplicatePairs };
+}
+function rounded(value) {
+  return Number(value.toFixed(4));
+}
+function scoreDiversity(results, threshold = 0.6) {
+  const count = results.length;
+  if (!count) {
+    return {
+      score: 0,
+      components: { domain_diversity: 0, url_duplication: 0, content_diversity: 0, provider_mix: 0 },
+      duplicates: [],
+      dominant_domain: null
+    };
+  }
+  const domains = results.map((item) => registrableDomain(String(item.url || ""))).filter(Boolean);
+  const domainCounts = /* @__PURE__ */ new Map();
+  for (const domain of domains) domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
+  const dominant = [...domainCounts.entries()].sort(([leftDomain, leftCount], [rightDomain, rightCount]) => rightCount - leftCount || leftDomain.localeCompare(rightDomain))[0];
+  const analysis = duplicateAnalysis(results, threshold);
+  const pairCount = count * (count - 1) / 2;
+  const providers = results.map((item) => String(item.provider || "").trim()).filter(Boolean);
+  const providerCounts = /* @__PURE__ */ new Map();
+  for (const provider of providers) providerCounts.set(provider, (providerCounts.get(provider) || 0) + 1);
+  let providerMix = 1;
+  if (providerCounts.size > 1) {
+    const entropy = [...providerCounts.values()].reduce((sum, providerCount) => {
+      const share = providerCount / providers.length;
+      return sum - share * Math.log(share);
+    }, 0);
+    providerMix = entropy / Math.log(providerCounts.size);
+  }
+  const components = {
+    domain_diversity: rounded(domainCounts.size / count),
+    url_duplication: rounded(Math.max(0, 1 - analysis.urlDuplicates / count)),
+    content_diversity: rounded(pairCount ? Math.max(0, 1 - analysis.nearDuplicatePairs / pairCount) : 1),
+    provider_mix: rounded(Math.max(0, providerMix))
+  };
+  return {
+    score: rounded(Math.max(0, Math.min(
+      1,
+      0.4 * components.domain_diversity + 0.3 * components.url_duplication + 0.2 * components.content_diversity + 0.1 * components.provider_mix
+    ))),
+    components,
+    duplicates: analysis.duplicates,
+    dominant_domain: dominant ? { domain: dominant[0], share: rounded(dominant[1] / count) } : null
+  };
+}
+function rerankDuplicateCandidates(results, threshold = 0.6) {
+  const analysis = duplicateAnalysis(results, threshold);
+  const duplicateIndices = new Set(analysis.duplicates.map((item) => item.dropped_candidate));
+  return {
+    results: [
+      ...results.filter((_item, index) => !duplicateIndices.has(index)),
+      ...results.filter((_item, index) => duplicateIndices.has(index))
+    ],
+    duplicates: analysis.duplicates
+  };
+}
+
 // research.ts
 function normalizeResultUrl(url) {
   try {
@@ -1249,7 +1453,9 @@ async function runResearchMode(options) {
   }
   const providerResults = [...resultsByIndex.keys()].sort((a, b) => a - b).map((index) => resultsByIndex.get(index));
   const { results: deduped, dedupCount } = deduplicateResultsAcrossProviders(providerResults, maxResults);
-  const urls = deduped.map((item) => item.url).filter(Boolean).slice(0, Math.max(0, maxExtractUrls));
+  const diversityRerank = options.diversityRerank ? rerankDuplicateCandidates(deduped) : { results: deduped, duplicates: [] };
+  const researchResults = diversityRerank.results;
+  const urls = researchResults.map((item) => item.url).filter(Boolean).slice(0, Math.max(0, maxExtractUrls));
   let extracted = { provider: null, results: [] };
   let extractionError = null;
   if (urls.length) {
@@ -1282,12 +1488,17 @@ async function runResearchMode(options) {
     mode: "research",
     provider: "research",
     query,
-    results: deduped,
+    results: researchResults,
     source_summaries: sourceSummaries,
     ...status === "failed" ? { error: "All research providers failed" } : {},
     routing,
     metadata: {
       dedup_count: dedupCount,
+      diversity_rerank: {
+        enabled: options.diversityRerank === true,
+        moved_candidate_count: new Set(diversityRerank.duplicates.map((item) => item.dropped_candidate)).size,
+        duplicates: diversityRerank.duplicates
+      },
       providers_merged: providerResults.map(([provider]) => provider),
       extracted_url_count: sourceSummaries.length
     }
@@ -1440,13 +1651,13 @@ function rerankResultsForIntent(query, routingClass, results) {
     const url = item.url || "";
     const domain = resultDomain(url);
     const title = String(item.title || "").toLowerCase();
-    const snippet = String(item.snippet || item.description || "").toLowerCase();
+    const snippet2 = String(item.snippet || item.description || "").toLowerCase();
     let score = (results.length - idx) * 0.01;
     if (rules.boost.some((rule) => urlMatchesRule(url, rule))) score += 10;
     if (rules.demote.some((rule) => urlMatchesRule(url, rule))) score -= 6;
     if (routingClass === "official/vendor-release" && ["mistral", "anthropic", "openai", "nvidia", "google", "meta"].some((term) => domain.includes(term))) score += 3;
     if (routingClass === "official/regulatory" && (url.toLowerCase().endsWith(".pdf") || title.includes("pdf"))) score += 2;
-    if (q.includes("official") && (title.includes("official") || snippet.includes("official"))) score += 1;
+    if (q.includes("official") && (title.includes("official") || snippet2.includes("official"))) score += 1;
     return { score, idx, item };
   });
   const reranked = [...scored].sort((a, b) => b.score - a.score || a.idx - b.idx).map(({ item }) => ({ ...item }));
@@ -2864,8 +3075,8 @@ async function searchExa(query, apiKey, maxResults, exaDepth, includeDomains, ex
     const results2 = [];
     if (synthesis) results2.push({ title: `Exa ${exaDepth.replace(/-/g, " ")} synthesis`, url: "", snippet: synthesis, full_synthesis: synthesis, score: 1, grounding: grounding.slice(0, 10), type: "synthesis" });
     for (const item of (data.results || []).slice(0, maxResults)) {
-      const snippet = item.text ? String(item.text).slice(0, 800) : (item.highlights || [])[0] || "";
-      results2.push({ title: item.title || "", url: item.url || "", snippet, score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author, type: "source" });
+      const snippet2 = item.text ? String(item.text).slice(0, 800) : (item.highlights || [])[0] || "";
+      results2.push({ title: item.title || "", url: item.url || "", snippet: snippet2, score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author, type: "source" });
     }
     return { provider: "exa", query, exa_depth: exaDepth, results: results2, images: [], answer: synthesis || results2[1]?.snippet || "", grounding, metadata: { synthesis_length: synthesis.length, source_count: (data.results || []).length } };
   }
@@ -3072,7 +3283,8 @@ function buildQualityReport(result, routingInfo, errors, cooldownSkips, provider
     fallback_chain: { providers_considered: providersConsidered, provider_errors: errors, cooldown_skips: cooldownSkips },
     extract_recommended: extractReasons.length > 0,
     extract_reasons: extractReasons,
-    authority_signals: routingClass ? buildAuthoritySignals(routingClass, results) : null
+    authority_signals: routingClass ? buildAuthoritySignals(routingClass, results) : null,
+    diversity: scoreDiversity(results)
   };
 }
 async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
@@ -3209,7 +3421,8 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers, routingConfig.extract_provider_priority),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
-        timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null
+        timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
+        diversityRerank: runtimeConfig.qualityDiversityRerank === true
       });
       if (freshness) {
         result2.metadata = {
