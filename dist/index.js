@@ -663,7 +663,7 @@ async function searchHound(query, endpoint, maxResults, freshness, includeDomain
   };
   if (["day", "week", "month", "year"].includes(String(freshness || ""))) houndOptions.freshness = freshness;
   if (includeDomains.length === 1) houndOptions.site = includeDomains[0];
-  if (excludeDomains.length) houndOptions.exclude_sites = includeDomains.length ? excludeDomains : excludeDomains;
+  if (excludeDomains.length) houndOptions.exclude_sites = excludeDomains;
   if (locale?.language) houndOptions.language = locale.language;
   if (locale?.country) houndOptions.region = locale.language ? `${locale.country}-${locale.language}` : locale.country;
   const payload = await callHoundTool(endpoint, "mcp_smart_search", {
@@ -4255,6 +4255,14 @@ function register(api) {
     },
     { optional: true }
   );
+  const BENCHMARK_LATENCY_CEILING_MS = 3e4;
+  const BENCHMARK_CONTENT_TARGET_CHARS_PER_URL = 5e3;
+  const BENCHMARK_SCORE_WEIGHTS = { success_rate: 0.6, latency: 0.2, content_yield: 0.2 };
+  const benchmarkScore = (successRate, latencyMs, returnedChars, urlCount) => {
+    const latency = Math.max(0, 1 - latencyMs / BENCHMARK_LATENCY_CEILING_MS);
+    const content = Math.min(1, returnedChars / Math.max(1, urlCount * BENCHMARK_CONTENT_TARGET_CHARS_PER_URL));
+    return Number((0.6 * successRate + 0.2 * latency + 0.2 * content).toFixed(3));
+  };
   api.registerTool(
     {
       name: "web_extract_benchmark_plus",
@@ -4271,10 +4279,12 @@ function register(api) {
           for (const provider of candidates2) {
             const startedAt2 = Date.now();
             const response = await extractPlus(params.urls, provider, "markdown", false, false, false, runtimeConfig, routing.disabled_providers, routing.extract_provider_priority, { autoAllow: routing.auto_allow, strictProvider: true, cacheBypass: true });
-            attempts.push({ provider, latency_ms: Date.now() - startedAt2, status: response.error ? "failed" : "success", result_count: response.results.length, error: response.error });
+            const returnedChars = (response.results || []).reduce((sum, item) => sum + String(item?.content || "").length, 0);
+            const successCount = (response.results || []).filter((item) => String(item?.content || "").length > 0).length;
+            attempts.push({ provider, latency_ms: Date.now() - startedAt2, status: response.error ? "failed" : "success", result_count: response.results.length, returned_chars: returnedChars, success_rate: Number((successCount / Math.max(1, params.urls.length)).toFixed(3)), score: benchmarkScore(successCount / Math.max(1, params.urls.length), Date.now() - startedAt2, returnedChars, params.urls.length), error: response.error });
           }
-          const priority_recommendation = attempts.filter((attempt) => attempt.status === "success" && attempt.result_count > 0).sort((left, right) => left.latency_ms - right.latency_ms).map((attempt) => attempt.provider);
-          const result = { scope: "process_local", explicit_opt_in: true, max_provider_calls: maxCalls, provider_calls_made: attempts.length, hound_auto_allow: routing.auto_allow.hound === true, attempts, priority_recommendation };
+          const priority_recommendation = attempts.filter((attempt) => attempt.status === "success" && attempt.result_count > 0).sort((left, right) => right.score - left.score || left.latency_ms - right.latency_ms).map((attempt) => attempt.provider);
+          const result = { scope: "process_local", explicit_opt_in: true, score_weights: BENCHMARK_SCORE_WEIGHTS, max_provider_calls: maxCalls, provider_calls_made: attempts.length, hound_auto_allow: routing.auto_allow.hound === true, attempts, priority_recommendation };
           saveExtractBenchmark(result);
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error2) {

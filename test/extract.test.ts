@@ -357,6 +357,30 @@ test("register exposes web_extract_plus tool", () => {
   assert.ok(schema.properties.provider.enum.includes("you"));
 });
 
+test("extract benchmark ranks by content yield, not by latency alone", async () => {
+  const registered = new Map<string, any>();
+  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { tavilyApiKey: "tvly-test", exaApiKey: "exa-test" } });
+  const thin = "x";
+  const rich = "y".repeat(6000);
+  await withMockedFetch(
+    (url) => (url.includes("exa.ai")
+      ? mockJsonResponse({ results: [{ url: "https://example.com/bench", text: rich }] })
+      : mockJsonResponse({ results: [{ url: "https://example.com/bench", raw_content: thin }] })),
+    async () => {
+      const payload = JSON.parse((await registered.get("web_extract_benchmark_plus").execute("bench-score", { urls: ["https://example.com/bench"], max_provider_calls: 2 })).content[0].text);
+      assert.equal(payload.provider_calls_made, 2);
+      assert.deepEqual(payload.score_weights, { success_rate: 0.6, latency: 0.2, content_yield: 0.2 });
+      const tavily = payload.attempts.find((attempt: any) => attempt.provider === "tavily");
+      const exa = payload.attempts.find((attempt: any) => attempt.provider === "exa");
+      assert.equal(tavily.success_rate, 1);
+      assert.equal(exa.success_rate, 1);
+      assert.ok(exa.returned_chars > tavily.returned_chars);
+      assert.ok(exa.score > tavily.score, `expected exa ${exa.score} > tavily ${tavily.score}`);
+      assert.equal(payload.priority_recommendation[0], "exa");
+    },
+  );
+});
+
 test("extract benchmark is explicit, capped, and keeps Hound behind auto_allow", async () => {
   const registered = new Map<string, any>();
   register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { tavilyApiKey: "tvly-test", houndMcpUrl: "http://127.0.0.1:3000/mcp" } });

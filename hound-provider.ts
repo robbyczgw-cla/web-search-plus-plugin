@@ -55,7 +55,7 @@ export async function searchHound(
   };
   if (["day", "week", "month", "year"].includes(String(freshness || ""))) houndOptions.freshness = freshness;
   if (includeDomains.length === 1) houndOptions.site = includeDomains[0];
-  if (excludeDomains.length) houndOptions.exclude_sites = includeDomains.length ? excludeDomains : excludeDomains;
+  if (excludeDomains.length) houndOptions.exclude_sites = excludeDomains;
   if (locale?.language) houndOptions.language = locale.language;
   if (locale?.country) houndOptions.region = locale.language ? `${locale.country}-${locale.language}` : locale.country;
 

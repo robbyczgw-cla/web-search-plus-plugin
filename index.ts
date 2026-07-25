@@ -1798,6 +1798,18 @@ export function register(api: any) {
     { optional: true },
   );
 
+  // Bewertung wie in der Hermes-Referenz (extract_bench_v3.py:64-76): Erfolg dominiert,
+  // Latenz und Inhaltsausbeute sind Nebenkriterien. Eine reine Latenzsortierung wuerde
+  // den schnellsten Extraktor empfehlen, nicht den brauchbarsten.
+  const BENCHMARK_LATENCY_CEILING_MS = 30_000;
+  const BENCHMARK_CONTENT_TARGET_CHARS_PER_URL = 5_000;
+  const BENCHMARK_SCORE_WEIGHTS = { success_rate: 0.6, latency: 0.2, content_yield: 0.2 };
+  const benchmarkScore = (successRate: number, latencyMs: number, returnedChars: number, urlCount: number): number => {
+    const latency = Math.max(0, 1 - latencyMs / BENCHMARK_LATENCY_CEILING_MS);
+    const content = Math.min(1, returnedChars / Math.max(1, urlCount * BENCHMARK_CONTENT_TARGET_CHARS_PER_URL));
+    return Number((0.6 * successRate + 0.2 * latency + 0.2 * content).toFixed(3));
+  };
+
   api.registerTool(
     {
       name: "web_extract_benchmark_plus",
@@ -1814,10 +1826,12 @@ export function register(api: any) {
           for (const provider of candidates) {
             const startedAt = Date.now();
             const response = await extractPlus(params.urls, provider, "markdown", false, false, false, runtimeConfig, routing.disabled_providers, routing.extract_provider_priority, { autoAllow: routing.auto_allow, strictProvider: true, cacheBypass: true });
-            attempts.push({ provider, latency_ms: Date.now() - startedAt, status: response.error ? "failed" : "success", result_count: response.results.length, error: response.error });
+            const returnedChars = (response.results || []).reduce((sum: number, item: any) => sum + String(item?.content || "").length, 0);
+            const successCount = (response.results || []).filter((item: any) => String(item?.content || "").length > 0).length;
+            attempts.push({ provider, latency_ms: Date.now() - startedAt, status: response.error ? "failed" : "success", result_count: response.results.length, returned_chars: returnedChars, success_rate: Number((successCount / Math.max(1, params.urls.length)).toFixed(3)), score: benchmarkScore(successCount / Math.max(1, params.urls.length), Date.now() - startedAt, returnedChars, params.urls.length), error: response.error });
           }
-          const priority_recommendation = attempts.filter((attempt) => attempt.status === "success" && attempt.result_count > 0).sort((left, right) => left.latency_ms - right.latency_ms).map((attempt) => attempt.provider);
-          const result = { scope: "process_local", explicit_opt_in: true, max_provider_calls: maxCalls, provider_calls_made: attempts.length, hound_auto_allow: routing.auto_allow.hound === true, attempts, priority_recommendation };
+          const priority_recommendation = attempts.filter((attempt) => attempt.status === "success" && attempt.result_count > 0).sort((left, right) => right.score - left.score || left.latency_ms - right.latency_ms).map((attempt) => attempt.provider);
+          const result = { scope: "process_local", explicit_opt_in: true, score_weights: BENCHMARK_SCORE_WEIGHTS, max_provider_calls: maxCalls, provider_calls_made: attempts.length, hound_auto_allow: routing.auto_allow.hound === true, attempts, priority_recommendation };
           saveExtractBenchmark(result);
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error: any) {
