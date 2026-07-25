@@ -33,6 +33,7 @@ export const LATENCY_CEILING_SECONDS = 8.0;
 export const PERFORMANCE_BASELINE = 0.75;
 
 const providerSamples = new Map<string, ProviderSample[]>();
+const processStartedAt = Date.now();
 
 function nowSeconds(): number {
   return Date.now() / 1000;
@@ -112,6 +113,23 @@ export function performanceAdjustments(providers: string[], now?: number): Recor
     if (value !== 0) adjustments[provider] = value;
   }
   return adjustments;
+}
+
+// Read-only process health. The timestamp deliberately describes this host
+// process, not a fictional cross-restart day bucket.
+export function getProviderHealthSnapshot(providers: string[], now?: number): {
+  scope: "process_local";
+  process_started_at: string;
+  observed_since_seconds: number;
+  providers: Record<string, { samples: number; success_rate: number; empty_rate: number; median_latency_seconds: number | null; score_adjustment: number }>;
+} {
+  const nowMs = Date.now();
+  const snapshots: Record<string, { samples: number; success_rate: number; empty_rate: number; median_latency_seconds: number | null; score_adjustment: number }> = {};
+  for (const provider of providers) {
+    const performance = getProviderPerformance(provider, now);
+    snapshots[provider] = { ...(performance || { samples: 0, success_rate: 0, empty_rate: 0, median_latency_seconds: null }), score_adjustment: performanceAdjustment(provider, now) };
+  }
+  return { scope: "process_local", process_started_at: new Date(processStartedAt).toISOString(), observed_since_seconds: Math.max(0, Math.floor((nowMs - processStartedAt) / 1000)), providers: snapshots };
 }
 
 export function __resetProviderStatsForTests(): void {

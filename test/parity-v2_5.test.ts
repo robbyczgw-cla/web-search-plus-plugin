@@ -20,6 +20,7 @@ import {
   MAX_SCORE_ADJUSTMENT,
   performanceAdjustment,
   performanceAdjustments,
+  getProviderHealthSnapshot,
   recordProviderOutcome,
   __resetProviderStatsForTests,
 } from "../provider-stats.ts";
@@ -120,6 +121,16 @@ test("performanceAdjustment stays 0 below the sample threshold and bounded after
 
   const adjustments = performanceAdjustments(["tavily", "exa", "brave"]);
   assert.deepEqual(Object.keys(adjustments).sort(), ["exa", "tavily"]);
+});
+
+test("provider health snapshot is explicitly scoped to this process", () => {
+  __resetProviderStatsForTests();
+  recordProviderOutcome("tavily", 0.2, 3, false);
+  const snapshot = getProviderHealthSnapshot(["tavily", "exa"]);
+  assert.equal(snapshot.scope, "process_local");
+  assert.match(snapshot.process_started_at, /T/);
+  assert.equal(snapshot.providers.tavily.samples, 1);
+  assert.equal(snapshot.providers.exa.samples, 0);
 });
 
 test("stale samples no longer influence the adjustment", () => {

@@ -9,7 +9,7 @@ import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProvi
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
 import { scoreDiversity } from "./diversity.ts";
 import { searchHound } from "./hound-provider.ts";
-import { __resetProviderStatsForTests, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
+import { __resetProviderStatsForTests, getProviderHealthSnapshot, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
 import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
 import { preflightResearchFanout } from "./budget-preflight.ts";
 
@@ -1772,6 +1772,18 @@ function executeRoutingConfigAction(pluginConfig: Record<string, any>, params: R
 }
 
 export function register(api: any) {
+  api.registerTool(
+    {
+      name: "web_search_health_plus",
+      description: "Read-only process-local provider health from adaptive routing samples. Reports only what this host process has observed since it started; no HTTP endpoint or persisted history is used.",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        return { content: [{ type: "text", text: JSON.stringify(getProviderHealthSnapshot(ALL_PROVIDERS)) }] };
+      },
+    },
+    { optional: true },
+  );
+
   api.registerTool(
     {
       name: "web_search_plus",

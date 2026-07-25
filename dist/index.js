@@ -2172,6 +2172,7 @@ var MAX_SCORE_ADJUSTMENT = 1;
 var LATENCY_CEILING_SECONDS = 8;
 var PERFORMANCE_BASELINE = 0.75;
 var providerSamples = /* @__PURE__ */ new Map();
+var processStartedAt = Date.now();
 function nowSeconds() {
   return Date.now() / 1e3;
 }
@@ -2225,6 +2226,15 @@ function performanceAdjustments(providers, now) {
     if (value !== 0) adjustments[provider] = value;
   }
   return adjustments;
+}
+function getProviderHealthSnapshot(providers, now) {
+  const nowMs = Date.now();
+  const snapshots = {};
+  for (const provider of providers) {
+    const performance = getProviderPerformance(provider, now);
+    snapshots[provider] = { ...performance || { samples: 0, success_rate: 0, empty_rate: 0, median_latency_seconds: null }, score_adjustment: performanceAdjustment(provider, now) };
+  }
+  return { scope: "process_local", process_started_at: new Date(processStartedAt).toISOString(), observed_since_seconds: Math.max(0, Math.floor((nowMs - processStartedAt) / 1e3)), providers: snapshots };
 }
 function __resetProviderStatsForTests() {
   providerSamples.clear();
@@ -4172,6 +4182,17 @@ function executeRoutingConfigAction(pluginConfig, params) {
   throw new Error(`Unsupported routing config action: ${action}`);
 }
 function register(api) {
+  api.registerTool(
+    {
+      name: "web_search_health_plus",
+      description: "Read-only process-local provider health from adaptive routing samples. Reports only what this host process has observed since it started; no HTTP endpoint or persisted history is used.",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        return { content: [{ type: "text", text: JSON.stringify(getProviderHealthSnapshot(ALL_PROVIDERS)) }] };
+      }
+    },
+    { optional: true }
+  );
   api.registerTool(
     {
       name: "web_search_plus",

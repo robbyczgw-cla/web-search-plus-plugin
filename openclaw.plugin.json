@@ -7,7 +7,8 @@
     "tools": [
       "web_search_plus",
       "web_extract_plus",
-      "web_routing_config_plus"
+      "web_routing_config_plus",
+      "web_search_health_plus"
     ]
   },
   "toolMetadata": {
@@ -18,6 +19,9 @@
       "optional": true
     },
     "web_routing_config_plus": {
+      "optional": true
+    },
+    "web_search_health_plus": {
       "optional": true
     }
   },
