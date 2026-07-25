@@ -2333,7 +2333,7 @@ var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
   properties: {
     action: { type: "string", enum: ROUTING_CONFIG_ACTIONS },
     provider: { type: "string", enum: [...SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto"), "none", "null"] },
-    enabled: { type: "boolean", description: "Used by set_auto_routing. True enables auto routing, false switches provider:auto to strict default_provider mode." },
+    enabled: { type: "boolean", description: "Boolean value used by set_auto_routing and set_auto_allow." },
     providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Search or extraction priority order, depending on the selected action. Missing providers are appended in default order." },
     confidence_threshold: { type: "number", minimum: 0, maximum: 1 },
     profile: { type: "string", enum: ["standard", "self_hosted"] }
@@ -4075,7 +4075,7 @@ function register(api) {
   api.registerTool(
     {
       name: "web_extract_plus",
-      description: "Extract URL content with automatic fallback across Firecrawl, Linkup, Tavily, Exa, and You.com, with per-URL errors and unified output.",
+      description: "Extract URL content with bounded automatic fallback across configured extraction providers, including optional local Hound MCP, with per-URL errors and unified output.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig = api.pluginConfig ?? {};

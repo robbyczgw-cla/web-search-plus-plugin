@@ -15,6 +15,7 @@
 - Added a bounded Streamable HTTP MCP transport for the Hound sidecar: strict loopback endpoint validation, redirects disabled, finite deadlines, response-size limits, sanitized failure codes, and best-effort session termination. (Hermes v3.2.0)
 - Added Hound search/extraction adapters for `mcp_smart_search` and per-URL `mcp_smart_fetch`, with Hound caching disabled, stable source-only projections, domain filtering, URL-cardinality preservation, and optional secondary raw-HTML fetches. (Hermes v3.2.0)
 - Hound defaults to `auto_allow=false` and is excluded consistently from automatic search selection, fallback, Research, and extraction fallback. Operators can opt in with `web_routing_config_plus(action="set_auto_allow", provider="hound", enabled=true)`; explicit Hound calls remain available. (Hermes v3.2.0)
+- Added an OpenClaw-specific Hound sidecar guide covering the separately pinned installation, loopback-only transport, explicit verification, auto-routing opt-in, privacy, caching, and attribution. (Hermes v3.2.0)
 
 ### Fixed
 - Removed stale Perplexity/Kilo credential, freshness, setup, and provider claims from active package metadata and documentation after the source-only provider removal. Historical changelog entries remain intact. (Hermes v3.0.2)

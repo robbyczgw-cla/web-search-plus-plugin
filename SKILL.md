@@ -1,7 +1,7 @@
 ---
 name: web-search-plus-plugin-v2
 version: 3.2.0
-description: OpenClaw plugin for Routing v2 multi-provider web search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, Tavily-first extraction, quality reports, onboarding CLI, and runtime routing preferences. Registers `web_search_plus`, `web_extract_plus`, and `web_routing_config_plus`.
+description: OpenClaw plugin for Routing v2 multi-provider web search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, Tavily-first extraction, optional local Hound MCP search/extraction, quality reports, onboarding CLI, and runtime routing preferences. Registers `web_search_plus`, `web_extract_plus`, and `web_routing_config_plus`.
 ---
 
 # Web Search Plus Plugin
@@ -28,7 +28,7 @@ Run:
 web-search-plus-setup setup --preset starter --config ./web-search-plus-plugin.config.json
 ```
 
-Tavily is the default first extraction provider in auto mode. The fallback chain is Tavily → Exa → Linkup → Parallel → Firecrawl → You.com → Keenable → Serper (webpage scraper). Extraction targets are validated against private/internal destinations by default. Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; request-side `max_urls`/`max_context_chars` can lower those limits and operator settings can impose ceilings. Oversized pages return a head/tail window governed by `extractCharLimit`.
+Tavily is the default first extraction provider in auto mode. The fallback chain is Tavily → Exa → Linkup → Parallel → Firecrawl → You.com → Keenable → Serper (webpage scraper) → Hound. Hound is a separately installed local MCP sidecar and remains explicit-only until deliberately auto-allowed. Extraction targets are validated against private/internal destinations by default. Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; request-side `max_urls`/`max_context_chars` can lower those limits and operator settings can impose ceilings. Oversized pages return a head/tail window governed by `extractCharLimit`.
 
 Use `spans=true` for deterministic query-conditioned passages. `spans_query` supplies the ranking query; offsets are half-open Unicode-codepoint positions into the complete cleaned NFC text, and `within_preview` says whether each passage is present in the inline preview.
 
@@ -48,6 +48,7 @@ Search providers:
 - `youApiKey`
 - `searxngInstanceUrl`
 - `keenableApiKey`
+- `houndMcpUrl`
 
 Extra settings:
 
@@ -55,6 +56,7 @@ Extra settings:
 - `searxngAllowPrivate`
 - `routingConfigPath` (namespace only; runtime prefs are in-memory)
 - `keenableAllowPublic` (opt-in keyless Keenable public tier)
+- `houndTimeoutSeconds` / `houndMaxResponseBytes` / `houndMaxContentChars` (bounded Hound MCP limits)
 - `extractAllowPrivateUrls` (opt-in private/internal extraction targets)
 - `extractCharLimit` (inline extract budget, default 15000)
 - `extractMaxUrls` (operator URL ceiling, default 10)
@@ -68,7 +70,7 @@ Extra settings:
 Auto routing is class-aware and benchmark-backed. Key classes: multilingual/current, local/shopping, docs/api, academic/arxiv, community/reddit, security/cve, official/vendor-release, official/regulatory, finance/IR, weather/factual, oss-discovery, and answer/synthesis.
 
 Default auto pool: You.com, Serper, Brave, Exa, Firecrawl, Tavily, Linkup.
-Guarded providers require `auto_allow[provider]=true` for auto routing: SerpBase, Querit, Parallel. Brave is auto-allowed by default for independent-index source diversity and can still be disabled explicitly.
+Guarded providers require `auto_allow[provider]=true` for auto routing: SerpBase, Querit, Parallel, Hound. Brave is auto-allowed by default for independent-index source diversity and can still be disabled explicitly. Hound setup and security constraints are documented in `docs/HOUND.md`.
 
 `provider_priority` controls search only. `extract_provider_priority` independently controls `web_extract_plus(provider="auto")`; missing extraction providers are appended in the stable Tavily-first default order.
 

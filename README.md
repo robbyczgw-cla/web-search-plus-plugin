@@ -1,4 +1,4 @@
-# web-search-plus-plugin-v2
+# Web Search Plus Plugin
 
 <p align="center">
   <img src="docs/assets/web-search-plus-logo.png" alt="web search plus logo" width="180">
@@ -8,8 +8,8 @@ Native OpenClaw plugin for one clean set of web tools.
 
 Current version: **3.2.0**
 
-> **Status: synced with the Hermes engine v2.9 line.**
-> v3.2.0 brings this OpenClaw build back to feature parity with **[hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus)** (v2.5–v2.9 plus the unreleased Parallel budget change), adapted for the in-process, scanner-safe OpenClaw runtime. The Hermes repo remains the engine source of truth; host-runtime-specific Hermes features (subprocess loaders, filesystem paging, bench/eval tooling) are intentionally not ported.
+> **Status: synced through the applicable Hermes v3.2 line.**
+> The v3.0–v3.2 changes are ported where they fit the in-process, scanner-safe OpenClaw runtime. Hermes-only subprocess, filesystem-state, migration, and benchmark infrastructure remains intentionally unported; see `PLAN.md` for the feature-by-feature assessment.
 
 It registers:
 
@@ -64,6 +64,7 @@ Runtime credentials still come from explicit OpenClaw plugin config fields. The 
 - **You.com** — current web / RAG-style snippets
 - **SearXNG** — self-hosted metasearch
 - **Keenable** — independent web index; keyed or opt-in keyless public tier, lowest-priority fallback
+- **Hound** — optional local MCP sidecar; explicit-only until deliberately auto-allowed ([setup and security guide](docs/HOUND.md))
 
 ### Extraction providers
 
@@ -77,6 +78,7 @@ Auto fallback order:
 - You.com
 - Keenable (keyed or opt-in keyless public tier)
 - Serper (webpage scraper via `scrape.serper.dev`, last resort)
+- Hound (local MCP sidecar, guarded and explicit-only by default)
 
 Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net. Extraction targets are validated against private/internal destinations by default (see `extractAllowPrivateUrls`). Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; `max_urls` and `max_context_chars` may request lower limits, while `extractMaxUrls` and `extractMaxContextChars` set operator ceilings. Oversized pages return a head/tail window governed by `extractCharLimit`, and inline base64 images are replaced with `[IMAGE: alt]` placeholders.
 
@@ -100,6 +102,7 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `youApiKey`
 - `searxngInstanceUrl`
 - `keenableApiKey`
+- `houndMcpUrl`
 
 ### Extra fields
 
@@ -107,6 +110,7 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `searxngAllowPrivate`
 - `routingConfigPath` — optional namespace for in-memory routing preferences
 - `keenableAllowPublic` — opt-in keyless Keenable public tier (unauthenticated shared service, off by default)
+- `houndTimeoutSeconds` / `houndMaxResponseBytes` / `houndMaxContentChars` — bounded local Hound MCP transport and extraction request limits; see [the Hound guide](docs/HOUND.md)
 - `extractAllowPrivateUrls` — opt-in: allow extraction of private/internal URLs (trusted intranets only)
 - `extractCharLimit` — inline character budget per extracted page before head/tail truncation (default 15000)
 - `extractMaxUrls` — operator ceiling for URLs processed per extraction call (default 10, hard maximum 50)
@@ -153,7 +157,7 @@ Classes:
 - answer/synthesis → flags `answer_mode_recommended`; it does **not** resurrect `web_answer_plus`
 
 Default conservative auto pool: You.com, Serper, Brave, Exa, Firecrawl, Tavily, Linkup.
-Guarded providers require `auto_allow=true` in routing preferences: SerpBase, Querit, Parallel. Brave is in the default Classic auto pool for independent-index source diversity; operators can still set `auto_allow.brave=false`.
+Guarded providers require `auto_allow=true` in routing preferences: SerpBase, Querit, Parallel, Hound. Brave is in the default Classic auto pool for independent-index source diversity; operators can still set `auto_allow.brave=false`. Hound remains explicit-only until `web_routing_config_plus(action="set_auto_allow", provider="hound", enabled=true)` is called.
 
 Search `provider_priority` and extraction `extract_provider_priority` are independent. Partial extraction lists are completed in the public Tavily-first order, and can be updated with `web_routing_config_plus(action="set_extract_provider_priority", providers=[...])`.
 
@@ -206,7 +210,10 @@ Supported actions:
 - `show`
 - `set_default_provider`
 - `set_auto_routing`
+- `set_auto_allow`
 - `set_provider_priority`
+- `set_extract_provider_priority`
+- `set_profile`
 - `set_fallback_provider`
 - `disable_provider`
 - `enable_provider`

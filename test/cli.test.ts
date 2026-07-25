@@ -13,6 +13,7 @@ test("onboarding CLI lists providers and presets", async () => {
   const providers = JSON.parse((await execFileAsync(process.execPath, [CLI, "list", "providers", "--json"])).stdout);
   assert.ok(providers.some((provider: any) => provider.name === "parallel" && provider.guarded === true));
   assert.ok(providers.some((provider: any) => provider.name === "serpbase" && provider.guarded === true));
+  assert.ok(providers.some((provider: any) => provider.name === "hound" && provider.guarded === true));
 
   const presets = JSON.parse((await execFileAsync(process.execPath, [CLI, "list", "presets", "--json"])).stdout);
   assert.deepEqual(presets.starter.providers, ["you", "serper", "linkup"]);

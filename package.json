@@ -1,7 +1,7 @@
 {
   "name": "web-search-plus-plugin-v2",
   "version": "3.2.0",
-  "description": "OpenClaw plugin: one clean set of source-only web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction across Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, You.com, SearXNG, and Keenable.",
+  "description": "OpenClaw plugin: source-only Routing v2 web search, research, and Tavily-first extraction across hosted providers plus an optional local Hound MCP sidecar.",
   "type": "module",
   "main": "index.ts",
   "scripts": {
@@ -42,6 +42,8 @@
     "bin/web-search-plus-setup.mjs",
     "SKILL.md",
     "README.md",
+    "PLAN.md",
+    "docs/HOUND.md",
     "CHANGELOG.md"
   ],
   "keywords": [
