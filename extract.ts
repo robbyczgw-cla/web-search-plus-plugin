@@ -70,8 +70,11 @@ export const DEFAULT_EXTRACT_CACHE_MAX_ENTRIES = 64;
 export const DEFAULT_EXTRACT_CACHE_MAX_CHARS = 4_000_000;
 
 type FullTextRecord = { content: string; raw_content?: string; provider: ExtractProviderName };
-type ExtractCacheEntry = { response: ExtractResponse; fullText: Array<FullTextRecord | undefined> };
+type ExtractCacheEntry = { response: ExtractResponse; fullText: Array<FullTextRecord | undefined>; chars: number };
 const extractCache = new Map<string, ExtractCacheEntry>();
+// Running total of cached full-text characters. Kept incrementally because
+// recomputing it walks and re-normalizes every cached string on every write.
+let extractCacheChars = 0;
 
 function stableJson(value: any): any {
   if (Array.isArray(value)) return value.map(stableJson);
@@ -113,16 +116,17 @@ function extractCachePut(
   maxChars: number,
 ): boolean {
   const entryChars = fullTextChars(fullText);
+  const previous = extractCache.get(key);
+  if (previous) extractCacheChars -= previous.chars;
   extractCache.delete(key);
   // An entry that cannot fit on its own is not cached: retaining it would
   // empty useful entries while still exceeding the configured memory budget.
   if (entryChars > maxChars) return false;
-  extractCache.set(key, { response: cloneResponse(response), fullText: structuredClone(fullText) });
-  let cacheChars = [...extractCache.values()].reduce((total, entry) => total + fullTextChars(entry.fullText), 0);
-  while (extractCache.size > maxEntries || cacheChars > maxChars) {
+  extractCache.set(key, { response: cloneResponse(response), fullText: structuredClone(fullText), chars: entryChars });
+  extractCacheChars += entryChars;
+  while (extractCache.size > maxEntries || extractCacheChars > maxChars) {
     const oldestKey = extractCache.keys().next().value!;
-    const oldest = extractCache.get(oldestKey)!;
-    cacheChars -= fullTextChars(oldest.fullText);
+    extractCacheChars -= extractCache.get(oldestKey)!.chars;
     extractCache.delete(oldestKey);
   }
   return extractCache.has(key);
@@ -188,6 +192,7 @@ export function readCachedExtractContent(reference: string, start = 0, end?: num
 
 export function __resetExtractCacheForTests(): void {
   extractCache.clear();
+  extractCacheChars = 0;
 }
 
 // Extraction fallback order: Tavily-first stays; Keenable is a low-priority

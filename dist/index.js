@@ -820,6 +820,7 @@ var EXTRACT_CACHE_VERSION = 1;
 var DEFAULT_EXTRACT_CACHE_MAX_ENTRIES = 64;
 var DEFAULT_EXTRACT_CACHE_MAX_CHARS = 4e6;
 var extractCache = /* @__PURE__ */ new Map();
+var extractCacheChars = 0;
 function stableJson(value) {
   if (Array.isArray(value)) return value.map(stableJson);
   if (value && typeof value === "object") {
@@ -845,14 +846,15 @@ function fullTextChars(fullText) {
 }
 function extractCachePut(key, response, fullText, maxEntries, maxChars) {
   const entryChars = fullTextChars(fullText);
+  const previous = extractCache.get(key);
+  if (previous) extractCacheChars -= previous.chars;
   extractCache.delete(key);
   if (entryChars > maxChars) return false;
-  extractCache.set(key, { response: cloneResponse(response), fullText: structuredClone(fullText) });
-  let cacheChars = [...extractCache.values()].reduce((total, entry) => total + fullTextChars(entry.fullText), 0);
-  while (extractCache.size > maxEntries || cacheChars > maxChars) {
+  extractCache.set(key, { response: cloneResponse(response), fullText: structuredClone(fullText), chars: entryChars });
+  extractCacheChars += entryChars;
+  while (extractCache.size > maxEntries || extractCacheChars > maxChars) {
     const oldestKey = extractCache.keys().next().value;
-    const oldest = extractCache.get(oldestKey);
-    cacheChars -= fullTextChars(oldest.fullText);
+    extractCacheChars -= extractCache.get(oldestKey).chars;
     extractCache.delete(oldestKey);
   }
   return extractCache.has(key);
