@@ -53,7 +53,7 @@ Runtime credentials still come from explicit OpenClaw plugin config fields. The 
 ### Search providers
 
 - **Serper** — Google-style web/news/shopping/local
-- **Brave** — broad current web and fallback; guarded in auto routing
+- **Brave** — independent-index current web and multilingual search in the default auto pool
 - **Tavily** — research-oriented search
 - **Exa** — semantic discovery, similar-page, docs/API, arXiv, deep search
 - **Querit** — multilingual/current AI search; guarded in auto routing
@@ -153,7 +153,7 @@ Classes:
 - answer/synthesis → flags `answer_mode_recommended`; it does **not** resurrect `web_answer_plus`
 
 Default conservative auto pool: You.com, Serper, Exa, Firecrawl, Tavily, Linkup.
-Guarded providers require `auto_allow=true` in routing preferences: Brave, SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity.
+Guarded providers require `auto_allow=true` in routing preferences: SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity. Brave is in the default Classic auto pool for independent-index source diversity; operators can still set `auto_allow.brave=false`.
 
 Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, and `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source) for canonical-source routing classes.
 

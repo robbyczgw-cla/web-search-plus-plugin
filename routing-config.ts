@@ -3,7 +3,7 @@ export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" |
 // Keenable stays last: it never displaces a configured keyed provider.
 export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng", "keenable"];
 
-export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["brave", "serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
+export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
 
 export type RoutingPreferences = {
   version: 2;

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Promoted Brave Search into the default Classic Routing v2 auto pool for independent-index source diversity. Explicit `auto_allow.brave=false` still opts it out. (Hermes v3.0.0)
+
 ## [3.2.0] - 2026-07-05
 
 Feature sync with the Hermes Web Search Plus stack (hermes-web-search-plus v2.5.0–v2.9.0 plus the unreleased Parallel budget change), adapted for the in-process OpenClaw runtime. This resumes engine syncs for the OpenClaw build.

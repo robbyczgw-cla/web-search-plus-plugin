@@ -11,7 +11,7 @@ const PROVIDERS = [
   { name: "tavily", field: "tavilyApiKey", capability: "reliable research search and Tavily-first extraction", starter: false, guarded: false },
   { name: "exa", field: "exaApiKey", capability: "docs/API, arXiv, OSS discovery, deep/deep-reasoning search, and extraction", starter: false, guarded: false },
   { name: "firecrawl", field: "firecrawlApiKey", capability: "robust scraper safety net, vendor/CVE pages, and extraction fallback", starter: false, guarded: false },
-  { name: "brave", field: "braveApiKey", capability: "current web and multilingual fallback; guarded in auto routing", starter: false, guarded: true },
+  { name: "brave", field: "braveApiKey", capability: "independent-index current web and multilingual search in the default auto pool", starter: false, guarded: false },
   { name: "querit", field: "queritApiKey", capability: "multilingual/current AI search; guarded in auto routing", starter: false, guarded: true },
   { name: "parallel", field: "parallelApiKey", capability: "Parallel search and extraction; guarded in auto routing", starter: false, guarded: true },
   { name: "serpbase", field: "serpbaseApiKey", capability: "Google-style alternate search; guarded in auto routing", starter: false, guarded: true },

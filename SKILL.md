@@ -66,7 +66,7 @@ Extra settings:
 Auto routing is class-aware and benchmark-backed. Key classes: multilingual/current, local/shopping, docs/api, academic/arxiv, community/reddit, security/cve, official/vendor-release, official/regulatory, finance/IR, weather/factual, oss-discovery, and answer/synthesis.
 
 Default auto pool: You.com, Serper, Exa, Firecrawl, Tavily, Linkup.
-Guarded providers require `auto_allow[provider]=true` for auto routing: Brave, SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity.
+Guarded providers require `auto_allow[provider]=true` for auto routing: SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity. Brave is auto-allowed by default for independent-index source diversity and can still be disabled explicitly.
 
 Every search routing object exposes `language_hint`, `routing_class`, and `routing_policy`. Pass `quality_report: true` for provider scores, result quality hints, fallback diagnostics, and `authority_signals` (canonical/demoted domain hits and primary-source top-result flag). Recent provider latency/success behavior feeds bounded adaptive score adjustments (`routing.adaptive_adjustments`).
 

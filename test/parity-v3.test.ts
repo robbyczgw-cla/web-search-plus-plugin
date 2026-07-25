@@ -45,6 +45,7 @@ test("routing v2 golden classes prefer benchmarked provider families", () => {
 });
 
 test("guarded providers default to auto_allow false but explicit validation accepts them", () => {
+  assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.brave, true);
   assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.parallel, false);
   assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.serpbase, false);
   const config = validateRoutingPreferences({ provider_priority: ["parallel", "serpbase"], auto_allow: { parallel: true } });

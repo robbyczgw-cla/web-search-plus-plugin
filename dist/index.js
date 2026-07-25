@@ -170,7 +170,7 @@ function maybePositiveInt(value) {
 
 // routing-config.ts
 var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng", "keenable"];
-var GUARDED_AUTO_PROVIDERS = ["brave", "serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
+var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 2,
   auto_routing: true,
