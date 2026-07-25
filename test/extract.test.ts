@@ -10,6 +10,7 @@ import {
   hasAnyExtractProviderCredential,
   __resetExtractCacheForTests,
   buildExtractCacheKey,
+  readCachedExtractContent,
 } from "../extract.ts";
 import { register } from "../index.ts";
 
@@ -218,6 +219,29 @@ test("extract cache preserves complete response data and uses request-exact iden
   );
 });
 
+test("extract full-content references page the cached full text and expire with eviction", async () => {
+  __resetExtractCacheForTests();
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com/full", raw_content: "abcdefghij" }] }),
+    async () => {
+      const response = await extractPlus(["https://example.com/full"], "tavily", "markdown", false, false, false, {
+        tavilyApiKey: "tvly-test", extractCharLimit: 5, extractCacheMaxEntries: 1,
+      });
+      assert.equal(response.results[0].truncated, true);
+      const reference = response.results[0].full_content_ref!;
+      assert.deepEqual(readCachedExtractContent(reference, 2, 7), {
+        content_ref: reference,
+        range: { start: 2, end: 7, total_chars: 10 },
+        content: "cdefg",
+        raw_content: "cdefg",
+        provider: "tavily",
+      });
+      await extractPlus(["https://example.com/evict"], "tavily", "markdown", false, false, false, { tavilyApiKey: "tvly-test", extractCacheMaxEntries: 1 });
+      assert.throws(() => readCachedExtractContent(reference), /expired/);
+    },
+  );
+});
+
 test("extractFirecrawl include_images parses markdown and og image", async () => {
   await withMockedFetch(
     () => mockJsonResponse({
@@ -323,7 +347,9 @@ test("register exposes web_extract_plus tool", () => {
   assert.ok(registered.has("web_search_plus"));
   assert.ok(registered.has("web_extract_plus"));
   const schema = registered.get("web_extract_plus").parameters;
-  assert.deepEqual(schema.required, ["urls"]);
+  // URLs and a full-content reference are alternate inputs to the same tool.
+  assert.equal(schema.required, undefined);
+  assert.ok(schema.properties.content_ref);
   assert.ok(schema.properties.provider.enum.includes("firecrawl"));
   assert.ok(schema.properties.provider.enum.includes("linkup"));
   assert.ok(schema.properties.provider.enum.includes("exa"));

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added a bounded process-local, versioned LRU cache for extraction responses. Its secret-free identity covers exact URL order, controls, effective budgets, provider policy, configured endpoint address, and URL/storage policy; cache hits preserve the full returned response including `content`, `raw_content`, and provider attribution. (Hermes v3.2 round 2)
+- Added opt-in full-text continuation through `web_extract_plus(content_ref, content_start, content_end)`. Full text is held only by the existing process-local LRU entry; each reference is content-versioned and expires on eviction or host restart. (Hermes v3.2 round 2)
 
 ### Breaking Changes
 - Removed the Perplexity and Kilo Perplexity Chat Completions adapters from the public provider schema and runtime. They do not expose a verified source-only mode and must not be projected as search evidence. (Hermes v3.0.0)

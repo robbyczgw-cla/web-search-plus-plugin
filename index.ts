@@ -4,7 +4,7 @@ import net from "net";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
 import { applyRoutingProfile, DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
-import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
+import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential, readCachedExtractContent } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
 import { scoreDiversity } from "./diversity.ts";
@@ -1822,6 +1822,14 @@ export function register(api: any) {
       },
       async execute(_id: string, params: any) {
         try {
+          if (typeof params?.content_ref === "string") {
+            const content = readCachedExtractContent(
+              params.content_ref,
+              params?.content_start == null ? 0 : Number(params.content_start),
+              params?.content_end == null ? undefined : Number(params.content_end),
+            );
+            return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(content)) }] };
+          }
           const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
           const runtimeConfig = getRuntimeConfig(pluginConfig);
           const routingPreferences = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);

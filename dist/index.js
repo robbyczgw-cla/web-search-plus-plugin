@@ -818,17 +818,46 @@ function extractCacheGet(key) {
   extractCache.set(key, entry);
   return cloneResponse(entry.response);
 }
-function extractCachePut(key, response, maxEntries) {
+function extractCachePut(key, response, fullText, maxEntries) {
   extractCache.delete(key);
-  extractCache.set(key, { response: cloneResponse(response) });
+  extractCache.set(key, { response: cloneResponse(response), fullText: structuredClone(fullText) });
   while (extractCache.size > maxEntries) extractCache.delete(extractCache.keys().next().value);
+}
+var MAX_FULLTEXT_RANGE_CHARS = 6e4;
+function contentVersion(record) {
+  return crypto.createHash("sha256").update(`${record.provider}\0${record.content}\0${record.raw_content}`).digest("hex").slice(0, 16);
+}
+function fullTextReference(cacheKey, index, record) {
+  return `wspx:${EXTRACT_CACHE_VERSION}:${cacheKey}:${index}:${contentVersion(record)}`;
+}
+function codepointSlice(content, start, end) {
+  return Array.from(content).slice(start, end).join("");
+}
+function readCachedExtractContent(reference, start = 0, end) {
+  const match = /^wspx:(\d+):([a-f0-9]{64}):(\d+):([a-f0-9]{16})$/.exec(String(reference || ""));
+  if (!match || Number(match[1]) !== EXTRACT_CACHE_VERSION) throw new Error("Unknown or expired extraction content reference");
+  const entry = extractCache.get(match[2]);
+  const index = Number(match[3]);
+  const record = entry?.fullText[index];
+  if (!record || contentVersion(record) !== match[4]) throw new Error("Unknown or expired extraction content reference");
+  const totalChars = Array.from(record.content).length;
+  if (!Number.isInteger(start) || start < 0 || start > totalChars) throw new Error("content_start must be a valid Unicode codepoint offset");
+  const resolvedEnd = end == null ? Math.min(totalChars, start + MAX_FULLTEXT_RANGE_CHARS) : end;
+  if (!Number.isInteger(resolvedEnd) || resolvedEnd < start || resolvedEnd > totalChars || resolvedEnd - start > MAX_FULLTEXT_RANGE_CHARS) {
+    throw new Error(`content_end must select at most ${MAX_FULLTEXT_RANGE_CHARS} Unicode codepoints`);
+  }
+  extractCache.delete(match[2]);
+  extractCache.set(match[2], entry);
+  return { content_ref: reference, range: { start, end: resolvedEnd, total_chars: totalChars }, content: codepointSlice(record.content, start, resolvedEnd), raw_content: codepointSlice(record.raw_content, start, resolvedEnd), provider: record.provider };
 }
 var EXTRACT_PROVIDER_PRIORITY = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 var EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
-  required: ["urls"],
   properties: {
-    urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
+    urls: { type: "array", items: { type: "string" }, description: "URLs to extract (required unless content_ref is supplied)" },
+    content_ref: { type: "string", description: "Process-local full-content reference returned by a prior extraction; valid only while its cache entry remains live." },
+    content_start: { type: "integer", minimum: 0, description: "Unicode codepoint offset at which to read a referenced full text (default 0)." },
+    content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a referenced full text (maximum range 60000)." },
     provider: {
       type: "string",
       enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
@@ -1470,15 +1499,23 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         continue;
       }
       const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
-      const contentItems = resultList.filter((item) => !item?.error && typeof item?.content === "string");
-      const sanitizedContent = contentItems.map((item) => sanitizeExtractContent(item.content).normalize("NFC"));
+      const contentItems = resultList.map((item, resultIndex) => ({ item, resultIndex })).filter(({ item }) => !item?.error && typeof item?.content === "string");
+      const fullText = resultList.map((item) => {
+        if (item?.error || typeof item?.content !== "string") return void 0;
+        return {
+          content: sanitizeExtractContent(item.content).normalize("NFC"),
+          raw_content: sanitizeExtractContent(typeof item.raw_content === "string" ? item.raw_content : item.content).normalize("NFC"),
+          provider: item.provider
+        };
+      });
+      const sanitizedContent = contentItems.map(({ item }) => sanitizeExtractContent(item.content).normalize("NFC"));
       const selectedSpans = contextOptions.spans ? sanitizedContent.map((content) => selectSpans(content, contextOptions.spansQuery)) : [];
       const allocations = fairShareAllocations(
         sanitizedContent.map((content) => codepointLength(content)),
         maxContextChars
       );
       let truncated = false;
-      contentItems.forEach((item, index) => {
+      contentItems.forEach(({ item, resultIndex }, index) => {
         const originalContent = item.content;
         const fullContent = sanitizedContent[index];
         const fullLength = codepointLength(fullContent);
@@ -1504,6 +1541,11 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
             within_preview: item.content.includes(span.text)
           }));
         }
+        const full = fullText[resultIndex];
+        if (full) {
+          item.full_content_ref = fullTextReference(cacheKey, resultIndex, full);
+          item.full_content_chars = codepointLength(full.content);
+        }
       });
       const warnings = [...result.warnings || []];
       if (omittedUrls.length) {
@@ -1517,7 +1559,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         warnings.push({
           code: "wsp.content.truncated",
           message: "Inline extracted content was deterministically truncated to the call budget.",
-          details: { truncated_result_count: contentItems.filter((item) => item.truncated).length }
+          details: { truncated_result_count: contentItems.filter(({ item }) => item.truncated).length }
         });
       }
       const response = {
@@ -1532,7 +1574,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
             omitted_url_count: omittedUrls.length,
             max_urls: maxUrls,
             max_context_chars: maxContextChars,
-            context_chars_returned: contentItems.reduce((sum, item) => sum + codepointLength(item.content), 0),
+            context_chars_returned: contentItems.reduce((sum, { item }) => sum + codepointLength(item.content), 0),
             truncated
           }
         },
@@ -1543,7 +1585,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           fallback_errors: errors
         }
       };
-      extractCachePut(cacheKey, response, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
+      extractCachePut(cacheKey, response, fullText, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
       return response;
     } catch (error2) {
       errors.push({ provider: currentProvider, error: String(error2?.message || error2) });
@@ -4151,6 +4193,14 @@ function register(api) {
       },
       async execute(_id, params) {
         try {
+          if (typeof params?.content_ref === "string") {
+            const content = readCachedExtractContent(
+              params.content_ref,
+              params?.content_start == null ? 0 : Number(params.content_start),
+              params?.content_end == null ? void 0 : Number(params.content_end)
+            );
+            return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(content)) }] };
+          }
           const pluginConfig = api.pluginConfig ?? {};
           const runtimeConfig = getRuntimeConfig(pluginConfig);
           const routingPreferences = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);

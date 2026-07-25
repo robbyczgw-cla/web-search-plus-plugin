@@ -30,6 +30,8 @@ export type ExtractResult = {
   original_chars?: number;
   span_contract_version?: 1;
   spans?: Array<SemanticSpan & { within_preview: boolean }>;
+  full_content_ref?: string;
+  full_content_chars?: number;
 };
 
 export type ExtractResponse = {
@@ -62,7 +64,8 @@ export type ExtractResponse = {
 export const EXTRACT_CACHE_VERSION = 1;
 export const DEFAULT_EXTRACT_CACHE_MAX_ENTRIES = 64;
 
-type ExtractCacheEntry = { response: ExtractResponse };
+type FullTextRecord = { content: string; raw_content: string; provider: ExtractProviderName };
+type ExtractCacheEntry = { response: ExtractResponse; fullText: Array<FullTextRecord | undefined> };
 const extractCache = new Map<string, ExtractCacheEntry>();
 
 function stableJson(value: any): any {
@@ -93,10 +96,44 @@ function extractCacheGet(key: string): ExtractResponse | null {
   return cloneResponse(entry.response);
 }
 
-function extractCachePut(key: string, response: ExtractResponse, maxEntries: number): void {
+function extractCachePut(key: string, response: ExtractResponse, fullText: Array<FullTextRecord | undefined>, maxEntries: number): void {
   extractCache.delete(key);
-  extractCache.set(key, { response: cloneResponse(response) });
+  extractCache.set(key, { response: cloneResponse(response), fullText: structuredClone(fullText) });
   while (extractCache.size > maxEntries) extractCache.delete(extractCache.keys().next().value!);
+}
+
+export const MAX_FULLTEXT_RANGE_CHARS = 60000;
+
+function contentVersion(record: FullTextRecord): string {
+  return crypto.createHash("sha256").update(`${record.provider}\u0000${record.content}\u0000${record.raw_content}`).digest("hex").slice(0, 16);
+}
+
+function fullTextReference(cacheKey: string, index: number, record: FullTextRecord): string {
+  return `wspx:${EXTRACT_CACHE_VERSION}:${cacheKey}:${index}:${contentVersion(record)}`;
+}
+
+function codepointSlice(content: string, start: number, end: number): string {
+  return Array.from(content).slice(start, end).join("");
+}
+
+// References are capabilities only for the lifetime of their LRU entry. They
+// are not persisted and cannot be reconstructed after eviction or restart.
+export function readCachedExtractContent(reference: string, start = 0, end?: number): Json {
+  const match = /^wspx:(\d+):([a-f0-9]{64}):(\d+):([a-f0-9]{16})$/.exec(String(reference || ""));
+  if (!match || Number(match[1]) !== EXTRACT_CACHE_VERSION) throw new Error("Unknown or expired extraction content reference");
+  const entry = extractCache.get(match[2]);
+  const index = Number(match[3]);
+  const record = entry?.fullText[index];
+  if (!record || contentVersion(record) !== match[4]) throw new Error("Unknown or expired extraction content reference");
+  const totalChars = Array.from(record.content).length;
+  if (!Number.isInteger(start) || start < 0 || start > totalChars) throw new Error("content_start must be a valid Unicode codepoint offset");
+  const resolvedEnd = end == null ? Math.min(totalChars, start + MAX_FULLTEXT_RANGE_CHARS) : end;
+  if (!Number.isInteger(resolvedEnd) || resolvedEnd < start || resolvedEnd > totalChars || resolvedEnd - start > MAX_FULLTEXT_RANGE_CHARS) {
+    throw new Error(`content_end must select at most ${MAX_FULLTEXT_RANGE_CHARS} Unicode codepoints`);
+  }
+  extractCache.delete(match[2]);
+  extractCache.set(match[2], entry!);
+  return { content_ref: reference, range: { start, end: resolvedEnd, total_chars: totalChars }, content: codepointSlice(record.content, start, resolvedEnd), raw_content: codepointSlice(record.raw_content, start, resolvedEnd), provider: record.provider };
 }
 
 export function __resetExtractCacheForTests(): void {
@@ -108,9 +145,11 @@ export function __resetExtractCacheForTests(): void {
 export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
-  required: ["urls"],
   properties: {
-    urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
+    urls: { type: "array", items: { type: "string" }, description: "URLs to extract (required unless content_ref is supplied)" },
+    content_ref: { type: "string", description: "Process-local full-content reference returned by a prior extraction; valid only while its cache entry remains live." },
+    content_start: { type: "integer", minimum: 0, description: "Unicode codepoint offset at which to read a referenced full text (default 0)." },
+    content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a referenced full text (maximum range 60000)." },
     provider: {
       type: "string",
       enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
@@ -943,8 +982,18 @@ export async function extractPlus(
       }
 
       const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
-      const contentItems = resultList.filter((item) => !item?.error && typeof item?.content === "string");
-      const sanitizedContent = contentItems.map((item) => sanitizeExtractContent(item.content).normalize("NFC"));
+      const contentItems = resultList
+        .map((item, resultIndex) => ({ item, resultIndex }))
+        .filter(({ item }) => !item?.error && typeof item?.content === "string");
+      const fullText = resultList.map((item): FullTextRecord | undefined => {
+        if (item?.error || typeof item?.content !== "string") return undefined;
+        return {
+          content: sanitizeExtractContent(item.content).normalize("NFC"),
+          raw_content: sanitizeExtractContent(typeof item.raw_content === "string" ? item.raw_content : item.content).normalize("NFC"),
+          provider: item.provider,
+        };
+      });
+      const sanitizedContent = contentItems.map(({ item }) => sanitizeExtractContent(item.content).normalize("NFC"));
       const selectedSpans = contextOptions.spans
         ? sanitizedContent.map((content) => selectSpans(content, contextOptions.spansQuery))
         : [];
@@ -953,7 +1002,7 @@ export async function extractPlus(
         maxContextChars,
       );
       let truncated = false;
-      contentItems.forEach((item, index) => {
+      contentItems.forEach(({ item, resultIndex }, index) => {
         const originalContent = item.content;
         const fullContent = sanitizedContent[index];
         const fullLength = codepointLength(fullContent);
@@ -985,6 +1034,11 @@ export async function extractPlus(
             within_preview: item.content.includes(span.text),
           }));
         }
+        const full = fullText[resultIndex];
+        if (full) {
+          item.full_content_ref = fullTextReference(cacheKey, resultIndex, full);
+          item.full_content_chars = codepointLength(full.content);
+        }
       });
       const warnings: Json[] = [...(result.warnings || [])];
       if (omittedUrls.length) {
@@ -998,7 +1052,7 @@ export async function extractPlus(
         warnings.push({
           code: "wsp.content.truncated",
           message: "Inline extracted content was deterministically truncated to the call budget.",
-          details: { truncated_result_count: contentItems.filter((item) => item.truncated).length },
+          details: { truncated_result_count: contentItems.filter(({ item }) => item.truncated).length },
         });
       }
 
@@ -1014,7 +1068,7 @@ export async function extractPlus(
             omitted_url_count: omittedUrls.length,
             max_urls: maxUrls,
             max_context_chars: maxContextChars,
-            context_chars_returned: contentItems.reduce((sum, item) => sum + codepointLength(item.content), 0),
+            context_chars_returned: contentItems.reduce((sum, { item }) => sum + codepointLength(item.content), 0),
             truncated,
           },
         },
@@ -1027,7 +1081,7 @@ export async function extractPlus(
       };
       // Only successful/degraded provider output is cacheable. Failed calls
       // carry transient diagnostics and must be retried on a later request.
-      extractCachePut(cacheKey, response, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
+      extractCachePut(cacheKey, response, fullText, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
       return response;
     } catch (error: any) {
       errors.push({ provider: currentProvider, error: String(error?.message || error) });
