@@ -1,6 +1,6 @@
 # Hound local MCP provider
 
-Web Search Plus 3.2 can use [Hound](https://github.com/dondai1234/master-fetch)
+Web Search Plus 3.3 can use [Hound](https://github.com/dondai1234/master-fetch)
 as an optional local provider for search and extraction. Hound is an independent
 MIT-licensed project created and maintained by
 [Bishesh Bhandari](https://github.com/dondai1234). Web Search Plus does not
@@ -136,6 +136,9 @@ than inventing results.
   search, fallback, Research, and extraction fallback exclude it.
 - Web Search Plus owns routing, normalization, SSRF checks, bounded output, and
   its in-process search cache.
+- Hound MCP responses are read incrementally and cancelled as soon as
+  `houndMaxResponseBytes` is exceeded, including chunked responses without a
+  `Content-Length` header.
 - The adapter requests `cache_ttl=0` so the sidecar cache does not become a
   second authoritative state layer.
 - Search maps to Hound's `mcp_smart_search`; extraction maps to one

@@ -1,18 +1,20 @@
 ---
 name: web-search-plus-plugin-v2
-version: 3.2.0
-description: OpenClaw plugin for Routing v2 multi-provider web search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, Tavily-first extraction, optional local Hound MCP search/extraction, quality reports, onboarding CLI, and runtime routing preferences. Registers `web_search_plus`, `web_extract_plus`, and `web_routing_config_plus`.
+version: 3.3.0
+description: OpenClaw plugin for Routing v2 multi-provider web search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, Tavily-first extraction, optional local Hound MCP search/extraction, quality reports, onboarding CLI, runtime routing preferences, process-local health, and explicit extraction benchmarks. Registers five web tools.
 ---
 
 # Web Search Plus Plugin
 
-Native OpenClaw plugin that gives agents one clean web surface: search, extract, and routing config. `web_answer_plus` is intentionally removed in v3.0.0; use search plus extraction instead.
+Native OpenClaw plugin that gives agents one clean web surface for search, extraction, routing configuration, provider health, and extraction benchmarks. `web_answer_plus` is intentionally removed in v3.0.0; use search plus extraction instead.
 
 ## Tools
 
 - `web_search_plus`
 - `web_extract_plus`
 - `web_routing_config_plus`
+- `web_search_health_plus`
+- `web_extract_benchmark_plus`
 
 ## Good starter setup
 

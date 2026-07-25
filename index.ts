@@ -1477,7 +1477,9 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         availableResearchProviders.add(provider);
       }
       let researchProviders: ProviderName[];
-      if (Array.isArray(params.research_providers) && params.research_providers.length) {
+      if (routingOverride) {
+        researchProviders = [provider];
+      } else if (Array.isArray(params.research_providers) && params.research_providers.length) {
         researchProviders = [...new Set(params.research_providers.map((value) => normalizeProviderName(value)))].filter(providerEligibleForResearch);
       } else {
         researchProviders = selectResearchProviders(
@@ -1515,7 +1517,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         },
         extractUrls: (urls) => extractPlus(
           urls,
-          "auto",
+          routingOverride || "auto",
           "markdown",
           false,
           false,
@@ -1523,7 +1525,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
           runtimeConfig,
           routingConfig.disabled_providers,
           routingConfig.extract_provider_priority,
-          { autoAllow: routingConfig.auto_allow },
+          { autoAllow: routingConfig.auto_allow, strictProvider: Boolean(routingOverride) },
         ),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
@@ -1683,6 +1685,9 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
 function routingConfigStatus(loadResult: ReturnType<typeof loadRoutingPreferences>) {
   return sanitizeOutput({
+    storage_scope: "process_local",
+    expires_on_host_restart: true,
+    namespace: loadResult.path,
     config_path: loadResult.path,
     source: loadResult.source,
     warning: loadResult.warning,
@@ -1706,7 +1711,7 @@ function updateRoutingPreferences(pluginConfig: Record<string, any>, mutator: (c
 function executeRoutingConfigAction(pluginConfig: Record<string, any>, params: Record<string, any>): Json {
   const action = String(params?.action || "show");
   if (action === "show") return routingConfigStatus(loadRoutingPreferences(pluginConfig));
-  if (action === "reset") return sanitizeOutput(resetRoutingPreferences(pluginConfig));
+  if (action === "reset") return routingConfigStatus(resetRoutingPreferences(pluginConfig));
   if (action === "set_default_provider") {
     return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
       const provider = String(params?.provider || "").trim().toLowerCase();
@@ -1846,7 +1851,7 @@ export function register(api: any) {
     {
       name: "web_search_plus",
       description:
-        "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and the local Hound MCP sidecar. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
+        "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and the local Hound MCP sidecar. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and extract top sources for grounding.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id: string, params: ToolParams) {
         try {
@@ -1871,7 +1876,7 @@ export function register(api: any) {
     {
       name: "web_routing_config_plus",
       description:
-        "Show or update persistent routing preferences for web_search_plus. Keeps routing behavior in a JSON file separate from provider secrets.",
+        "Show or update process-local routing preferences for web_search_plus and web_extract_plus. Updates remain in the selected in-memory namespace only until the host process restarts; no routing file is read or written.",
       parameters: ROUTING_CONFIG_PARAMETERS_SCHEMA,
       async execute(_id: string, params: Record<string, any>) {
         try {
@@ -1889,7 +1894,7 @@ export function register(api: any) {
     {
       name: "web_extract_plus",
       description:
-        "Extract URL content with bounded automatic fallback across configured extraction providers, including optional local Hound MCP, with per-URL errors and unified output.",
+        "Extract URL content across configured providers, including optional local Hound MCP, with bounded automatic fallback, per-URL errors, and unified output. routing_override_provider makes one strict provider attempt with no fallback.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
@@ -1929,6 +1934,7 @@ export function register(api: any) {
               spansQuery: typeof params?.spans_query === "string" ? params.spans_query : undefined,
               autoAllow: routingPreferences.auto_allow,
               deadlineSeconds: params?.deadline_seconds,
+              strictProvider: Boolean(routingOverride),
             },
           );
           if (routingOverride) result.routing = { ...(result.routing || { requested_provider: routingOverride }), override_provider: routingOverride, override_mode: "forced_provider" };

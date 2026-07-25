@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-07-25
+
 - Added a bounded process-local, versioned LRU cache for extraction responses. Its secret-free identity covers exact URL order, controls, effective budgets, provider policy, configured endpoint address, and URL/storage policy; cache hits preserve the full returned response including `content`, `raw_content`, and provider attribution. (Hermes v3.2 round 2)
 - Added opt-in full-text continuation through `web_extract_plus(content_ref, content_start, content_end)`. Distinct provider raw text is separately addressed through `raw_content_start`/`raw_content_end`; without that range its availability and length are reported. Full text is held only by the existing process-local LRU entry; each reference is content-versioned and expires on eviction or host restart. (Hermes v3.2 round 2)
 - Added request-scoped budget preflight for Research fan-out (maximum three providers), Extract fan-out/context ceilings, and Extract provider-start deadlines. Daily quota accounting is intentionally not implemented because it needs a persistent ledger. (Hermes v3.2 round 2)
@@ -26,6 +28,14 @@
 - Added an OpenClaw-specific Hound sidecar guide covering the separately pinned installation, loopback-only transport, explicit verification, auto-routing opt-in, privacy, caching, and attribution. (Hermes v3.2.0)
 
 ### Fixed
+- Made `routing_override_provider` strict for extraction and Research source extraction, including cache identity, so a failed forced provider can never return another provider's content.
+- Bounded Hound response streams while reading chunked bodies, and detached best-effort session teardown behind a 250 ms abort deadline.
+- Pointed the npm entrypoint at the bundled runtime, excluded the internal porting plan from the package, and completed the five-tool README/SKILL inventory.
+- Added the documented `extractCacheMaxChars` manifest schema field and corrected routing/extraction tool metadata to describe process-local lifetime and fallback behavior.
+- Bounded the process-local extraction cache by configurable full-text character count in addition to entry count.
+- Addressed distinct provider `raw_content` with independent Unicode-codepoint offsets instead of reusing the normalized content range.
+- Applied operator extraction-deadline ceilings consistently to request overrides.
+- Tracked extraction-cache character usage incrementally while preserving LRU eviction behavior.
 - Removed stale Perplexity/Kilo credential, freshness, setup, and provider claims from active package metadata and documentation after the source-only provider removal. Historical changelog entries remain intact. (Hermes v3.0.2)
 - Restored the full Research attempt envelope: each provider launch/skip records provenance and outcome, started deadline overruns are classified as cancelled, partial failures degrade the response, and total fan-out failure returns `status="failed"` instead of a successful empty result. The single post-merge quality pass remains authoritative. (Hermes v3.0.2)
 

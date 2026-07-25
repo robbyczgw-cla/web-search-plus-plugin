@@ -1,7 +1,7 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "One clean set of source-only web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and a local Hound MCP sidecar.",
   "contracts": {
     "tools": [
@@ -138,7 +138,15 @@
       },
       "extractCacheMaxEntries": {
         "type": "number",
+        "minimum": 1,
+        "maximum": 500,
         "description": "Maximum process-local LRU entries for completed extraction requests (default 64, range 1-500). Entries are discarded when the host restarts."
+      },
+      "extractCacheMaxChars": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 20000000,
+        "description": "Maximum Unicode codepoints retained by the process-local extraction full-text LRU (default 4000000, range 1-20000000). Entries are discarded when the host restarts."
       },
       "extractDeadlineSeconds": {
         "type": "number",
@@ -238,8 +246,8 @@
       "sensitive": false
     },
     "routingConfigPath": {
-      "label": "Routing preferences JSON path",
-      "placeholder": "/path/to/routing-preferences.json",
+      "label": "Routing preferences namespace",
+      "placeholder": "default",
       "description": "Optional namespace for runtime routing behavior. Secrets remain in plugin config; behavior is kept in process memory to avoid runtime filesystem reads.",
       "sensitive": false
     },
@@ -301,6 +309,16 @@
     "extractMaxContextChars": {
       "label": "Extract aggregate context ceiling",
       "placeholder": "60000",
+      "sensitive": false
+    },
+    "extractCacheMaxEntries": {
+      "label": "Extract cache entry limit",
+      "placeholder": "64",
+      "sensitive": false
+    },
+    "extractCacheMaxChars": {
+      "label": "Extract cache character limit",
+      "placeholder": "4000000",
       "sensitive": false
     },
     "localeCountry": {

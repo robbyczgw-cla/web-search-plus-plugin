@@ -1,9 +1,9 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "OpenClaw plugin: source-only Routing v2 web search, research, and Tavily-first extraction across hosted providers plus an optional local Hound MCP sidecar.",
   "type": "module",
-  "main": "index.ts",
+  "main": "dist/index.js",
   "scripts": {
     "test": "node --test test/*.test.ts",
     "build": "esbuild index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js"
@@ -37,12 +37,14 @@
     "search-locale.ts",
     "routing-config.ts",
     "runtime-config.ts",
+    "budget-preflight.ts",
+    "shadow-quality.ts",
+    "extract-benchmark.ts",
     "openclaw.plugin.json",
     "dist/index.js",
     "bin/web-search-plus-setup.mjs",
     "SKILL.md",
     "README.md",
-    "PLAN.md",
     "docs/HOUND.md",
     "CHANGELOG.md"
   ],

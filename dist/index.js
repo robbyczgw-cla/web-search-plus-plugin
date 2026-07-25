@@ -509,6 +509,7 @@ function selectSpans(text, query, options = {}) {
 }
 
 // hound-transport.ts
+var HOUND_SESSION_CLEANUP_TIMEOUT_MS = 250;
 var HoundTransportError = class extends Error {
   constructor(code = "hound_mcp_unavailable") {
     super(code);
@@ -540,8 +541,36 @@ function parseWirePayload(text) {
 async function readBoundedResponse(response, maxResponseBytes) {
   const contentLength = Number(response.headers.get("content-length") || 0);
   if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) throw new Error("hound_response_too_large");
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > maxResponseBytes) throw new Error("hound_response_too_large");
+  let bytes;
+  if (response.body) {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > maxResponseBytes) {
+          void reader.cancel().catch(() => {
+          });
+          throw new Error("hound_response_too_large");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+  } else {
+    bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxResponseBytes) throw new Error("hound_response_too_large");
+  }
   if (!response.ok && response.status !== 202) throw new Error(`hound_http_${response.status}`);
   return parseWirePayload(new TextDecoder().decode(bytes));
 }
@@ -559,6 +588,25 @@ function toolPayload(result) {
     }
   }
   throw new Error("hound_mcp_contract_failed");
+}
+function closeHoundSession(endpoint, sessionId) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HOUND_SESSION_CLEANUP_TIMEOUT_MS);
+  timer.unref?.();
+  try {
+    void fetch(endpoint, {
+      method: "DELETE",
+      headers: {
+        "Mcp-Session-Id": sessionId,
+        "MCP-Protocol-Version": "2025-03-26"
+      },
+      redirect: "error",
+      signal: controller.signal
+    }).catch(() => {
+    }).finally(() => clearTimeout(timer));
+  } catch {
+    clearTimeout(timer);
+  }
 }
 async function callHoundTool(endpointValue, tool, argumentsValue, options = {}) {
   const endpoint = validateHoundEndpoint(endpointValue);
@@ -597,7 +645,7 @@ async function callHoundTool(endpointValue, tool, argumentsValue, options = {}) 
       params: {
         protocolVersion: "2025-03-26",
         capabilities: {},
-        clientInfo: { name: "web-search-plus", version: "3.2.0" }
+        clientInfo: { name: "web-search-plus", version: "3.3.0" }
       }
     });
     if (initialized.error || !initialized.result) throw new Error("hound_mcp_initialize_failed");
@@ -615,19 +663,7 @@ async function callHoundTool(endpointValue, tool, argumentsValue, options = {}) 
     throw new HoundTransportError();
   } finally {
     clearTimeout(timer);
-    if (sessionId) {
-      try {
-        await fetch(endpoint, {
-          method: "DELETE",
-          headers: {
-            "Mcp-Session-Id": sessionId,
-            "MCP-Protocol-Version": "2025-03-26"
-          },
-          redirect: "error"
-        });
-      } catch {
-      }
-    }
+    if (sessionId) closeHoundSession(endpoint, sessionId);
   }
 }
 
@@ -923,7 +959,7 @@ var EXTRACT_PARAMETERS_SCHEMA = {
     provider: {
       type: "string",
       enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
-      description: "Force a provider, or use auto fallback routing (default: auto)"
+      description: "Try this provider first with extraction fallback, or use auto priority (default: auto). Use routing_override_provider for a strict single-provider call."
     },
     routing_override_provider: {
       type: "string",
@@ -1510,6 +1546,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       priority: configuredPriority,
       disabled: [...disabledProviders].sort(),
       auto_allow: contextOptions.autoAllow || {},
+      strict_provider: contextOptions.strictProvider === true,
       // Credential availability affects which fallback can answer, while the
       // credential values themselves never enter the identity.
       available: Object.fromEntries(EXTRACT_PROVIDER_PRIORITY.map((item) => [item, Boolean(getExtractApiKey(item, runtimeConfig)) || keylessPublicAllowed(item, runtimeConfig)]))
@@ -4022,7 +4059,9 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         availableResearchProviders.add(provider);
       }
       let researchProviders;
-      if (Array.isArray(params.research_providers) && params.research_providers.length) {
+      if (routingOverride) {
+        researchProviders = [provider];
+      } else if (Array.isArray(params.research_providers) && params.research_providers.length) {
         researchProviders = [...new Set(params.research_providers.map((value) => normalizeProviderName(value)))].filter(providerEligibleForResearch);
       } else {
         researchProviders = selectResearchProviders(
@@ -4059,7 +4098,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         },
         extractUrls: (urls) => extractPlus(
           urls,
-          "auto",
+          routingOverride || "auto",
           "markdown",
           false,
           false,
@@ -4067,7 +4106,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
           runtimeConfig,
           routingConfig.disabled_providers,
           routingConfig.extract_provider_priority,
-          { autoAllow: routingConfig.auto_allow }
+          { autoAllow: routingConfig.auto_allow, strictProvider: Boolean(routingOverride) }
         ),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
@@ -4204,6 +4243,9 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
 }
 function routingConfigStatus(loadResult) {
   return sanitizeOutput({
+    storage_scope: "process_local",
+    expires_on_host_restart: true,
+    namespace: loadResult.path,
     config_path: loadResult.path,
     source: loadResult.source,
     warning: loadResult.warning,
@@ -4225,7 +4267,7 @@ function updateRoutingPreferences(pluginConfig, mutator) {
 function executeRoutingConfigAction(pluginConfig, params) {
   const action = String(params?.action || "show");
   if (action === "show") return routingConfigStatus(loadRoutingPreferences(pluginConfig));
-  if (action === "reset") return sanitizeOutput(resetRoutingPreferences(pluginConfig));
+  if (action === "reset") return routingConfigStatus(resetRoutingPreferences(pluginConfig));
   if (action === "set_default_provider") {
     return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
       const provider = String(params?.provider || "").trim().toLowerCase();
@@ -4357,7 +4399,7 @@ function register(api) {
   api.registerTool(
     {
       name: "web_search_plus",
-      description: "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and the local Hound MCP sidecar. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
+      description: "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and the local Hound MCP sidecar. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and extract top sources for grounding.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id, params) {
         try {
@@ -4380,7 +4422,7 @@ function register(api) {
   api.registerTool(
     {
       name: "web_routing_config_plus",
-      description: "Show or update persistent routing preferences for web_search_plus. Keeps routing behavior in a JSON file separate from provider secrets.",
+      description: "Show or update process-local routing preferences for web_search_plus and web_extract_plus. Updates remain in the selected in-memory namespace only until the host process restarts; no routing file is read or written.",
       parameters: ROUTING_CONFIG_PARAMETERS_SCHEMA,
       async execute(_id, params) {
         try {
@@ -4396,7 +4438,7 @@ function register(api) {
   api.registerTool(
     {
       name: "web_extract_plus",
-      description: "Extract URL content with bounded automatic fallback across configured extraction providers, including optional local Hound MCP, with per-URL errors and unified output.",
+      description: "Extract URL content across configured providers, including optional local Hound MCP, with bounded automatic fallback, per-URL errors, and unified output. routing_override_provider makes one strict provider attempt with no fallback.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig = api.pluginConfig ?? {};
@@ -4435,7 +4477,8 @@ function register(api) {
               spans: params?.spans === true,
               spansQuery: typeof params?.spans_query === "string" ? params.spans_query : void 0,
               autoAllow: routingPreferences.auto_allow,
-              deadlineSeconds: params?.deadline_seconds
+              deadlineSeconds: params?.deadline_seconds,
+              strictProvider: Boolean(routingOverride)
             }
           );
           if (routingOverride) result.routing = { ...result.routing || { requested_provider: routingOverride }, override_provider: routingOverride, override_mode: "forced_provider" };

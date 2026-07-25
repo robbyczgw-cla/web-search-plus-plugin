@@ -210,7 +210,7 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     provider: {
       type: "string",
       enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
-      description: "Force a provider, or use auto fallback routing (default: auto)",
+      description: "Try this provider first with extraction fallback, or use auto priority (default: auto). Use routing_override_provider for a strict single-provider call.",
     },
     routing_override_provider: {
       type: "string",
@@ -989,6 +989,7 @@ export async function extractPlus(
       priority: configuredPriority,
       disabled: [...disabledProviders].sort(),
       auto_allow: contextOptions.autoAllow || {},
+      strict_provider: contextOptions.strictProvider === true,
       // Credential availability affects which fallback can answer, while the
       // credential values themselves never enter the identity.
       available: Object.fromEntries(EXTRACT_PROVIDER_PRIORITY.map((item) => [item, Boolean(getExtractApiKey(item, runtimeConfig)) || keylessPublicAllowed(item, runtimeConfig)])),

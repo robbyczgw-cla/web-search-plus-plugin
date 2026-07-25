@@ -1,5 +1,10 @@
 type Json = Record<string, any>;
 
+// Hound is loopback-only, so 250 ms is ample for a normal session teardown
+// while still releasing a wedged sidecar promptly. Cleanup runs detached from
+// the completed tool call and therefore never delays or changes its outcome.
+const HOUND_SESSION_CLEANUP_TIMEOUT_MS = 250;
+
 export class HoundTransportError extends Error {
   constructor(code = "hound_mcp_unavailable") {
     super(code);
@@ -47,8 +52,38 @@ function parseWirePayload(text: string): Json {
 async function readBoundedResponse(response: Response, maxResponseBytes: number): Promise<Json> {
   const contentLength = Number(response.headers.get("content-length") || 0);
   if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) throw new Error("hound_response_too_large");
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > maxResponseBytes) throw new Error("hound_response_too_large");
+  let bytes: Uint8Array;
+  if (response.body) {
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > maxResponseBytes) {
+          void reader.cancel().catch(() => {});
+          throw new Error("hound_response_too_large");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+  } else {
+    // Older/custom fetch implementations may expose no Web Stream. Their only
+    // available fallback is arrayBuffer(); the Content-Length preflight above
+    // still applies, followed by the same post-read hard limit.
+    bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxResponseBytes) throw new Error("hound_response_too_large");
+  }
   if (!response.ok && response.status !== 202) throw new Error(`hound_http_${response.status}`);
   return parseWirePayload(new TextDecoder().decode(bytes));
 }
@@ -68,6 +103,27 @@ function toolPayload(result: Json): Json {
     }
   }
   throw new Error("hound_mcp_contract_failed");
+}
+
+function closeHoundSession(endpoint: string, sessionId: string): void {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HOUND_SESSION_CLEANUP_TIMEOUT_MS);
+  timer.unref?.();
+  try {
+    void fetch(endpoint, {
+      method: "DELETE",
+      headers: {
+        "Mcp-Session-Id": sessionId,
+        "MCP-Protocol-Version": "2025-03-26",
+      },
+      redirect: "error",
+      signal: controller.signal,
+    }).catch(() => {
+      // Session cleanup is best-effort and never changes the tool outcome.
+    }).finally(() => clearTimeout(timer));
+  } catch {
+    clearTimeout(timer);
+  }
 }
 
 export async function callHoundTool(
@@ -114,7 +170,7 @@ export async function callHoundTool(
       params: {
         protocolVersion: "2025-03-26",
         capabilities: {},
-        clientInfo: { name: "web-search-plus", version: "3.2.0" },
+        clientInfo: { name: "web-search-plus", version: "3.3.0" },
       },
     });
     if (initialized.error || !initialized.result) throw new Error("hound_mcp_initialize_failed");
@@ -132,19 +188,6 @@ export async function callHoundTool(
     throw new HoundTransportError();
   } finally {
     clearTimeout(timer);
-    if (sessionId) {
-      try {
-        await fetch(endpoint, {
-          method: "DELETE",
-          headers: {
-            "Mcp-Session-Id": sessionId,
-            "MCP-Protocol-Version": "2025-03-26",
-          },
-          redirect: "error",
-        });
-      } catch {
-        // Session cleanup is best-effort and never changes the tool outcome.
-      }
-    }
+    if (sessionId) closeHoundSession(endpoint, sessionId);
   }
 }

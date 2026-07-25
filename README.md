@@ -6,16 +6,15 @@
 
 Native OpenClaw plugin for one clean set of web tools.
 
-Current version: **3.2.0**
-
-> **Status: synced through the applicable Hermes v3.2 line.**
-> The v3.0–v3.2 changes are ported where they fit the in-process, scanner-safe OpenClaw runtime. Hermes-only subprocess, filesystem-state, migration, and benchmark infrastructure remains intentionally unported; see `PLAN.md` for the feature-by-feature assessment.
+Current version: **3.3.0**
 
 It registers:
 
 - `web_search_plus` — Routing v2 intelligent multi-provider web search with research mode and canonical-source reranking
 - `web_extract_plus` — Tavily-first URL extraction across supported providers
-- `web_routing_config_plus` — in-memory runtime routing preferences manager
+- `web_routing_config_plus` — process-local routing preferences, valid until host restart
+- `web_search_health_plus` — read-only process-local provider health and shadow-quality observations
+- `web_extract_benchmark_plus` — explicit bounded extraction-provider benchmark with a process-local recommendation
 
 `web_answer_plus` is removed in v3.0.0. Use search plus extraction; fewer tools, less mush.
 
