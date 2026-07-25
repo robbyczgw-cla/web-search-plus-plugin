@@ -1,5 +1,46 @@
 # Changelog
 
+## [Unreleased]
+
+## [3.3.0] - 2026-07-25
+
+- Added a bounded process-local, versioned LRU cache for extraction responses. Its secret-free identity covers exact URL order, controls, effective budgets, provider policy, configured endpoint address, and URL/storage policy; cache hits preserve the full returned response including `content`, `raw_content`, and provider attribution. (Hermes v3.2 round 2)
+- Added opt-in full-text continuation through `web_extract_plus(content_ref, content_start, content_end)`. Distinct provider raw text is separately addressed through `raw_content_start`/`raw_content_end`; without that range its availability and length are reported. Full text is held only by the existing process-local LRU entry; each reference is content-versioned and expires on eviction or host restart. (Hermes v3.2 round 2)
+- Added request-scoped budget preflight for Research fan-out (maximum three providers), Extract fan-out/context ceilings, and Extract provider-start deadlines. Daily quota accounting is intentionally not implemented because it needs a persistent ledger. (Hermes v3.2 round 2)
+- Added `web_search_health_plus`, a read-only in-process provider-health tool with explicit process start/scope metadata; no console server or cross-restart buckets are created. (Hermes v3.2 round 2)
+- Added passive process-local shadow-quality aggregates to the health tool. They observe completed requests only and never influence provider routing or result content. (Hermes v3.2 round 2)
+- Added explicit per-request `routing_override_provider` for deterministic Search and Extract routing, with visible routing-report provenance and no environment-variable switch. (Hermes v3.2 round 2)
+- Added `web_extract_benchmark_plus`: an explicit-only, cache-bypassing Extract benchmark with a hard 1–3 provider-call cap, process-local priority recommendation, and Hound `auto_allow` enforcement. (Hermes v3.2 round 2)
+
+### Breaking Changes
+- Removed the Perplexity and Kilo Perplexity Chat Completions adapters from the public provider schema and runtime. They do not expose a verified source-only mode and must not be projected as search evidence. (Hermes v3.0.0)
+
+### Changed
+- Promoted Brave Search into the default Classic Routing v2 auto pool for independent-index source diversity. Explicit `auto_allow.brave=false` still opts it out. (Hermes v3.0.0)
+- Added independent `extract_provider_priority` routing preferences plus the `set_extract_provider_priority` config action. Partial lists append missing extraction providers in the stable Tavily-first default order without changing search priority. (Hermes v3.0.0)
+- Added bounded extraction context: request-order URL fan-out caps, operator ceilings, deterministic fair-share allocation across successful results, NFC Unicode-codepoint accounting, degraded status, and truthful omission/truncation metadata. (Hermes v3.0.0)
+- Added opt-in semantic spans (`spans`/`spans_query`) with deterministic lexical ranking, non-overlapping passages, NFC Unicode-codepoint half-open offsets, and `within_preview` flags. (Hermes v3.1.0)
+- Added calibrated result-set diversity diagnostics (registrable domains, canonical URLs, snippet trigrams, provider entropy) and opt-in Research duplicate re-ranking via `qualityDiversityRerank`. (Hermes v3.1.0)
+- Added a derived `self_hosted` routing profile for SearXNG/Keenable, readiness errors, explicit-profile override diagnostics, extraction auto-allow enforcement, and onboarding status/preset support. (Hermes v3.1.0)
+- Added a bounded Streamable HTTP MCP transport for the Hound sidecar: strict loopback endpoint validation, redirects disabled, finite deadlines, response-size limits, sanitized failure codes, and best-effort session termination. (Hermes v3.2.0)
+- Added Hound search/extraction adapters for `mcp_smart_search` and per-URL `mcp_smart_fetch`, with Hound caching disabled, stable source-only projections, domain filtering, URL-cardinality preservation, and optional secondary raw-HTML fetches. (Hermes v3.2.0)
+- Hound defaults to `auto_allow=false` and is excluded consistently from automatic search selection, fallback, Research, and extraction fallback. Operators can opt in with `web_routing_config_plus(action="set_auto_allow", provider="hound", enabled=true)`; explicit Hound calls remain available. (Hermes v3.2.0)
+- Added an OpenClaw-specific Hound sidecar guide covering the separately pinned installation, loopback-only transport, explicit verification, auto-routing opt-in, privacy, caching, and attribution. (Hermes v3.2.0)
+
+### Fixed
+- Made inline extraction `raw_content` mirror the final budgeted `content`, while preserving distinct full provider raw text behind process-local content references.
+- Applied the aggregate extraction budget as a deterministic prefix before the per-result head/tail window, with returned character accounting based on the final inline text.
+- Made `routing_override_provider` strict for extraction and Research source extraction, including cache identity, so a failed forced provider can never return another provider's content.
+- Bounded Hound response streams while reading chunked bodies, and detached best-effort session teardown behind a 250 ms abort deadline.
+- Pointed the npm entrypoint at the bundled runtime, excluded the internal porting plan from the package, and completed the five-tool README/SKILL inventory.
+- Added the documented `extractCacheMaxChars` manifest schema field and corrected routing/extraction tool metadata to describe process-local lifetime and fallback behavior.
+- Bounded the process-local extraction cache by configurable full-text character count in addition to entry count.
+- Addressed distinct provider `raw_content` with independent Unicode-codepoint offsets instead of reusing the normalized content range.
+- Applied operator extraction-deadline ceilings consistently to request overrides.
+- Tracked extraction-cache character usage incrementally while preserving LRU eviction behavior.
+- Removed stale Perplexity/Kilo credential, freshness, setup, and provider claims from active package metadata and documentation after the source-only provider removal. Historical changelog entries remain intact. (Hermes v3.0.2)
+- Restored the full Research attempt envelope: each provider launch/skip records provenance and outcome, started deadline overruns are classified as cancelled, partial failures degrade the response, and total fan-out failure returns `status="failed"` instead of a successful empty result. The single post-merge quality pass remains authoritative. (Hermes v3.0.2)
+
 ## [3.2.0] - 2026-07-05
 
 Feature sync with the Hermes Web Search Plus stack (hermes-web-search-plus v2.5.0–v2.9.0 plus the unreleased Parallel budget change), adapted for the in-process OpenClaw runtime. This resumes engine syncs for the OpenClaw build.

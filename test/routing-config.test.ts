@@ -55,9 +55,13 @@ test("web_routing_config_plus shows defaults without leaking secrets", async () 
 
   assert.equal(payload.config.auto_routing, true);
   assert.equal(payload.config.default_provider, null);
+  assert.deepEqual(payload.config.extract_provider_priority.slice(0, 3), ["tavily", "exa", "linkup"]);
   assert.equal(payload.config.confidence_threshold, 0.4);
   assert.equal(JSON.stringify(payload).includes("serper-secret"), false);
   assert.equal(payload.config_path, `memory:${file}`);
+  assert.equal(payload.namespace, `memory:${file}`);
+  assert.equal(payload.storage_scope, "process_local");
+  assert.equal(payload.expires_on_host_restart, true);
 });
 
 test("web_routing_config_plus supports set/show/reset actions", async () => {
@@ -65,40 +69,120 @@ test("web_routing_config_plus supports set/show/reset actions", async () => {
   const registered = withRegistered({ routingConfigPath: file });
   const tool = registered.get("web_routing_config_plus");
 
-  await tool.execute("cfg-default", { action: "set_default_provider", provider: "kilo-perplexity" });
+  await tool.execute("cfg-default", { action: "set_default_provider", provider: "tavily" });
   await tool.execute("cfg-auto", { action: "set_auto_routing", enabled: false });
   await tool.execute("cfg-priority", { action: "set_provider_priority", providers: ["brave", "serper"] });
+  await tool.execute("cfg-extract-priority", { action: "set_extract_provider_priority", providers: ["serper", "linkup"] });
   await tool.execute("cfg-fallback", { action: "set_fallback_provider", provider: "serper" });
   await tool.execute("cfg-disable", { action: "disable_provider", provider: "brave" });
   await tool.execute("cfg-enable", { action: "enable_provider", provider: "brave" });
   await tool.execute("cfg-threshold", { action: "set_confidence_threshold", confidence_threshold: 0.75 });
 
   const show = JSON.parse((await tool.execute("cfg-show", { action: "show" })).content[0].text);
-  assert.equal(show.config.default_provider, "kilo-perplexity");
+  assert.equal(show.config.default_provider, "tavily");
   assert.equal(show.config.auto_routing, false);
   assert.deepEqual(show.config.provider_priority.slice(0, 3), ["brave", "serper", "tavily"]);
+  assert.deepEqual(show.config.extract_provider_priority.slice(0, 4), ["serper", "linkup", "tavily", "exa"]);
   assert.equal(show.config.fallback_provider, "serper");
   assert.deepEqual(show.config.disabled_providers, []);
   assert.equal(show.config.confidence_threshold, 0.75);
 
   const reset = JSON.parse((await tool.execute("cfg-reset", { action: "reset" })).content[0].text);
   assert.equal(reset.config.auto_routing, true);
+  assert.equal(reset.storage_scope, "process_local");
+  assert.equal(reset.expires_on_host_restart, true);
   assert.equal(reset.backup_path, undefined);
 });
 
-test("web_routing_config_plus keeps kilo-perplexity distinct from perplexity", async () => {
+test("tool descriptions state process-local routing lifetime and strict extract overrides", () => {
+  const registered = withRegistered();
+  const routingDescription = registered.get("web_routing_config_plus").description;
+  assert.match(routingDescription, /process-local/);
+  assert.match(routingDescription, /until the host process restarts/);
+  assert.doesNotMatch(routingDescription, /persistent|JSON file/i);
+  assert.match(registered.get("web_extract_plus").description, /one strict provider attempt with no fallback/);
+});
+
+test("self_hosted profile derives local auto routing and preserves explicit overrides", async () => {
+  const { file } = makeRoutingConfigPath();
+  const registered = withRegistered({
+    routingConfigPath: file,
+    keenableAllowPublic: true,
+    serperApiKey: "serper-test",
+  });
+  const configTool = registered.get("web_routing_config_plus");
+  const profileResponse = JSON.parse((await configTool.execute("cfg-profile", {
+    action: "set_profile",
+    profile: "self_hosted",
+  })).content[0].text);
+  assert.equal(profileResponse.config.profile, "self_hosted");
+  assert.deepEqual(profileResponse.effective_config.provider_priority.slice(0, 2), ["searxng", "keenable"]);
+  assert.equal(profileResponse.effective_config.auto_allow.serper, false);
+
+  await withMockedFetch(
+    (url) => {
+      if (url.includes("api.keenable.ai/v1/search/public")) {
+        return mockJsonResponse({ results: [{ title: "Local", url: "https://example.com/local", snippet: "local result" }] });
+      }
+      if (url.includes("google.serper.dev")) {
+        return mockJsonResponse({ organic: [{ title: "Explicit", link: "https://example.com/explicit", snippet: "explicit result" }] });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    async (calls) => {
+      const search = registered.get("web_search_plus");
+      const automatic = JSON.parse((await search.execute("self-hosted-auto", {
+        query: "local-first query",
+        provider: "auto",
+      })).content[0].text);
+      assert.equal(automatic.provider, "keenable");
+      assert.equal(automatic.routing.profile, "self_hosted");
+
+      const explicit = JSON.parse((await search.execute("self-hosted-explicit", {
+        query: "explicit query",
+        provider: "serper",
+      })).content[0].text);
+      assert.equal(explicit.provider, "serper");
+      assert.equal(explicit.routing.explicit_profile_override, true);
+      assert.equal(calls.length, 2);
+    },
+  );
+});
+
+test("self_hosted profile fails auto mode clearly when no local provider is ready", async () => {
+  const { file } = makeRoutingConfigPath();
+  const registered = withRegistered({ routingConfigPath: file, serperApiKey: "serper-test" });
+  await registered.get("web_routing_config_plus").execute("cfg-profile-empty", {
+    action: "set_profile",
+    profile: "self_hosted",
+  });
+  const payload = JSON.parse((await registered.get("web_search_plus").execute("self-hosted-empty", {
+    query: "must stay local",
+    provider: "auto",
+  })).content[0].text);
+  assert.match(payload.error, /self_hosted profile requires/);
+  assert.equal(payload.routing.profile, "self_hosted");
+});
+
+test("web_routing_config_plus rejects search-only providers in extract priority", async () => {
+  const { file } = makeRoutingConfigPath();
+  const tool = withRegistered({ routingConfigPath: file }).get("web_routing_config_plus");
+  const response = await tool.execute("cfg-extract-invalid", {
+    action: "set_extract_provider_priority",
+    providers: ["brave"],
+  });
+  assert.match(response.content[0].text, /does not support extraction: brave/);
+});
+
+test("web_routing_config_plus rejects removed answer-style providers", async () => {
   const { file } = makeRoutingConfigPath();
   const registered = withRegistered({ routingConfigPath: file });
   const tool = registered.get("web_routing_config_plus");
 
-  await tool.execute("cfg-default-kilo", { action: "set_default_provider", provider: "kilo-perplexity" });
-  await tool.execute("cfg-fallback-kilo", { action: "set_fallback_provider", provider: "kilo_perplexity" });
-  await tool.execute("cfg-priority-kilo", { action: "set_provider_priority", providers: ["kilo_perplexity", "perplexity"] });
-
-  const show = JSON.parse((await tool.execute("cfg-show-kilo", { action: "show" })).content[0].text);
-  assert.equal(show.config.default_provider, "kilo-perplexity");
-  assert.equal(show.config.fallback_provider, "kilo-perplexity");
-  assert.deepEqual(show.config.provider_priority.slice(0, 2), ["kilo-perplexity", "perplexity"]);
+  const direct = await tool.execute("cfg-default-answer", { action: "set_default_provider", provider: "perplexity" });
+  const gateway = await tool.execute("cfg-default-kilo", { action: "set_default_provider", provider: "kilo-perplexity" });
+  assert.match(direct.content[0].text, /Unknown provider: perplexity/);
+  assert.match(gateway.content[0].text, /Unknown provider: kilo-perplexity/);
 });
 
 test("web_search_plus uses strict default provider mode when auto routing is disabled", async () => {
@@ -126,6 +210,93 @@ test("web_search_plus uses strict default provider mode when auto routing is dis
       assert.equal(payload.routing.fixed_provider_mode, true);
       assert.equal(calls.length, 1);
       assert.match(calls[0].url, /serper/);
+    },
+  );
+});
+
+test("routing_override_provider forces a visible deterministic provider", async () => {
+  const { file } = makeRoutingConfigPath();
+  const registered = withRegistered({ routingConfigPath: file, serperApiKey: "serper-test", braveApiKey: "brave-test" });
+  await withMockedFetch(
+    (url) => {
+      assert.match(url, /serper/);
+      return mockJsonResponse({ organic: [{ title: "Forced", link: "https://example.com/forced", snippet: "forced source" }] });
+    },
+    async () => {
+      const payload = JSON.parse((await registered.get("web_search_plus").execute("override", { query: "anything", provider: "auto", routing_override_provider: "serper" })).content[0].text);
+      assert.equal(payload.provider, "serper");
+      assert.equal(payload.routing.override_provider, "serper");
+      assert.equal(payload.routing.override_mode, "forced_provider");
+    },
+  );
+});
+
+test("extract routing override fails without falling back to another provider", async () => {
+  const { file } = makeRoutingConfigPath();
+  const registered = withRegistered({
+    routingConfigPath: file,
+    tavilyApiKey: "tavily-test",
+    exaApiKey: "exa-test",
+  });
+  await withMockedFetch(
+    (url) => {
+      if (url.includes("api.tavily.com/extract")) return mockJsonResponse({ error: "upstream failed" }, 500);
+      if (url.includes("api.exa.ai")) {
+        return mockJsonResponse({ results: [{ url: "https://93.184.216.34/foreign", text: "must not be returned" }] });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    async (calls) => {
+      const payload = JSON.parse((await registered.get("web_extract_plus").execute("extract-override-failure", {
+        urls: ["https://93.184.216.34/forced-extract"],
+        provider: "auto",
+        routing_override_provider: "tavily",
+      })).content[0].text);
+      assert.equal(payload.error, "All extraction providers failed");
+      assert.deepEqual(payload.results, []);
+      assert.equal(payload.routing.override_provider, "tavily");
+      assert.equal(payload.routing.override_mode, "forced_provider");
+      assert.equal(payload.routing.provider, undefined);
+      assert.equal(calls.length, 1);
+      assert.match(calls[0].url, /api\.tavily\.com\/extract/);
+    },
+  );
+});
+
+test("research routing override uses only the forced provider for search and extraction", async () => {
+  const { file } = makeRoutingConfigPath();
+  const registered = withRegistered({
+    routingConfigPath: file,
+    tavilyApiKey: "tavily-test",
+    serperApiKey: "serper-test",
+    exaApiKey: "exa-test",
+  });
+  await withMockedFetch(
+    (url) => {
+      if (url.includes("api.tavily.com/search")) {
+        return mockJsonResponse({ results: [{ title: "Forced", url: "https://93.184.216.34/research-forced", content: "source" }] });
+      }
+      if (url.includes("api.tavily.com/extract")) return mockJsonResponse({ error: "extract unavailable" }, 500);
+      if (url.includes("serper.dev") || url.includes("api.exa.ai")) {
+        return mockJsonResponse({ results: [{ url: "https://93.184.216.34/foreign", text: "must not be returned" }] });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    async (calls) => {
+      const payload = JSON.parse((await registered.get("web_search_plus").execute("research-override-failure", {
+        query: "forced research provider",
+        provider: "auto",
+        routing_override_provider: "tavily",
+        mode: "research",
+        research_providers: ["tavily", "serper"],
+        research_extract_count: 1,
+      })).content[0].text);
+      assert.equal(payload.routing.override_provider, "tavily");
+      assert.equal(payload.routing.override_mode, "forced_provider");
+      assert.deepEqual(payload.routing.providers_queried, ["tavily"]);
+      assert.match(payload.routing.extraction_error, /All extraction providers failed/);
+      assert.equal(calls.length, 2);
+      assert.equal(calls.every((call) => call.url.includes("api.tavily.com")), true);
     },
   );
 });

@@ -67,6 +67,8 @@ test("runResearchMode preserves submission order despite out-of-order completion
   assert.equal(result.results[0].provider, "slow");
   assert.equal(result.mode, "research");
   assert.equal(result.provider, "research");
+  assert.equal(result.status, "success");
+  assert.deepEqual(result.routing.provider_attempts.map((attempt: any) => attempt.outcome), ["success", "success"]);
 });
 
 test("runResearchMode dedupes across providers and reports provider errors", async () => {
@@ -90,9 +92,33 @@ test("runResearchMode dedupes across providers and reports provider errors", asy
   assert.equal(result.metadata.dedup_count, 1);
   assert.deepEqual(result.metadata.providers_merged, ["a", "b"]);
   assert.deepEqual(result.routing.provider_errors, [{ provider: "broken", error: "provider exploded" }]);
+  assert.equal(result.status, "degraded");
+  assert.deepEqual(result.routing.provider_attempts.map((attempt: any) => attempt.outcome), ["success", "success", "failed"]);
   assert.equal(result.routing.extraction_provider, "tavily");
   assert.equal(result.source_summaries.length, 2);
   assert.equal(result.metadata.extracted_url_count, 2);
+});
+
+test("runResearchMode optionally moves content duplicates behind the diverse head", async () => {
+  const result = await runResearchMode({
+    query: "diversity",
+    researchProviders: ["a"],
+    executeSearch: async () => ({
+      results: [
+        { title: "First", url: "https://one.example/first", snippet: "same words form a repeated result snippet" },
+        { title: "Duplicate", url: "https://one.example/second", snippet: "same words form a repeated result snippet" },
+        { title: "Diverse", url: "https://two.example/third", snippet: "fresh material from another source entirely" },
+      ],
+    }),
+    extractUrls: async () => ({ provider: null, results: [] }),
+    maxResults: 5,
+    maxExtractUrls: 0,
+    diversityRerank: true,
+  });
+
+  assert.deepEqual(result.results.map((item: any) => item.title), ["First", "Diverse", "Duplicate"]);
+  assert.equal(result.metadata.diversity_rerank.enabled, true);
+  assert.equal(result.metadata.diversity_rerank.moved_candidate_count, 1);
 });
 
 test("runResearchMode time budget skips later providers and extraction deterministically", async () => {
@@ -120,6 +146,24 @@ test("runResearchMode time budget skips later providers and extraction determini
   assert.deepEqual(skipped, ["second", "third"]);
   assert.match(result.routing.extraction_error, /time budget exhausted/);
   assert.deepEqual(result.source_summaries, []);
+  assert.deepEqual(result.routing.provider_attempts.map((attempt: any) => attempt.outcome), ["success", "skipped", "skipped"]);
+});
+
+test("runResearchMode marks total fan-out failure as a failed envelope", async () => {
+  const result = await runResearchMode({
+    query: "failure",
+    researchProviders: ["a", "b"],
+    executeSearch: async (provider) => {
+      throw new Error(`${provider} unavailable`);
+    },
+    extractUrls: async () => ({ provider: null, results: [] }),
+    maxResults: 5,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error, "All research providers failed");
+  assert.deepEqual(result.results, []);
+  assert.deepEqual(result.routing.provider_attempts.map((attempt: any) => attempt.outcome), ["failed", "failed"]);
 });
 
 test("runResearchMode surfaces extraction errors without dropping search results", async () => {

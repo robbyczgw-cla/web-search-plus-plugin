@@ -1,13 +1,15 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "3.2.0",
-  "description": "One clean set of web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, Perplexity direct, Kilo Perplexity gateway, You.com, SearXNG, and Keenable.",
+  "version": "3.3.0",
+  "description": "One clean set of source-only web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and a local Hound MCP sidecar.",
   "contracts": {
     "tools": [
       "web_search_plus",
       "web_extract_plus",
-      "web_routing_config_plus"
+      "web_routing_config_plus",
+      "web_search_health_plus",
+      "web_extract_benchmark_plus"
     ]
   },
   "toolMetadata": {
@@ -18,6 +20,12 @@
       "optional": true
     },
     "web_routing_config_plus": {
+      "optional": true
+    },
+    "web_search_health_plus": {
+      "optional": true
+    },
+    "web_extract_benchmark_plus": {
       "optional": true
     }
   },
@@ -60,14 +68,6 @@
         "type": "string",
         "description": "Firecrawl API key for web search with optional page extraction metadata and Google-style recency/domain filtering. Optional individually, but at least one provider setting in this plugin must be configured."
       },
-      "perplexityApiKey": {
-        "type": "string",
-        "description": "Perplexity direct API key for answer-style search via api.perplexity.ai. Optional individually, but at least one provider setting in this plugin must be configured."
-      },
-      "kilocodeApiKey": {
-        "type": "string",
-        "description": "Kilo Perplexity gateway API key for answer-style search via api.kilo.ai. Optional individually, but at least one provider setting in this plugin must be configured."
-      },
       "youApiKey": {
         "type": "string",
         "description": "You.com API key for general web and answer-oriented search. Optional individually, but at least one provider setting in this plugin must be configured."
@@ -83,6 +83,10 @@
       "routingConfigPath": {
         "type": "string",
         "description": "Optional namespace for in-memory routing preferences used by web_routing_config_plus. No filesystem reads are performed at runtime."
+      },
+      "routingPreferences": {
+        "type": "object",
+        "description": "Initial routing preferences, including profile=standard or profile=self_hosted. Runtime updates remain in the selected in-memory namespace."
       },
       "parallelApiKey": {
         "type": "string",
@@ -100,13 +104,53 @@
         "type": "boolean",
         "description": "Opt-in: allow Keenable's keyless public tier. Queries and fetched URLs are sent to an unauthenticated shared service (~1000 req/hour, no SLA). Off by default."
       },
+      "houndMcpUrl": {
+        "type": "string",
+        "description": "Loopback-only Hound Streamable HTTP MCP endpoint, exactly http://127.0.0.1:<port>/mcp or http://[::1]:<port>/mcp."
+      },
+      "houndTimeoutSeconds": {
+        "type": "number",
+        "description": "Hound MCP call deadline in seconds (default 120, range 5-180)."
+      },
+      "houndMaxResponseBytes": {
+        "type": "number",
+        "description": "Maximum bytes accepted from one Hound MCP response (default 2097152, hard maximum 16777216)."
+      },
+      "houndMaxContentChars": {
+        "type": "number",
+        "description": "Maximum content characters requested from Hound smart_fetch per URL (default 40000, range 500-200000)."
+      },
       "extractAllowPrivateUrls": {
         "type": "boolean",
         "description": "Opt-in danger flag. When true, web_extract_plus may target private/internal URLs (trusted intranet extraction). Off by default."
       },
       "extractCharLimit": {
         "type": "number",
-        "description": "Inline character budget per extracted page before head/tail truncation (default 15000, minimum 1000)."
+        "description": "Per-result inline character budget applied after aggregate prefix allocation and before head/tail truncation (default 15000, minimum 1000)."
+      },
+      "extractMaxUrls": {
+        "type": "number",
+        "description": "Operator ceiling for URLs processed by one extraction call (default 10, hard maximum 50)."
+      },
+      "extractMaxContextChars": {
+        "type": "number",
+        "description": "Operator ceiling for aggregate inline extraction prefixes in Unicode codepoints, applied before per-result head/tail truncation (default 60000, range 1000-200000)."
+      },
+      "extractCacheMaxEntries": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 500,
+        "description": "Maximum process-local LRU entries for completed extraction requests (default 64, range 1-500). Entries are discarded when the host restarts."
+      },
+      "extractCacheMaxChars": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 20000000,
+        "description": "Maximum Unicode codepoints retained by the process-local extraction full-text LRU (default 4000000, range 1-20000000). Entries are discarded when the host restarts."
+      },
+      "extractDeadlineSeconds": {
+        "type": "number",
+        "description": "Operator ceiling for request-scoped extraction deadline in seconds (default 30, range 1-180). This is not a daily quota."
       },
       "localeCountry": {
         "type": "string",
@@ -137,6 +181,10 @@
           "type": "string"
         },
         "description": "Domains rescued from the built-in and extra blocklists."
+      },
+      "qualityDiversityRerank": {
+        "type": "boolean",
+        "description": "Opt-in: in research mode, move URL/content near-duplicate candidates behind the diverse result head without dropping them."
       }
     }
   },
@@ -181,18 +229,6 @@
       "placeholder": "fc-...",
       "sensitive": true
     },
-    "perplexityApiKey": {
-      "label": "Perplexity API Key",
-      "placeholder": "pplx-...",
-      "description": "Direct Perplexity provider key used for api.perplexity.ai/chat/completions.",
-      "sensitive": true
-    },
-    "kilocodeApiKey": {
-      "label": "Kilo Perplexity API Key",
-      "placeholder": "...",
-      "description": "Kilo Perplexity gateway key used for api.kilo.ai/api/gateway/chat/completions.",
-      "sensitive": true
-    },
     "youApiKey": {
       "label": "You.com API Key",
       "placeholder": "...",
@@ -210,8 +246,8 @@
       "sensitive": false
     },
     "routingConfigPath": {
-      "label": "Routing preferences JSON path",
-      "placeholder": "/path/to/routing-preferences.json",
+      "label": "Routing preferences namespace",
+      "placeholder": "default",
       "description": "Optional namespace for runtime routing behavior. Secrets remain in plugin config; behavior is kept in process memory to avoid runtime filesystem reads.",
       "sensitive": false
     },
@@ -235,6 +271,26 @@
       "description": "Sends queries and fetched URLs to Keenable's unauthenticated shared service. Off by default.",
       "sensitive": false
     },
+    "houndMcpUrl": {
+      "label": "Hound MCP URL",
+      "placeholder": "http://127.0.0.1:8765/mcp",
+      "sensitive": false
+    },
+    "houndTimeoutSeconds": {
+      "label": "Hound timeout seconds",
+      "placeholder": "120",
+      "sensitive": false
+    },
+    "houndMaxResponseBytes": {
+      "label": "Hound response byte limit",
+      "placeholder": "2097152",
+      "sensitive": false
+    },
+    "houndMaxContentChars": {
+      "label": "Hound extract character request",
+      "placeholder": "40000",
+      "sensitive": false
+    },
     "extractAllowPrivateUrls": {
       "label": "Allow private-network extraction targets (danger)",
       "description": "Disables the private/internal URL guard for web_extract_plus. Only enable on fully trusted private networks.",
@@ -245,6 +301,26 @@
       "placeholder": "15000",
       "sensitive": false
     },
+    "extractMaxUrls": {
+      "label": "Extract URL ceiling",
+      "placeholder": "10",
+      "sensitive": false
+    },
+    "extractMaxContextChars": {
+      "label": "Extract aggregate context ceiling",
+      "placeholder": "60000",
+      "sensitive": false
+    },
+    "extractCacheMaxEntries": {
+      "label": "Extract cache entry limit",
+      "placeholder": "64",
+      "sensitive": false
+    },
+    "extractCacheMaxChars": {
+      "label": "Extract cache character limit",
+      "placeholder": "4000000",
+      "sensitive": false
+    },
     "localeCountry": {
       "label": "Default search country",
       "placeholder": "at",
@@ -253,6 +329,10 @@
     "localeLanguage": {
       "label": "Default search language",
       "placeholder": "de or auto",
+      "sensitive": false
+    },
+    "routingPreferences": {
+      "label": "Initial routing preferences",
       "sensitive": false
     },
     "parallelMaxCharsPerResult": {
@@ -271,6 +351,11 @@
     },
     "qualityAllowedDomains": {
       "label": "Rescued result domains",
+      "sensitive": false
+    },
+    "qualityDiversityRerank": {
+      "label": "Rerank research duplicates",
+      "description": "Moves near-duplicate research results behind the diverse head. Off by default.",
       "sensitive": false
     }
   }

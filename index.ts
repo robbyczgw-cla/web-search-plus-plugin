@@ -3,12 +3,17 @@ import dns from "dns/promises";
 import net from "net";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
-import { DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
-import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
+import { applyRoutingProfile, DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
+import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential, isExtractProviderAvailable, readCachedExtractContent } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
-import { __resetProviderStatsForTests, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
+import { scoreDiversity } from "./diversity.ts";
+import { searchHound } from "./hound-provider.ts";
+import { __resetProviderStatsForTests, getProviderHealthSnapshot, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
 import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
+import { preflightResearchFanout } from "./budget-preflight.ts";
+import { getShadowQualitySnapshot, recordShadowQualityObservation } from "./shadow-quality.ts";
+import { saveExtractBenchmark } from "./extract-benchmark.ts";
 
 export { deduplicateResultsAcrossProviders } from "./research.ts";
 export { CANONICAL_DOMAIN_RULES, buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
@@ -31,7 +36,7 @@ export const RATE_LIMIT_MAX_ATTEMPTS = 2;
 // the cooldown ladder instead of blocking the current request.
 export const MAX_RETRY_AFTER_WAIT_SECONDS = 30;
 
-const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable", "kilo_perplexity", "auto"];
+const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound", "auto"];
 
 const PARAMETERS_SCHEMA = {
   type: "object",
@@ -42,6 +47,11 @@ const PARAMETERS_SCHEMA = {
       type: "string",
       enum: SEARCH_PROVIDER_ENUM,
       description: "Force a provider, or use auto routing (default: auto)",
+    },
+    routing_override_provider: {
+      type: "string",
+      enum: SEARCH_PROVIDER_ENUM.filter((provider) => provider !== "auto"),
+      description: "Disable automatic search routing and force this provider for this request. Reported visibly in routing.override_provider.",
     },
     count: { type: "number", description: "Number of results (default: 5)" },
     depth: {
@@ -95,10 +105,13 @@ const ROUTING_CONFIG_ACTIONS = [
   "set_default_provider",
   "set_auto_routing",
   "set_provider_priority",
+  "set_extract_provider_priority",
   "set_fallback_provider",
   "disable_provider",
   "enable_provider",
   "set_confidence_threshold",
+  "set_profile",
+  "set_auto_allow",
   "reset",
 ];
 
@@ -108,17 +121,19 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
   properties: {
     action: { type: "string", enum: ROUTING_CONFIG_ACTIONS },
     provider: { type: "string", enum: [...SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto"), "none", "null"] },
-    enabled: { type: "boolean", description: "Used by set_auto_routing. True enables auto routing, false switches provider:auto to strict default_provider mode." },
-    providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Priority order. Missing providers are appended in default order." },
+    enabled: { type: "boolean", description: "Boolean value used by set_auto_routing and set_auto_allow." },
+    providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Search or extraction priority order, depending on the selected action. Missing providers are appended in default order." },
     confidence_threshold: { type: "number", minimum: 0, maximum: 1 },
+    profile: { type: "string", enum: ["standard", "self_hosted"] },
   },
 };
 
 type Json = Record<string, any>;
-const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable"];
+const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound"];
 type ToolParams = {
   query: string;
-  provider?: ProviderName | "kilo_perplexity" | "auto";
+  provider?: ProviderName | "auto";
+  routing_override_provider?: ProviderName;
   count?: number;
   depth?: "normal" | "deep" | "deep-reasoning";
   time_range?: "hour" | "day" | "week" | "month" | "year";
@@ -425,13 +440,12 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     exa: runtimeConfig.exaApiKey,
     linkup: runtimeConfig.linkupApiKey,
     firecrawl: runtimeConfig.firecrawlApiKey,
-    perplexity: runtimeConfig.perplexityApiKey,
-    "kilo-perplexity": runtimeConfig.kilocodeApiKey,
     you: runtimeConfig.youApiKey,
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
     keenable: runtimeConfig.keenableApiKey,
+    hound: runtimeConfig.houndMcpUrl,
   };
   return keyMap[provider];
 }
@@ -447,12 +461,11 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
   const key = getApiKey(provider, runtimeConfig);
   if (!key) {
     if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
-    if (provider === "perplexity") throw new ProviderConfigError("Missing API key for perplexity (PERPLEXITY_API_KEY or pluginConfig.perplexityApiKey)");
-    if (provider === "kilo-perplexity") throw new ProviderConfigError("Missing API key for kilo-perplexity (KILOCODE_API_KEY or pluginConfig.kilocodeApiKey)");
     if (provider === "keenable") {
       if (runtimeConfig.keenableAllowPublic === true) return "";
       throw new ProviderConfigError("Keenable requires an API key (pluginConfig.keenableApiKey) or the opt-in public tier (pluginConfig.keenableAllowPublic=true)");
     }
+    if (provider === "hound") throw new ProviderConfigError("Missing Hound MCP endpoint (pluginConfig.houndMcpUrl)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -487,11 +500,9 @@ export const PROVIDER_FRESHNESS_FORMATS: Record<string, Record<string, string>> 
   serpbase: { day: "day", week: "week", month: "month", year: "year" },
   // searchYou: freshness query param (native values match the unified ones)
   you: { day: "day", week: "week", month: "month", year: "year" },
-  // searchPerplexityCompatible: body.search_recency_filter
-  perplexity: { day: "day", week: "week", month: "month", year: "year" },
-  "kilo-perplexity": { day: "day", week: "week", month: "month", year: "year" },
   // searchSearxng: time_range query param
   searxng: { day: "day", week: "week", month: "month", year: "year" },
+  hound: { day: "day", week: "week", month: "month", year: "year" },
 };
 
 export function normalizeFreshness(value?: string | null): string | null {
@@ -700,12 +711,6 @@ const RAG_SIGNALS: Record<string, number> = {
   "\\bwhat'?s happening with\\b": 3.5, "\\bwhat'?s the latest\\b": 4.0, "\\bupdates?\\s+on\\b": 3.5, "\\bstatus of\\b": 3.0,
   "\\bsituation (in|with|around)\\b": 3.5,
 };
-const DIRECT_ANSWER_SIGNALS: Record<string, number> = {
-  "\\bwhat is\\b": 3.0, "\\bwhat are\\b": 2.5, "\\bcurrent status\\b": 4.0, "\\bstatus of\\b": 3.5, "\\bstatus\\b": 2.5,
-  "\\bwhat happened with\\b": 4.0, "\\bwhat'?s happening with\\b": 4.0, "\\bas of (today|now)\\b": 4.0, "\\bthis weekend\\b": 3.5,
-  "\\bevents? in\\b": 3.5, "\\bthings to do in\\b": 4.0, "\\bnear me\\b": 3.0, "\\bcan you (tell me|summarize|explain)\\b": 3.5,
-  "\\bwann\\b": 3.0, "\\bwer\\b": 3.0, "\\bwo\\b": 2.5, "\\bwie viele\\b": 3.0,
-};
 const PRIVACY_SIGNALS: Record<string, number> = {
   "\\bprivate(ly)?\\b": 4.0, "\\banonymous(ly)?\\b": 4.0, "\\bwithout tracking\\b": 4.5, "\\bno track(ing)?\\b": 4.5,
   "\\bprivacy\\b": 3.5, "\\bprivacy.?focused\\b": 4.5, "\\bprivacy.?first\\b": 4.5, "\\bduckduckgo alternative\\b": 4.5,
@@ -848,7 +853,6 @@ export class QueryAnalyzer {
     const rag = this.calculateSignalScore(query, RAG_SIGNALS);
     const privacy = this.calculateSignalScore(query, PRIVACY_SIGNALS);
     const linkupSource = this.calculateSignalScore(query, LINKUP_SOURCE_SIGNALS);
-    const direct = this.calculateSignalScore(query, DIRECT_ANSWER_SIGNALS);
     const exaDeep = this.calculateSignalScore(query, EXA_DEEP_SIGNALS);
     const exaDeepReasoning = this.calculateSignalScore(query, EXA_DEEP_REASONING_SIGNALS);
 
@@ -879,8 +883,6 @@ export class QueryAnalyzer {
         firecrawl: discovery.total + research.total * 0.35 + recency.score * 0.25,
         parallel: research.total * 0.5 + discovery.total * 0.5,
         serpbase: shopping.total + localNews.total + recency.score * 0.35,
-        perplexity: direct.total + localNews.total * 0.4 + recency.score * 0.55,
-        "kilo-perplexity": direct.total + localNews.total * 0.4 + recency.score * 0.55,
         you: rag.total + recency.score * 0.25,
         searxng: privacy.total,
         // Keenable is a last-resort fallback: no query-class signals boost it.
@@ -896,8 +898,6 @@ export class QueryAnalyzer {
         firecrawl: [...discovery.matches, ...research.matches],
         parallel: [...research.matches, ...discovery.matches],
         serpbase: [...shopping.matches, ...localNews.matches],
-        perplexity: direct.matches,
-        "kilo-perplexity": direct.matches,
         you: rag.matches,
         searxng: privacy.matches,
         keenable: [],
@@ -1192,51 +1192,6 @@ async function searchParallel(query: string, apiKey: string, maxResults: number,
   return { provider: "parallel", query, results, images: [], answer: results[0]?.snippet || "", metadata: { search_id: data.search_id, session_id: data.session_id } };
 }
 
-async function searchPerplexityCompatible(
-  provider: "perplexity" | "kilo-perplexity",
-  query: string,
-  apiKey: string,
-  maxResults: number,
-  timeRange?: string,
-): Promise<SearchResponse> {
-  const body: Json = {
-    model: provider === "perplexity" ? "sonar-pro" : "perplexity/sonar-pro",
-    messages: [
-      { role: "system", content: "Answer with concise factual summary and include source URLs." },
-      { role: "user", content: query },
-    ],
-    temperature: 0.2,
-  };
-  if (timeRange) body.search_recency_filter = timeRange;
-  const url = provider === "perplexity"
-    ? "https://api.perplexity.ai/chat/completions"
-    : "https://api.kilo.ai/api/gateway/chat/completions";
-  const data = await httpJson(url, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const answer = String(data?.choices?.[0]?.message?.content || "").trim();
-  let citations = Array.isArray(data?.citations) ? data.citations : [];
-  if (!citations.length) {
-    const matches = answer.match(/https?:\/\/[^\s)\]}>"']+/g) || [];
-    citations = [...new Set(matches)];
-  }
-  const results: SearchResult[] = [];
-  const answerTitle = provider === "perplexity" ? "Perplexity Answer" : "Kilo Perplexity Answer";
-  if (answer) results.push({ title: `${answerTitle}: ${query.slice(0, 80)}`, url: "https://www.perplexity.ai", snippet: answer.replace(/\[\d+\]/g, "").trim().slice(0, 500), score: 1.0 });
-  for (const [i, citation] of citations.slice(0, Math.max(0, maxResults - 1)).entries()) {
-    const url = typeof citation === "string" ? citation : citation?.url || "";
-    const title = typeof citation === "string" ? titleFromUrl(url) : citation?.title || titleFromUrl(url);
-    results.push({ title, url, snippet: `Source cited in Perplexity answer [citation ${i + 1}]`, score: Number((0.9 - i * 0.1).toFixed(3)) });
-  }
-  return { provider, query, results, images: [], answer, metadata: { model: body.model, usage: data.usage || {} } };
-}
-
-async function searchPerplexity(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
-  return searchPerplexityCompatible("perplexity", query, apiKey, maxResults, timeRange);
-}
-
-async function searchKiloPerplexity(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
-  return searchPerplexityCompatible("kilo-perplexity", query, apiKey, maxResults, timeRange);
-}
-
 async function searchYou(query: string, apiKey: string, maxResults: number, timeRange?: string, locale?: ResolvedLocale): Promise<SearchResponse> {
   const url = new URL("https://ydc-index.io/v1/search");
   url.searchParams.set("query", query);
@@ -1367,6 +1322,7 @@ function buildQualityReport(result: SearchResponse, routingInfo: Json, errors: J
     extract_recommended: extractReasons.length > 0,
     extract_reasons: extractReasons,
     authority_signals: routingClass ? buildAuthoritySignals(routingClass, results) : null,
+    diversity: scoreDiversity(results),
   };
 }
 
@@ -1376,7 +1332,12 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
 
     const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
-    const requestedProvider = normalizeRequestedProvider(params.provider);
+    const routingOverride = params.routing_override_provider == null ? null : normalizeRequestedProvider(params.routing_override_provider);
+    if (routingOverride === "auto") return { ok: false, payload: { error: "Search failed: routing_override_provider must name a provider" } };
+    if (routingOverride && params.provider && params.provider !== "auto" && params.provider !== routingOverride) {
+      return { ok: false, payload: { error: "Search failed: provider and routing_override_provider disagree" } };
+    }
+    const requestedProvider = routingOverride || normalizeRequestedProvider(params.provider);
     let freshness: string | null = null;
     let searchType: string | null = null;
     try {
@@ -1392,9 +1353,10 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : undefined;
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
-    const routingConfig = routingConfigResult.config;
+    const routingConfig = applyRoutingProfile(routingConfigResult.config);
     const configuredProviders = ALL_PROVIDERS.filter((p) => providerIsConfigured(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider) => !routingConfig.disabled_providers.includes(provider));
+    const autoEnabledProviders = enabledProviders.filter((candidate) => routingConfig.auto_allow[candidate] !== false);
     const braveOptions = {
       safesearch: runtimeConfig.braveSafesearch,
     };
@@ -1411,8 +1373,19 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (!enabledProviders.length) {
         return { ok: false, payload: { error: "Search failed: all configured providers are disabled in routing preferences" } };
       }
+      if (!autoEnabledProviders.length) {
+        return {
+          ok: false,
+          payload: {
+            error: routingConfig.profile === "self_hosted"
+              ? "Search failed: self_hosted profile requires pluginConfig.searxngInstanceUrl or Keenable credentials/public-tier opt-in"
+              : "Search failed: no configured providers are allowed for automatic routing; select one explicitly or enable auto_allow",
+            routing: { requested_provider: "auto", profile: routingConfig.profile },
+          },
+        };
+      }
       if (!routingConfig.auto_routing) {
-        const strictDefault = pickStrictDefaultProvider(enabledProviders, routingConfig);
+        const strictDefault = pickStrictDefaultProvider(autoEnabledProviders, routingConfig);
         if (!strictDefault) {
           return { ok: false, payload: { error: "Search failed: auto routing is disabled but default_provider is missing, disabled, or not configured" } };
         }
@@ -1420,7 +1393,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         strictProviderMode = true;
         routingInfo = { requested_provider: "auto", auto_routed: false, provider, fixed_provider_mode: true, reason: "auto_routing_disabled" };
       } else {
-        const selection = selectAutoProvider(query, enabledProviders, routingConfig);
+        const selection = selectAutoProvider(query, autoEnabledProviders, routingConfig);
         provider = selection.provider;
         routingInfo = selection.routing;
         exaDepthHint = (selection.routing.exa_depth || "normal") as "normal" | "deep" | "deep-reasoning";
@@ -1435,9 +1408,18 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       routingInfo = { requested_provider: provider, auto_routed: false, provider, fixed_provider_mode: true, reason: "explicit_provider" };
     }
 
+    routingInfo = {
+      ...routingInfo,
+      profile: routingConfig.profile,
+      ...(routingOverride ? { override_provider: routingOverride, override_mode: "forced_provider" } : {}),
+      ...(routingConfig.profile === "self_hosted" && requestedProvider !== "auto"
+        ? { explicit_profile_override: true }
+        : {}),
+    };
+
     if (provider === "exa" && params.depth) exaDepthHint = params.depth;
 
-    const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, enabledProviders, routingConfig);
+    const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, autoEnabledProviders, routingConfig);
     const eligibleProviders: ProviderName[] = [];
     const cooldownSkips: Json[] = [];
     if (strictProviderMode) {
@@ -1466,10 +1448,24 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
       if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
       if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
-      if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
-      if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange, locale);
       if (p === "keenable") return searchKeenable(query, key || undefined, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
+      if (p === "hound") {
+        if (searchType && searchType !== "search") throw new ProviderConfigError("Hound supports search_type=search only");
+        return searchHound(
+          query,
+          key,
+          count,
+          timeRange,
+          includeDomains,
+          excludeDomains,
+          undefined,
+          {
+            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
+            maxResponseBytes: runtimeConfig.houndMaxResponseBytes,
+          },
+        ) as Promise<SearchResponse>;
+      }
       return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
     };
 
@@ -1481,7 +1477,9 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         availableResearchProviders.add(provider);
       }
       let researchProviders: ProviderName[];
-      if (Array.isArray(params.research_providers) && params.research_providers.length) {
+      if (routingOverride) {
+        researchProviders = [provider];
+      } else if (Array.isArray(params.research_providers) && params.research_providers.length) {
         researchProviders = [...new Set(params.research_providers.map((value) => normalizeProviderName(value)))].filter(providerEligibleForResearch);
       } else {
         researchProviders = selectResearchProviders(
@@ -1491,6 +1489,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
           3,
         );
       }
+      const researchFanout = preflightResearchFanout(researchProviders);
+      researchProviders = researchFanout.providers;
       if (!researchProviders.length) {
         return { ok: false, payload: sanitizeOutput({ error: "No configured providers available for research mode", provider, query, routing: routingInfo, cooldown_skips: cooldownSkips }) };
       }
@@ -1515,11 +1515,24 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
             throw error;
           }
         },
-        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers),
+        extractUrls: (urls) => extractPlus(
+          urls,
+          routingOverride || "auto",
+          "markdown",
+          false,
+          false,
+          false,
+          runtimeConfig,
+          routingConfig.disabled_providers,
+          routingConfig.extract_provider_priority,
+          { autoAllow: routingConfig.auto_allow, strictProvider: Boolean(routingOverride) },
+        ),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
+        diversityRerank: runtimeConfig.qualityDiversityRerank === true,
       });
+      result.metadata = { ...(result.metadata || {}), budget_preflight: { research: researchFanout, daily_quota: "not_supported_without_persistent_ledger" } };
 
       if (freshness) {
         result.metadata = {
@@ -1672,11 +1685,15 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
 function routingConfigStatus(loadResult: ReturnType<typeof loadRoutingPreferences>) {
   return sanitizeOutput({
+    storage_scope: "process_local",
+    expires_on_host_restart: true,
+    namespace: loadResult.path,
     config_path: loadResult.path,
     source: loadResult.source,
     warning: loadResult.warning,
     quarantine_path: loadResult.quarantine_path,
     config: loadResult.config,
+    effective_config: applyRoutingProfile(loadResult.config),
   });
 }
 
@@ -1694,7 +1711,7 @@ function updateRoutingPreferences(pluginConfig: Record<string, any>, mutator: (c
 function executeRoutingConfigAction(pluginConfig: Record<string, any>, params: Record<string, any>): Json {
   const action = String(params?.action || "show");
   if (action === "show") return routingConfigStatus(loadRoutingPreferences(pluginConfig));
-  if (action === "reset") return sanitizeOutput(resetRoutingPreferences(pluginConfig));
+  if (action === "reset") return routingConfigStatus(resetRoutingPreferences(pluginConfig));
   if (action === "set_default_provider") {
     return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
       const provider = String(params?.provider || "").trim().toLowerCase();
@@ -1714,6 +1731,21 @@ function executeRoutingConfigAction(pluginConfig: Record<string, any>, params: R
       for (const provider of DEFAULT_PROVIDER_PRIORITY) {
         if (!config.provider_priority.includes(provider)) config.provider_priority.push(provider);
       }
+    }));
+  }
+  if (action === "set_extract_provider_priority") {
+    if (!Array.isArray(params?.providers) || !params.providers.length) throw new Error("set_extract_provider_priority requires a non-empty providers array");
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      const requested = [...new Set(params.providers.map((value: string) => normalizeProviderName(value)))];
+      for (const provider of requested) {
+        if (!(DEFAULT_EXTRACT_PROVIDER_PRIORITY as ProviderName[]).includes(provider)) {
+          throw new Error(`Provider does not support extraction: ${provider}`);
+        }
+      }
+      config.extract_provider_priority = [
+        ...requested,
+        ...DEFAULT_EXTRACT_PROVIDER_PRIORITY.filter((provider) => !requested.includes(provider)),
+      ] as typeof config.extract_provider_priority;
     }));
   }
   if (action === "set_fallback_provider") {
@@ -1741,15 +1773,85 @@ function executeRoutingConfigAction(pluginConfig: Record<string, any>, params: R
       config.confidence_threshold = Number(params?.confidence_threshold);
     }));
   }
+  if (action === "set_profile") {
+    const profile = String(params?.profile || "").trim().toLowerCase();
+    if (profile !== "standard" && profile !== "self_hosted") throw new Error("set_profile requires profile=standard or self_hosted");
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.profile = profile;
+    }));
+  }
+  if (action === "set_auto_allow") {
+    if (typeof params?.enabled !== "boolean") throw new Error("set_auto_allow requires enabled=true or false");
+    const provider = normalizeProviderName(params?.provider);
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.auto_allow = { ...config.auto_allow, [provider]: params.enabled };
+    }));
+  }
   throw new Error(`Unsupported routing config action: ${action}`);
 }
 
 export function register(api: any) {
   api.registerTool(
     {
+      name: "web_search_health_plus",
+      description: "Read-only process-local provider health from adaptive routing samples. Reports only what this host process has observed since it started; no HTTP endpoint or persisted history is used.",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot() }) }] };
+      },
+    },
+    { optional: true },
+  );
+
+  // Bewertung wie in der Hermes-Referenz (extract_bench_v3.py:64-76): Erfolg dominiert,
+  // Latenz und Inhaltsausbeute sind Nebenkriterien. Eine reine Latenzsortierung wuerde
+  // den schnellsten Extraktor empfehlen, nicht den brauchbarsten.
+  const BENCHMARK_LATENCY_CEILING_MS = 30_000;
+  const BENCHMARK_CONTENT_TARGET_CHARS_PER_URL = 5_000;
+  const BENCHMARK_SCORE_WEIGHTS = { success_rate: 0.6, latency: 0.2, content_yield: 0.2 };
+  const benchmarkScore = (successRate: number, latencyMs: number, returnedChars: number, urlCount: number): number => {
+    const latency = Math.max(0, 1 - latencyMs / BENCHMARK_LATENCY_CEILING_MS);
+    const content = Math.min(1, returnedChars / Math.max(1, urlCount * BENCHMARK_CONTENT_TARGET_CHARS_PER_URL));
+    return Number((0.6 * successRate + 0.2 * latency + 0.2 * content).toFixed(3));
+  };
+
+  api.registerTool(
+    {
+      name: "web_extract_benchmark_plus",
+      description: "Explicit opt-in extraction benchmark. Never runs automatically; makes at most max_provider_calls (1-3) direct provider calls, bypasses the response cache, and returns a process-local priority recommendation. Hound remains excluded unless auto_allow.hound=true.",
+      parameters: { type: "object", required: ["urls"], properties: { urls: { type: "array", minItems: 1, maxItems: 3, items: { type: "string" } }, max_provider_calls: { type: "integer", minimum: 1, maximum: 3 } } },
+      async execute(_id: string, params: any) {
+        try {
+          const pluginConfig = (api.pluginConfig ?? {}) as Record<string, any>;
+          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const routing = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
+          const maxCalls = Math.max(1, Math.min(3, Math.floor(Number(params?.max_provider_calls ?? 3))));
+          const candidates = routing.extract_provider_priority.filter((provider) => !routing.disabled_providers.includes(provider) && routing.auto_allow[provider] !== false && isExtractProviderAvailable(provider, runtimeConfig)).slice(0, maxCalls);
+          const attempts: Json[] = [];
+          for (const provider of candidates) {
+            const startedAt = Date.now();
+            const response = await extractPlus(params.urls, provider, "markdown", false, false, false, runtimeConfig, routing.disabled_providers, routing.extract_provider_priority, { autoAllow: routing.auto_allow, strictProvider: true, cacheBypass: true });
+            const returnedChars = (response.results || []).reduce((sum: number, item: any) => sum + String(item?.content || "").length, 0);
+            const successCount = (response.results || []).filter((item: any) => String(item?.content || "").length > 0).length;
+            attempts.push({ provider, latency_ms: Date.now() - startedAt, status: response.error ? "failed" : "success", result_count: response.results.length, returned_chars: returnedChars, success_rate: Number((successCount / Math.max(1, params.urls.length)).toFixed(3)), score: benchmarkScore(successCount / Math.max(1, params.urls.length), Date.now() - startedAt, returnedChars, params.urls.length), error: response.error });
+          }
+          const priority_recommendation = attempts.filter((attempt) => attempt.status === "success" && attempt.result_count > 0).sort((left, right) => right.score - left.score || left.latency_ms - right.latency_ms).map((attempt) => attempt.provider);
+          const result = { scope: "process_local", explicit_opt_in: true, score_weights: BENCHMARK_SCORE_WEIGHTS, max_provider_calls: maxCalls, provider_calls_made: attempts.length, hound_auto_allow: routing.auto_allow.hound === true, attempts, priority_recommendation };
+          saveExtractBenchmark(result);
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
+        } catch (error: any) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };
+        }
+      },
+    },
+    { optional: true },
+  );
+
+  api.registerTool(
+    {
       name: "web_search_plus",
       description:
-        "Search the web with intelligent multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity, You.com, and SearXNG. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
+        "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and the local Hound MCP sidecar. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and extract top sources for grounding.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id: string, params: ToolParams) {
         try {
@@ -1760,6 +1862,7 @@ export function register(api: any) {
             const failure = result.payload as Json;
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(failure)) }] };
           }
+          recordShadowQualityObservation(result.payload as Json);
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result.payload)) }] };
         } catch (error: any) {
           return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error?.message || error))}` }] };
@@ -1773,7 +1876,7 @@ export function register(api: any) {
     {
       name: "web_routing_config_plus",
       description:
-        "Show or update persistent routing preferences for web_search_plus. Keeps routing behavior in a JSON file separate from provider secrets.",
+        "Show or update process-local routing preferences for web_search_plus and web_extract_plus. Updates remain in the selected in-memory namespace only until the host process restarts; no routing file is read or written.",
       parameters: ROUTING_CONFIG_PARAMETERS_SCHEMA,
       async execute(_id: string, params: Record<string, any>) {
         try {
@@ -1791,7 +1894,7 @@ export function register(api: any) {
     {
       name: "web_extract_plus",
       description:
-        "Extract URL content with automatic fallback across Firecrawl, Linkup, Tavily, Exa, and You.com, with per-URL errors and unified output.",
+        "Extract URL content across configured providers, including optional local Hound MCP, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
@@ -1799,18 +1902,42 @@ export function register(api: any) {
       },
       async execute(_id: string, params: any) {
         try {
+          if (typeof params?.content_ref === "string") {
+            const content = readCachedExtractContent(
+              params.content_ref,
+              params?.content_start == null ? 0 : Number(params.content_start),
+              params?.content_end == null ? undefined : Number(params.content_end),
+              params?.raw_content_start == null ? undefined : Number(params.raw_content_start),
+              params?.raw_content_end == null ? undefined : Number(params.raw_content_end),
+            );
+            return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(content)) }] };
+          }
           const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
           const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const routingPreferences = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
+          const routingOverride = typeof params?.routing_override_provider === "string" ? params.routing_override_provider : null;
+          if (routingOverride && params?.provider && params.provider !== "auto" && params.provider !== routingOverride) throw new Error("provider and routing_override_provider disagree");
           const result = await extractPlus(
             Array.isArray(params?.urls) ? params.urls : typeof params?.urls === "string" ? [params.urls] : [],
-            params?.provider || "auto",
+            routingOverride || params?.provider || "auto",
             params?.format === "html" ? "html" : "markdown",
             Boolean(params?.include_images),
             Boolean(params?.include_raw_html),
             Boolean(params?.render_js),
             runtimeConfig,
-            loadRoutingPreferences(pluginConfig).config.disabled_providers,
+            routingPreferences.disabled_providers,
+            routingPreferences.extract_provider_priority,
+            {
+              maxUrls: params?.max_urls,
+              maxContextChars: params?.max_context_chars,
+              spans: params?.spans === true,
+              spansQuery: typeof params?.spans_query === "string" ? params.spans_query : undefined,
+              autoAllow: routingPreferences.auto_allow,
+              deadlineSeconds: params?.deadline_seconds,
+              strictProvider: Boolean(routingOverride),
+            },
           );
+          if (routingOverride) result.routing = { ...(result.routing || { requested_provider: routingOverride }), override_provider: routingOverride, override_mode: "forced_provider" };
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error: any) {
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };

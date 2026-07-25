@@ -11,18 +11,18 @@ const PROVIDERS = [
   { name: "tavily", field: "tavilyApiKey", capability: "reliable research search and Tavily-first extraction", starter: false, guarded: false },
   { name: "exa", field: "exaApiKey", capability: "docs/API, arXiv, OSS discovery, deep/deep-reasoning search, and extraction", starter: false, guarded: false },
   { name: "firecrawl", field: "firecrawlApiKey", capability: "robust scraper safety net, vendor/CVE pages, and extraction fallback", starter: false, guarded: false },
-  { name: "brave", field: "braveApiKey", capability: "current web and multilingual fallback; guarded in auto routing", starter: false, guarded: true },
+  { name: "brave", field: "braveApiKey", capability: "independent-index current web and multilingual search in the default auto pool", starter: false, guarded: false },
   { name: "querit", field: "queritApiKey", capability: "multilingual/current AI search; guarded in auto routing", starter: false, guarded: true },
   { name: "parallel", field: "parallelApiKey", capability: "Parallel search and extraction; guarded in auto routing", starter: false, guarded: true },
   { name: "serpbase", field: "serpbaseApiKey", capability: "Google-style alternate search; guarded in auto routing", starter: false, guarded: true },
-  { name: "perplexity", field: "perplexityApiKey", capability: "answer-style source search via direct Perplexity; guarded in auto routing", starter: false, guarded: true },
-  { name: "kilo-perplexity", field: "kilocodeApiKey", capability: "Kilo gateway Perplexity-compatible search; guarded in auto routing", starter: false, guarded: true },
   { name: "searxng", field: "searxngInstanceUrl", capability: "self-hosted privacy metasearch", starter: false, guarded: false },
   { name: "keenable", field: "keenableApiKey", capability: "independent web index search and extraction; keyless public tier via keenableAllowPublic=true", starter: false, guarded: false },
+  { name: "hound", field: "houndMcpUrl", capability: "local MCP metasearch and browser-backed extraction; explicit-only by default", starter: false, guarded: true },
 ];
 
 const PRESETS = {
   starter: ["you", "serper", "linkup"],
+  "self-hosted": ["searxng", "keenable"],
   full: PROVIDERS.map((p) => p.name),
 };
 
@@ -98,6 +98,7 @@ async function main() {
       capabilities: configured.map((p) => ({ provider: p.name, capability: p.capability, guarded: p.guarded })),
       tools: ["web_search_plus", "web_extract_plus", "web_routing_config_plus"],
       answer_tool_removed: true,
+      self_hosted_ready: Boolean(config.searxngInstanceUrl || config.keenableApiKey || config.keenableAllowPublic === true),
     }, opts.json);
     return;
   }
@@ -115,6 +116,10 @@ async function main() {
     const preset = opts.preset || "full";
     if (!PRESETS[preset]) throw new Error(`Unknown preset: ${preset}`);
     const config = await setupProviders(opts.config, PRESETS[preset]);
+    if (preset === "self-hosted") {
+      config.routingPreferences = { ...(config.routingPreferences || {}), profile: "self_hosted" };
+      writeConfig(opts.config, config);
+    }
     print({ config_path: opts.config, configured_providers: configuredProviders(config).map((p) => p.name) }, opts.json);
     return;
   }

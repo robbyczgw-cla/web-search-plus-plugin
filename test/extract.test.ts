@@ -8,6 +8,9 @@ import {
   extractYou,
   extractPlus,
   hasAnyExtractProviderCredential,
+  __resetExtractCacheForTests,
+  buildExtractCacheKey,
+  readCachedExtractContent,
 } from "../extract.ts";
 import { register } from "../index.ts";
 
@@ -194,6 +197,147 @@ test("extractPlus auto uses exa when only exa is available", async () => {
   );
 });
 
+test("extract cache preserves complete response data and uses request-exact identity", async () => {
+  __resetExtractCacheForTests();
+  const identityA = buildExtractCacheKey({ cache_version: 1, urls: ["https://example.com/a"], budgets: { max: 10 }, controls: { render_js: false } });
+  const identityB = buildExtractCacheKey({ controls: { render_js: true }, budgets: { max: 10 }, urls: ["https://example.com/a"], cache_version: 1 });
+  assert.notEqual(identityA, identityB);
+
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com/cache", title: "Cached", raw_content: "complete provider content", metadata: { source: "provider" } }] }),
+    async (calls) => {
+      const config = { tavilyApiKey: "tvly-test", extractCacheMaxEntries: 2 };
+      const first = await extractPlus(["https://example.com/cache"], "tavily", "markdown", false, false, false, config);
+      const second = await extractPlus(["https://example.com/cache"], "tavily", "markdown", false, false, false, config);
+      assert.equal(calls.length, 1);
+      assert.deepEqual(second, first);
+      assert.equal(second.results[0].content, "complete provider content");
+      assert.equal(second.results[0].raw_content, "complete provider content");
+      assert.equal(second.results[0].provider, "tavily");
+      assert.deepEqual(second.results[0].metadata, { source: "provider" });
+    },
+  );
+});
+
+test("extract full-content references page the cached full text and expire with eviction", async () => {
+  __resetExtractCacheForTests();
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com/full", raw_content: "abcdefghij" }] }),
+    async () => {
+      const response = await extractPlus(["https://example.com/full"], "tavily", "markdown", false, false, false, {
+        tavilyApiKey: "tvly-test", extractCharLimit: 5, extractCacheMaxEntries: 1,
+      });
+      assert.equal(response.results[0].truncated, true);
+      const reference = response.results[0].full_content_ref!;
+      assert.deepEqual(readCachedExtractContent(reference, 2, 7), {
+        content_ref: reference,
+        range: { start: 2, end: 7, total_chars: 10 },
+        content: "cdefg",
+        raw_content: "cdefg",
+        provider: "tavily",
+      });
+      await extractPlus(["https://example.com/evict"], "tavily", "markdown", false, false, false, { tavilyApiKey: "tvly-test", extractCacheMaxEntries: 1 });
+      assert.throws(() => readCachedExtractContent(reference), /expired/);
+    },
+  );
+});
+
+test("extract cache evicts the least-recent full text when its character budget is exceeded", async () => {
+  __resetExtractCacheForTests();
+  let responseIndex = 0;
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com", raw_content: ["aa", "bb", "cc"][responseIndex++] }] }),
+    async () => {
+      const config = { tavilyApiKey: "tvly-test", extractCacheMaxEntries: 10, extractCacheMaxChars: 4 };
+      const first = await extractPlus(["https://example.com/a"], "tavily", "markdown", false, false, false, config);
+      const second = await extractPlus(["https://example.com/b"], "tavily", "markdown", false, false, false, config);
+      await extractPlus(["https://example.com/c"], "tavily", "markdown", false, false, false, config);
+      assert.throws(() => readCachedExtractContent(first.results[0].full_content_ref!), /expired/);
+      assert.equal(readCachedExtractContent(second.results[0].full_content_ref!).content, "bb");
+    },
+  );
+});
+
+test("extract cache access refreshes LRU order before character-budget eviction", async () => {
+  __resetExtractCacheForTests();
+  let responseIndex = 0;
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com", raw_content: ["aa", "bb", "cc"][responseIndex++] }] }),
+    async () => {
+      const config = { tavilyApiKey: "tvly-test", extractCacheMaxEntries: 10, extractCacheMaxChars: 4 };
+      const first = await extractPlus(["https://example.com/a"], "tavily", "markdown", false, false, false, config);
+      const second = await extractPlus(["https://example.com/b"], "tavily", "markdown", false, false, false, config);
+      await extractPlus(["https://example.com/a"], "tavily", "markdown", false, false, false, config);
+      await extractPlus(["https://example.com/c"], "tavily", "markdown", false, false, false, config);
+      assert.equal(readCachedExtractContent(first.results[0].full_content_ref!).content, "aa");
+      assert.throws(() => readCachedExtractContent(second.results[0].full_content_ref!), /expired/);
+    },
+  );
+});
+
+test("extract cache skips a full-text entry larger than its character budget", async () => {
+  __resetExtractCacheForTests();
+  let responseIndex = 0;
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com", raw_content: ["abc", "abcde", "abcde"][responseIndex++] }] }),
+    async (calls) => {
+      const config = { tavilyApiKey: "tvly-test", extractCacheMaxChars: 4 };
+      const cached = await extractPlus(["https://example.com/small"], "tavily", "markdown", false, false, false, config);
+      const first = await extractPlus(["https://example.com/large"], "tavily", "markdown", false, false, false, config);
+      const second = await extractPlus(["https://example.com/large"], "tavily", "markdown", false, false, false, config);
+      assert.equal(first.results[0].full_content_ref, undefined);
+      assert.equal(second.results[0].full_content_ref, undefined);
+      assert.equal(readCachedExtractContent(cached.results[0].full_content_ref!).content, "abc");
+      assert.equal(calls.length, 3);
+    },
+  );
+});
+
+test("extract cache counts provider content without raw_content only once", async () => {
+  __resetExtractCacheForTests();
+  await withMockedFetch(
+    (url) => mockJsonResponse({ results: [{ url, raw_content: "abc" }] }),
+    async (calls) => {
+      const config = { tavilyApiKey: "tvly-test", extractCacheMaxChars: 3 };
+      const first = await extractPlus(["https://example.com/no-raw-duplicate"], "tavily", "markdown", false, false, false, config);
+      const second = await extractPlus(["https://example.com/no-raw-duplicate"], "tavily", "markdown", false, false, false, config);
+      assert.equal(calls.length, 1);
+      assert.equal(readCachedExtractContent(first.results[0].full_content_ref!).raw_content, "abc");
+      assert.equal(second.results[0].full_content_ref, first.results[0].full_content_ref);
+    },
+  );
+});
+
+test("extract full-content references address distinct raw content with its own offsets", async () => {
+  __resetExtractCacheForTests();
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com/distinct-raw", content: "abcdefghij", raw_content: "uvwxyz" }] }),
+    async () => {
+      const response = await extractPlus(["https://example.com/distinct-raw"], "tavily", "markdown", false, false, false, { tavilyApiKey: "tvly-test" });
+      const reference = response.results[0].full_content_ref!;
+      assert.deepEqual(readCachedExtractContent(reference, 2, 5), {
+        content_ref: reference,
+        range: { start: 2, end: 5, total_chars: 10 },
+        content: "cde",
+        raw_content_available: true,
+        raw_content_chars: 6,
+        provider: "tavily",
+      });
+      assert.deepEqual(readCachedExtractContent(reference, 2, 5, 1, 4), {
+        content_ref: reference,
+        range: { start: 2, end: 5, total_chars: 10 },
+        content: "cde",
+        raw_content_available: true,
+        raw_content_chars: 6,
+        raw_content_range: { start: 1, end: 4, total_chars: 6 },
+        raw_content: "vwx",
+        provider: "tavily",
+      });
+      assert.throws(() => readCachedExtractContent(reference, 0, 1, 7, 8), /raw_content_start/);
+    },
+  );
+});
+
 test("extractFirecrawl include_images parses markdown and og image", async () => {
   await withMockedFetch(
     () => mockJsonResponse({
@@ -298,12 +442,55 @@ test("register exposes web_extract_plus tool", () => {
   register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: {} });
   assert.ok(registered.has("web_search_plus"));
   assert.ok(registered.has("web_extract_plus"));
+  assert.ok(registered.has("web_extract_benchmark_plus"));
   const schema = registered.get("web_extract_plus").parameters;
-  assert.deepEqual(schema.required, ["urls"]);
+  // URLs and a full-content reference are alternate inputs to the same tool.
+  assert.equal(schema.required, undefined);
+  assert.ok(schema.properties.content_ref);
+  assert.ok(schema.properties.raw_content_start);
   assert.ok(schema.properties.provider.enum.includes("firecrawl"));
   assert.ok(schema.properties.provider.enum.includes("linkup"));
   assert.ok(schema.properties.provider.enum.includes("exa"));
   assert.ok(schema.properties.provider.enum.includes("you"));
+});
+
+test("extract benchmark ranks by content yield, not by latency alone", async () => {
+  const registered = new Map<string, any>();
+  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { tavilyApiKey: "tvly-test", exaApiKey: "exa-test" } });
+  const thin = "x";
+  const rich = "y".repeat(6000);
+  await withMockedFetch(
+    (url) => (url.includes("exa.ai")
+      ? mockJsonResponse({ results: [{ url: "https://example.com/bench", text: rich }] })
+      : mockJsonResponse({ results: [{ url: "https://example.com/bench", raw_content: thin }] })),
+    async () => {
+      const payload = JSON.parse((await registered.get("web_extract_benchmark_plus").execute("bench-score", { urls: ["https://example.com/bench"], max_provider_calls: 2 })).content[0].text);
+      assert.equal(payload.provider_calls_made, 2);
+      assert.deepEqual(payload.score_weights, { success_rate: 0.6, latency: 0.2, content_yield: 0.2 });
+      const tavily = payload.attempts.find((attempt: any) => attempt.provider === "tavily");
+      const exa = payload.attempts.find((attempt: any) => attempt.provider === "exa");
+      assert.equal(tavily.success_rate, 1);
+      assert.equal(exa.success_rate, 1);
+      assert.ok(exa.returned_chars > tavily.returned_chars);
+      assert.ok(exa.score > tavily.score, `expected exa ${exa.score} > tavily ${tavily.score}`);
+      assert.equal(payload.priority_recommendation[0], "exa");
+    },
+  );
+});
+
+test("extract benchmark is explicit, capped, and keeps Hound behind auto_allow", async () => {
+  const registered = new Map<string, any>();
+  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { tavilyApiKey: "tvly-test", houndMcpUrl: "http://127.0.0.1:3000/mcp" } });
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com/bench", raw_content: "benchmark content" }] }),
+    async (calls) => {
+      const payload = JSON.parse((await registered.get("web_extract_benchmark_plus").execute("bench", { urls: ["https://example.com/bench"], max_provider_calls: 1 })).content[0].text);
+      assert.equal(payload.explicit_opt_in, true);
+      assert.equal(payload.provider_calls_made, 1);
+      assert.equal(payload.hound_auto_allow, false);
+      assert.equal(calls.length, 1);
+    },
+  );
 });
 
 test("web_extract_plus checkFn requires extract-capable provider", () => {

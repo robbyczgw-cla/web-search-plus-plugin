@@ -1,5 +1,5 @@
 // index.ts
-import crypto from "crypto";
+import crypto2 from "crypto";
 import dns2 from "dns/promises";
 import net2 from "net";
 
@@ -146,8 +146,6 @@ function getRuntimeConfig(pluginConfig) {
     queritApiKey: maybeString(pluginConfig?.queritApiKey),
     exaApiKey: maybeString(pluginConfig?.exaApiKey),
     firecrawlApiKey: maybeString(pluginConfig?.firecrawlApiKey),
-    perplexityApiKey: maybeString(pluginConfig?.perplexityApiKey),
-    kilocodeApiKey: maybeString(pluginConfig?.kilocodeApiKey),
     youApiKey: maybeString(pluginConfig?.youApiKey),
     parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
     serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
@@ -155,27 +153,44 @@ function getRuntimeConfig(pluginConfig) {
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0,
     keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
     keenableAllowPublic: pluginConfig?.keenableAllowPublic === true ? true : void 0,
+    houndMcpUrl: maybeString(pluginConfig?.houndMcpUrl),
+    houndTimeoutSeconds: maybePositiveInt(pluginConfig?.houndTimeoutSeconds),
+    houndMaxResponseBytes: maybePositiveInt(pluginConfig?.houndMaxResponseBytes),
+    houndMaxContentChars: maybePositiveInt(pluginConfig?.houndMaxContentChars),
     extractAllowPrivateUrls: pluginConfig?.extractAllowPrivateUrls === true ? true : void 0,
     extractCharLimit: Number.isFinite(Number(pluginConfig?.extractCharLimit)) && Number(pluginConfig?.extractCharLimit) > 0 ? Math.max(1e3, Math.floor(Number(pluginConfig.extractCharLimit))) : void 0,
+    extractMaxUrls: maybePositiveInt(pluginConfig?.extractMaxUrls),
+    extractMaxContextChars: maybePositiveInt(pluginConfig?.extractMaxContextChars),
+    extractCacheMaxEntries: maybeBoundedInt(pluginConfig?.extractCacheMaxEntries, 1, 500),
+    extractCacheMaxChars: maybeBoundedInt(pluginConfig?.extractCacheMaxChars, 1, 2e7),
+    extractDeadlineSeconds: maybeBoundedInt(pluginConfig?.extractDeadlineSeconds, 1, 180),
     localeCountry: maybeString(pluginConfig?.localeCountry),
     localeLanguage: maybeString(pluginConfig?.localeLanguage),
     parallelMaxCharsPerResult: maybePositiveInt(pluginConfig?.parallelMaxCharsPerResult),
-    parallelMaxCharsTotal: maybePositiveInt(pluginConfig?.parallelMaxCharsTotal)
+    parallelMaxCharsTotal: maybePositiveInt(pluginConfig?.parallelMaxCharsTotal),
+    qualityDiversityRerank: pluginConfig?.qualityDiversityRerank === true ? true : void 0
   };
 }
 function maybePositiveInt(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : void 0;
 }
+function maybeBoundedInt(value, minimum, maximum) {
+  const parsed = maybePositiveInt(value);
+  return parsed == null ? void 0 : Math.min(maximum, Math.max(minimum, parsed));
+}
 
 // routing-config.ts
-var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "perplexity", "kilo-perplexity", "searxng", "keenable"];
-var GUARDED_AUTO_PROVIDERS = ["brave", "serpbase", "querit", "parallel", "perplexity", "kilo-perplexity"];
+var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "searxng", "keenable", "hound"];
+var DEFAULT_EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "hound"];
+var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "parallel", "hound"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 2,
+  profile: "standard",
   auto_routing: true,
   default_provider: null,
   provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
+  extract_provider_priority: [...DEFAULT_EXTRACT_PROVIDER_PRIORITY],
   fallback_provider: null,
   disabled_providers: [],
   confidence_threshold: 0.4,
@@ -186,6 +201,7 @@ function cloneConfig(config) {
   return {
     ...config,
     provider_priority: [...config.provider_priority],
+    extract_provider_priority: [...config.extract_provider_priority],
     disabled_providers: [...config.disabled_providers],
     auto_allow: { ...config.auto_allow }
   };
@@ -193,9 +209,26 @@ function cloneConfig(config) {
 function cloneDefaults() {
   return cloneConfig(DEFAULT_ROUTING_PREFERENCES);
 }
+function applyRoutingProfile(config) {
+  const effective = cloneConfig(config);
+  if (effective.profile !== "self_hosted") return effective;
+  effective.provider_priority = [
+    "searxng",
+    "keenable",
+    ...DEFAULT_PROVIDER_PRIORITY.filter((provider) => provider !== "searxng" && provider !== "keenable")
+  ];
+  effective.extract_provider_priority = [
+    "keenable",
+    ...DEFAULT_EXTRACT_PROVIDER_PRIORITY.filter((provider) => provider !== "keenable")
+  ];
+  effective.fallback_provider = "keenable";
+  effective.auto_allow = Object.fromEntries(
+    DEFAULT_PROVIDER_PRIORITY.map((provider) => [provider, provider === "searxng" || provider === "keenable"])
+  );
+  return effective;
+}
 function normalizeProviderName(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
-  if (normalized === "kilo-perplexity") return "kilo-perplexity";
   if (DEFAULT_PROVIDER_PRIORITY.includes(normalized)) return normalized;
   throw new Error(`Unknown provider: ${String(value || "")}`);
 }
@@ -230,6 +263,23 @@ function normalizePriority(values) {
   }
   return completed;
 }
+function normalizeExtractPriority(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new Error("Extract provider priority must be a non-empty array");
+  }
+  const requested = [];
+  for (const value of values) {
+    const provider = normalizeProviderName(value);
+    if (!DEFAULT_EXTRACT_PROVIDER_PRIORITY.includes(provider)) {
+      throw new Error(`Provider does not support extraction: ${provider}`);
+    }
+    if (!requested.includes(provider)) requested.push(provider);
+  }
+  for (const provider of DEFAULT_EXTRACT_PROVIDER_PRIORITY) {
+    if (!requested.includes(provider)) requested.push(provider);
+  }
+  return requested;
+}
 function normalizeAutoAllow(value) {
   const defaults = { ...DEFAULT_ROUTING_PREFERENCES.auto_allow };
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaults;
@@ -256,9 +306,15 @@ function validateRoutingPreferences(raw) {
   }
   const input = raw;
   const config = cloneDefaults();
+  if (input.profile != null) {
+    const profile = String(input.profile).trim().toLowerCase();
+    if (profile !== "standard" && profile !== "self_hosted") throw new Error(`Unknown routing profile: ${String(input.profile)}`);
+    config.profile = profile;
+  }
   config.auto_routing = input.auto_routing == null ? config.auto_routing : Boolean(input.auto_routing);
   config.default_provider = input.default_provider == null ? config.default_provider : normalizeOptionalProvider(input.default_provider);
   config.provider_priority = input.provider_priority == null ? config.provider_priority : normalizePriority(input.provider_priority);
+  config.extract_provider_priority = input.extract_provider_priority == null ? config.extract_provider_priority : normalizeExtractPriority(input.extract_provider_priority);
   config.fallback_provider = input.fallback_provider == null ? config.fallback_provider : normalizeOptionalProvider(input.fallback_provider);
   config.disabled_providers = input.disabled_providers == null ? config.disabled_providers : normalizeProviderList(input.disabled_providers);
   config.confidence_threshold = input.confidence_threshold == null ? config.confidence_threshold : normalizeThreshold(input.confidence_threshold);
@@ -305,16 +361,610 @@ function resetRoutingPreferences(pluginConfig = {}) {
 // extract.ts
 import dns from "dns/promises";
 import net from "net";
-var EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"];
+import crypto from "crypto";
+
+// span-extraction.ts
+var TOKEN_RE = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu;
+var PARAGRAPH_BREAK_RE = /(?:\r?\n[\t \f\v]*){2,}/g;
+var SENTENCE_END_RE = /(?<=[.!?])(?:["'’)\]]*)\s+/gu;
+function codepoints(text) {
+  return Array.from(text);
+}
+function codeUnitToCodepointMap(text) {
+  const map = new Array(text.length + 1).fill(0);
+  let codeUnitIndex = 0;
+  let codepointIndex = 0;
+  for (const point of text) {
+    for (let offset = 0; offset < point.length; offset += 1) {
+      map[codeUnitIndex + offset] = codepointIndex;
+    }
+    codeUnitIndex += point.length;
+    codepointIndex += 1;
+    map[codeUnitIndex] = codepointIndex;
+  }
+  return map;
+}
+function trimCandidate(points, start, end) {
+  while (start < end && /\s/u.test(points[start])) start += 1;
+  while (end > start && /\s/u.test(points[end - 1])) end -= 1;
+  return start < end ? { start, end, text: points.slice(start, end).join("") } : null;
+}
+function splitLongSegment(points, start, end, limit) {
+  const pieces = [];
+  let cursor = start;
+  while (cursor < end) {
+    let boundary = Math.min(end, cursor + limit);
+    if (boundary < end) {
+      const earliestBreak = cursor + Math.max(1, Math.floor(limit / 2));
+      for (let index = boundary; index >= earliestBreak; index -= 1) {
+        if (/\s/u.test(points[index - 1])) {
+          boundary = index;
+          break;
+        }
+      }
+    }
+    const candidate = trimCandidate(points, cursor, boundary);
+    if (candidate) pieces.push(candidate);
+    cursor = boundary;
+    while (cursor < end && /\s/u.test(points[cursor])) cursor += 1;
+  }
+  return pieces;
+}
+function findRanges(text, expression, start = 0, end = text.length) {
+  const mapping = codeUnitToCodepointMap(text);
+  const ranges = [];
+  expression.lastIndex = start;
+  let cursor = start;
+  let match;
+  while ((match = expression.exec(text)) && match.index < end) {
+    ranges.push([mapping[cursor], mapping[match.index]]);
+    cursor = match.index + match[0].length;
+    if (!match[0].length) expression.lastIndex += 1;
+  }
+  ranges.push([mapping[cursor], mapping[end]]);
+  return ranges;
+}
+function candidates(text, maxSpanChars) {
+  const points = codepoints(text);
+  const mapping = codeUnitToCodepointMap(text);
+  const paragraphRanges = findRanges(text, PARAGRAPH_BREAK_RE);
+  const all = [];
+  for (const [paragraphStart, paragraphEnd] of paragraphRanges) {
+    const paragraphStartUnits = text.slice(0, mapping.findIndex((value) => value === paragraphStart)).length;
+    let paragraphEndUnits = text.length;
+    for (let index = paragraphStartUnits; index < mapping.length; index += 1) {
+      if (mapping[index] === paragraphEnd) {
+        paragraphEndUnits = index;
+        break;
+      }
+    }
+    const sentenceRanges = findRanges(text, SENTENCE_END_RE, paragraphStartUnits, paragraphEndUnits);
+    const sentenceCandidates = [];
+    for (const [start, end] of sentenceRanges) {
+      const candidate = trimCandidate(points, start, end);
+      if (!candidate) continue;
+      if (candidate.end - candidate.start <= maxSpanChars) {
+        sentenceCandidates.push(candidate);
+      } else {
+        sentenceCandidates.push(...splitLongSegment(points, candidate.start, candidate.end, maxSpanChars));
+      }
+    }
+    all.push(...sentenceCandidates);
+    for (let index = 0; index + 1 < sentenceCandidates.length; index += 1) {
+      const start = sentenceCandidates[index].start;
+      const end = sentenceCandidates[index + 1].end;
+      if (end - start <= maxSpanChars) {
+        all.push({ start, end, text: points.slice(start, end).join("") });
+      }
+    }
+  }
+  return [...new Map(all.map((candidate) => [`${candidate.start}:${candidate.end}`, candidate])).values()].sort((left, right) => left.start - right.start || left.end - right.end);
+}
+function tokens(text) {
+  return [...text.matchAll(TOKEN_RE)].map((match) => match[0].toLocaleLowerCase());
+}
+function lexicalScore(candidate, query, total) {
+  const candidateTokens = tokens(candidate.text);
+  if (!candidateTokens.length) return 0;
+  const uniqueTokens = new Set(candidateTokens);
+  const lexicalDensity = Math.min(candidateTokens.length, 80) / Math.max(1, codepoints(candidate.text).length / 8);
+  const diversity = uniqueTokens.size / candidateTokens.length;
+  const densityScore = Math.min(1, lexicalDensity / 4) + 0.2 * diversity;
+  const positionPrior = 0.08 * (1 - candidate.start / Math.max(1, total));
+  const queryTokens = tokens(query);
+  if (!queryTokens.length) return densityScore + positionPrior;
+  const queryUnique = new Set(queryTokens);
+  const termOverlap = [...queryUnique].filter((token) => uniqueTokens.has(token)).length / queryUnique.size;
+  const queryShingles = new Set(queryTokens.slice(0, -1).map((token, index) => `${token}\0${queryTokens[index + 1]}`));
+  const candidateShingles = new Set(candidateTokens.slice(0, -1).map((token, index) => `${token}\0${candidateTokens[index + 1]}`));
+  const shingleOverlap = queryShingles.size ? [...queryShingles].filter((shingle) => candidateShingles.has(shingle)).length / queryShingles.size : 0;
+  const occurrences = [...queryUnique].reduce(
+    (sum, token) => sum + candidateTokens.filter((candidateToken) => candidateToken === token).length,
+    0
+  );
+  const occurrenceBonus = Math.min(1, occurrences / Math.max(1, queryTokens.length));
+  return 4 * termOverlap + 2 * shingleOverlap + 0.5 * occurrenceBonus + 0.2 * densityScore + positionPrior;
+}
+function selectSpans(text, query, options = {}) {
+  const maxSpans = options.maxSpans ?? 3;
+  const maxSpanChars = options.maxSpanChars ?? 600;
+  if (!Number.isInteger(maxSpans) || !Number.isInteger(maxSpanChars)) throw new TypeError("Span limits must be integers");
+  if (maxSpans <= 0 || maxSpanChars <= 0) return [];
+  const normalized = text.normalize("NFC");
+  const normalizedQuery = (query || "").normalize("NFC").trim();
+  const ranked = candidates(normalized, maxSpanChars).map((candidate) => {
+    const score = options.ranker ? options.ranker(candidate.text, normalizedQuery) : lexicalScore(candidate, normalizedQuery, codepoints(normalized).length);
+    if (!Number.isFinite(score)) throw new Error("Span ranker scores must be finite numbers");
+    return { candidate, score };
+  });
+  ranked.sort((left, right) => right.score - left.score || left.candidate.start - right.candidate.start || left.candidate.end - right.candidate.end);
+  const selected = [];
+  for (const item of ranked) {
+    if (selected.some(({ candidate }) => item.candidate.start < candidate.end && candidate.start < item.candidate.end)) continue;
+    selected.push(item);
+    if (selected.length >= maxSpans) break;
+  }
+  selected.sort((left, right) => left.candidate.start - right.candidate.start);
+  return selected.map(({ candidate, score }) => ({ ...candidate, score }));
+}
+
+// hound-transport.ts
+var HOUND_SESSION_CLEANUP_TIMEOUT_MS = 250;
+var HoundTransportError = class extends Error {
+  constructor(code = "hound_mcp_unavailable") {
+    super(code);
+    this.name = "HoundTransportError";
+  }
+};
+function validateHoundEndpoint(value) {
+  const endpoint = String(value || "").trim();
+  if (!endpoint || endpoint.includes("?") || endpoint.includes("#")) throw new Error("hound_endpoint_invalid");
+  let parsed;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new Error("hound_endpoint_invalid");
+  }
+  if (parsed.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(parsed.hostname) || !parsed.port || parsed.pathname !== "/mcp" || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("hound_endpoint_invalid");
+  }
+  return endpoint;
+}
+function parseWirePayload(text) {
+  const candidates2 = text.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).filter(Boolean);
+  const payloadText = candidates2.length ? candidates2[candidates2.length - 1] : text.trim();
+  if (!payloadText) return {};
+  const payload = JSON.parse(payloadText);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("invalid_mcp_payload");
+  return payload;
+}
+async function readBoundedResponse(response, maxResponseBytes) {
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) throw new Error("hound_response_too_large");
+  let bytes;
+  if (response.body) {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > maxResponseBytes) {
+          void reader.cancel().catch(() => {
+          });
+          throw new Error("hound_response_too_large");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+  } else {
+    bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxResponseBytes) throw new Error("hound_response_too_large");
+  }
+  if (!response.ok && response.status !== 202) throw new Error(`hound_http_${response.status}`);
+  return parseWirePayload(new TextDecoder().decode(bytes));
+}
+function toolPayload(result) {
+  if (result.isError === true) throw new Error("hound_mcp_call_failed");
+  if (result.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)) {
+    return result.structuredContent;
+  }
+  for (const item of Array.isArray(result.content) ? result.content : []) {
+    if (item?.type !== "text" || typeof item.text !== "string") continue;
+    try {
+      const parsed = JSON.parse(item.text);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+    }
+  }
+  throw new Error("hound_mcp_contract_failed");
+}
+function closeHoundSession(endpoint, sessionId) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HOUND_SESSION_CLEANUP_TIMEOUT_MS);
+  timer.unref?.();
+  try {
+    void fetch(endpoint, {
+      method: "DELETE",
+      headers: {
+        "Mcp-Session-Id": sessionId,
+        "MCP-Protocol-Version": "2025-03-26"
+      },
+      redirect: "error",
+      signal: controller.signal
+    }).catch(() => {
+    }).finally(() => clearTimeout(timer));
+  } catch {
+    clearTimeout(timer);
+  }
+}
+async function callHoundTool(endpointValue, tool, argumentsValue, options = {}) {
+  const endpoint = validateHoundEndpoint(endpointValue);
+  const timeoutSeconds = Math.min(180, Math.max(5, Math.floor(options.timeoutSeconds ?? 120)));
+  const maxResponseBytes = Math.min(16 * 1024 * 1024, Math.max(1024, Math.floor(options.maxResponseBytes ?? 2 * 1024 * 1024)));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1e3);
+  timer.unref?.();
+  let sessionId = "";
+  let requestId = 1;
+  const request = async (body, includeSession = false) => {
+    const headers = {
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json"
+    };
+    if (includeSession && sessionId) {
+      headers["Mcp-Session-Id"] = sessionId;
+      headers["MCP-Protocol-Version"] = "2025-03-26";
+    }
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      redirect: "error",
+      signal: controller.signal
+    });
+    const returnedSession = response.headers.get("mcp-session-id");
+    if (returnedSession) sessionId = returnedSession;
+    return readBoundedResponse(response, maxResponseBytes);
+  };
+  try {
+    const initialized = await request({
+      jsonrpc: "2.0",
+      id: requestId++,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "web-search-plus", version: "3.3.0" }
+      }
+    });
+    if (initialized.error || !initialized.result) throw new Error("hound_mcp_initialize_failed");
+    await request({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }, true);
+    const called = await request({
+      jsonrpc: "2.0",
+      id: requestId,
+      method: "tools/call",
+      params: { name: tool, arguments: argumentsValue }
+    }, true);
+    if (called.error || !called.result || typeof called.result !== "object") throw new Error("hound_mcp_call_failed");
+    return toolPayload(called.result);
+  } catch (error2) {
+    if (error2 instanceof HoundTransportError) throw error2;
+    throw new HoundTransportError();
+  } finally {
+    clearTimeout(timer);
+    if (sessionId) closeHoundSession(endpoint, sessionId);
+  }
+}
+
+// hound-provider.ts
+function boundedInt(value, fallback, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, Math.floor(value ?? fallback)));
+}
+function cleanStrings(value, limit = 20) {
+  return Array.isArray(value) ? value.slice(0, limit).filter((item) => typeof item === "string" && !!item) : [];
+}
+function textContent(value) {
+  if (typeof value === "string") return value;
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string").join("\n") : "";
+}
+function domainMatches(hostname, domain) {
+  const normalized = String(domain || "").trim().toLowerCase().replace(/^\*\./, "").replace(/\.$/, "");
+  return !!normalized && (hostname === normalized || hostname.endsWith(`.${normalized}`));
+}
+function urlAllowed(url, includeDomains, excludeDomains) {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+    if (!["http:", "https:"].includes(parsed.protocol) || !hostname) return false;
+    if (excludeDomains.some((domain) => domainMatches(hostname, domain))) return false;
+    return !includeDomains.length || includeDomains.some((domain) => domainMatches(hostname, domain));
+  } catch {
+    return false;
+  }
+}
+async function searchHound(query, endpoint, maxResults, freshness, includeDomains = [], excludeDomains = [], locale, options = {}) {
+  const houndOptions = {
+    max_results: boundedInt(maxResults, 6, 1, 50),
+    cache_ttl: 0
+  };
+  if (["day", "week", "month", "year"].includes(String(freshness || ""))) houndOptions.freshness = freshness;
+  if (includeDomains.length === 1) houndOptions.site = includeDomains[0];
+  if (excludeDomains.length) houndOptions.exclude_sites = excludeDomains;
+  if (locale?.language) houndOptions.language = locale.language;
+  if (locale?.country) houndOptions.region = locale.language ? `${locale.country}-${locale.language}` : locale.country;
+  const payload = await callHoundTool(endpoint, "mcp_smart_search", {
+    query,
+    options: houndOptions
+  }, options);
+  if (!Array.isArray(payload.results)) throw new Error("hound_search_contract_failed");
+  if (payload.error && !payload.results.length) throw new Error("hound_search_failed");
+  const results = payload.results.filter((item) => item && typeof item.url === "string" && urlAllowed(item.url, includeDomains, excludeDomains)).slice(0, maxResults).map((item, index) => ({
+    title: String(item.title || ""),
+    url: item.url,
+    snippet: String(item.snippet || ""),
+    score: Number.isFinite(Number(item.relevance_score)) ? Number(item.relevance_score) : Number((1 - index * 0.05).toFixed(3)),
+    position: Number.isFinite(Number(item.position)) ? Number(item.position) : void 0,
+    source: String(item.source || ""),
+    fetch_relevance: String(item.fetch_relevance || ""),
+    engines_consensus: String(item.engines_consensus || "")
+  }));
+  return {
+    provider: "hound",
+    query,
+    results,
+    images: [],
+    answer: results[0]?.snippet || "",
+    metadata: {
+      engines_used: cleanStrings(payload.engines_used),
+      engine_blocked: cleanStrings(payload.engine_blocked),
+      rerank_mode: String(payload.rerank_mode || ""),
+      duration_ms: Number.isFinite(Number(payload.duration_ms)) ? Number(payload.duration_ms) : 0,
+      local_sidecar: true
+    }
+  };
+}
+function fetchArguments(url, outputFormat, includeImages, renderJs, maxContentChars) {
+  return {
+    urls: [url],
+    extraction_type: outputFormat,
+    cache_ttl: 0,
+    max_content_chars: maxContentChars,
+    options: { include_media: includeImages },
+    ...renderJs ? { force_fetcher: "stealthy" } : {}
+  };
+}
+function singleFetchItem(payload) {
+  return Array.isArray(payload.results) && payload.results.length === 1 && payload.results[0] && typeof payload.results[0] === "object" ? payload.results[0] : {};
+}
+function projectFetchItem(item, requestedUrl) {
+  const url = typeof item.url === "string" ? item.url : requestedUrl;
+  const status = Number.isFinite(Number(item.status)) ? Number(item.status) : 0;
+  const content = textContent(item.content);
+  if (item.error || item.content_ok !== true || status >= 400 || !content.trim()) {
+    return {
+      url,
+      title: "",
+      content: "",
+      raw_content: "",
+      provider: "hound",
+      error: "hound_fetch_failed",
+      metadata: { status }
+    };
+  }
+  const metadata = item.metadata && typeof item.metadata === "object" ? item.metadata : {};
+  return {
+    url,
+    title: String(metadata.title || ""),
+    content,
+    raw_content: content,
+    provider: "hound",
+    images: cleanStrings(item.media).map((imageUrl) => ({ url: imageUrl })),
+    metadata: {
+      status,
+      fetcher: String(item.fetcher_used || ""),
+      page_type: String(item.page_type || ""),
+      source_type: String(item.source_type || ""),
+      is_official: item.is_official === true,
+      fetched_at: String(item.fetched_at || ""),
+      duration_ms: Number.isFinite(Number(item.duration_ms)) ? Number(item.duration_ms) : 0
+    }
+  };
+}
+async function extractHound(urls, endpoint, outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, options = {}) {
+  const maxContentChars = boundedInt(options.maxContentChars, 4e4, 500, 2e5);
+  const results = [];
+  for (const requestedUrl of urls) {
+    try {
+      const payload = await callHoundTool(
+        endpoint,
+        "mcp_smart_fetch",
+        fetchArguments(requestedUrl, outputFormat, includeImages, renderJs, maxContentChars),
+        options
+      );
+      const result = projectFetchItem(singleFetchItem(payload), requestedUrl);
+      if (includeRawHtml && !result.error) {
+        if (outputFormat === "html") {
+          result.raw_html = result.content;
+        } else {
+          try {
+            const rawPayload = await callHoundTool(
+              endpoint,
+              "mcp_smart_fetch",
+              fetchArguments(requestedUrl, "html", false, renderJs, maxContentChars),
+              options
+            );
+            const rawItem = singleFetchItem(rawPayload);
+            const rawStatus = Number.isFinite(Number(rawItem.status)) ? Number(rawItem.status) : 0;
+            const rawContent = textContent(rawItem.content);
+            if (rawItem.error || rawItem.content_ok !== true || rawStatus >= 400 || !rawContent.trim()) {
+              result.raw_error = "hound_raw_html_failed";
+            } else {
+              result.raw_html = rawContent;
+            }
+          } catch {
+            result.raw_error = "hound_raw_html_failed";
+          }
+        }
+      }
+      results.push(result);
+    } catch {
+      results.push({
+        url: requestedUrl,
+        title: "",
+        content: "",
+        raw_content: "",
+        provider: "hound",
+        error: "hound_fetch_failed"
+      });
+    }
+  }
+  return { provider: "hound", results };
+}
+
+// budget-preflight.ts
+var MAX_RESEARCH_FANOUT = 3;
+var MAX_EXTRACT_DEADLINE_SECONDS = 180;
+var DEFAULT_EXTRACT_DEADLINE_SECONDS = 30;
+function preflightDeadline(requested, operatorCeiling) {
+  const requestedValue = requested == null ? void 0 : Number(requested);
+  const ceiling = operatorCeiling == null ? DEFAULT_EXTRACT_DEADLINE_SECONDS : Number(operatorCeiling);
+  if (requestedValue != null && (!Number.isInteger(requestedValue) || requestedValue < 1)) {
+    throw new Error("deadline_seconds must be a positive integer");
+  }
+  if (!Number.isInteger(ceiling) || ceiling < 1) {
+    throw new Error("operator deadline ceiling must be a positive integer");
+  }
+  return Math.min(MAX_EXTRACT_DEADLINE_SECONDS, requestedValue ?? ceiling, ceiling);
+}
+function preflightResearchFanout(providers) {
+  return { providers: providers.slice(0, MAX_RESEARCH_FANOUT), omitted: Math.max(0, providers.length - MAX_RESEARCH_FANOUT), max_fanout: MAX_RESEARCH_FANOUT };
+}
+
+// extract.ts
+var EXTRACT_CACHE_VERSION = 1;
+var DEFAULT_EXTRACT_CACHE_MAX_ENTRIES = 64;
+var DEFAULT_EXTRACT_CACHE_MAX_CHARS = 4e6;
+var extractCache = /* @__PURE__ */ new Map();
+var extractCacheChars = 0;
+function stableJson(value) {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stableJson(item)]));
+  }
+  return value;
+}
+function cloneResponse(response) {
+  return structuredClone(response);
+}
+function buildExtractCacheKey(identity) {
+  return crypto.createHash("sha256").update(JSON.stringify(stableJson(identity))).digest("hex");
+}
+function extractCacheGet(key) {
+  const entry = extractCache.get(key);
+  if (!entry) return null;
+  extractCache.delete(key);
+  extractCache.set(key, entry);
+  return cloneResponse(entry.response);
+}
+function fullTextChars(fullText) {
+  return fullText.reduce((total, record) => total + (record ? codepointLength(record.content) + codepointLength(record.raw_content ?? "") : 0), 0);
+}
+function extractCachePut(key, response, fullText, maxEntries, maxChars) {
+  const entryChars = fullTextChars(fullText);
+  const previous = extractCache.get(key);
+  if (previous) extractCacheChars -= previous.chars;
+  extractCache.delete(key);
+  if (entryChars > maxChars) return false;
+  extractCache.set(key, { response: cloneResponse(response), fullText: structuredClone(fullText), chars: entryChars });
+  extractCacheChars += entryChars;
+  while (extractCache.size > maxEntries || extractCacheChars > maxChars) {
+    const oldestKey = extractCache.keys().next().value;
+    extractCacheChars -= extractCache.get(oldestKey).chars;
+    extractCache.delete(oldestKey);
+  }
+  return extractCache.has(key);
+}
+var MAX_FULLTEXT_RANGE_CHARS = 6e4;
+function contentVersion(record) {
+  return crypto.createHash("sha256").update(`${record.provider}\0${record.content}\0${record.raw_content ?? record.content}`).digest("hex").slice(0, 16);
+}
+function fullTextReference(cacheKey, index, record) {
+  return `wspx:${EXTRACT_CACHE_VERSION}:${cacheKey}:${index}:${contentVersion(record)}`;
+}
+function codepointSlice(content, start, end) {
+  return Array.from(content).slice(start, end).join("");
+}
+function readCachedExtractContent(reference, start = 0, end, rawStart, rawEnd) {
+  const match = /^wspx:(\d+):([a-f0-9]{64}):(\d+):([a-f0-9]{16})$/.exec(String(reference || ""));
+  if (!match || Number(match[1]) !== EXTRACT_CACHE_VERSION) throw new Error("Unknown or expired extraction content reference");
+  const entry = extractCache.get(match[2]);
+  const index = Number(match[3]);
+  const record = entry?.fullText[index];
+  if (!record || contentVersion(record) !== match[4]) throw new Error("Unknown or expired extraction content reference");
+  const totalChars = Array.from(record.content).length;
+  if (!Number.isInteger(start) || start < 0 || start > totalChars) throw new Error("content_start must be a valid Unicode codepoint offset");
+  const resolvedEnd = end == null ? Math.min(totalChars, start + MAX_FULLTEXT_RANGE_CHARS) : end;
+  if (!Number.isInteger(resolvedEnd) || resolvedEnd < start || resolvedEnd > totalChars || resolvedEnd - start > MAX_FULLTEXT_RANGE_CHARS) {
+    throw new Error(`content_end must select at most ${MAX_FULLTEXT_RANGE_CHARS} Unicode codepoints`);
+  }
+  extractCache.delete(match[2]);
+  extractCache.set(match[2], entry);
+  const response = {
+    content_ref: reference,
+    range: { start, end: resolvedEnd, total_chars: totalChars },
+    content: codepointSlice(record.content, start, resolvedEnd),
+    provider: record.provider
+  };
+  if (record.raw_content == null) {
+    response.raw_content = codepointSlice(record.content, start, resolvedEnd);
+    return response;
+  }
+  const rawTotalChars = Array.from(record.raw_content).length;
+  response.raw_content_available = true;
+  response.raw_content_chars = rawTotalChars;
+  if (rawStart == null && rawEnd == null) return response;
+  const resolvedRawStart = rawStart == null ? 0 : rawStart;
+  if (!Number.isInteger(resolvedRawStart) || resolvedRawStart < 0 || resolvedRawStart > rawTotalChars) {
+    throw new Error("raw_content_start must be a valid Unicode codepoint offset");
+  }
+  const resolvedRawEnd = rawEnd == null ? Math.min(rawTotalChars, resolvedRawStart + MAX_FULLTEXT_RANGE_CHARS) : rawEnd;
+  if (!Number.isInteger(resolvedRawEnd) || resolvedRawEnd < resolvedRawStart || resolvedRawEnd > rawTotalChars || resolvedRawEnd - resolvedRawStart > MAX_FULLTEXT_RANGE_CHARS) {
+    throw new Error(`raw_content_end must select at most ${MAX_FULLTEXT_RANGE_CHARS} Unicode codepoints`);
+  }
+  response.raw_content_range = { start: resolvedRawStart, end: resolvedRawEnd, total_chars: rawTotalChars };
+  response.raw_content = codepointSlice(record.raw_content, resolvedRawStart, resolvedRawEnd);
+  return response;
+}
+var EXTRACT_PROVIDER_PRIORITY = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 var EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
-  required: ["urls"],
   properties: {
-    urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
+    urls: { type: "array", items: { type: "string" }, description: "URLs to extract (required unless content_ref is supplied)" },
+    content_ref: { type: "string", description: "Process-local full-content reference returned by a prior extraction; valid only while its cache entry remains live." },
+    content_start: { type: "integer", minimum: 0, description: "Unicode codepoint offset at which to read a referenced full text (default 0)." },
+    content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a referenced full text (maximum range 60000)." },
+    raw_content_start: { type: "integer", minimum: 0, description: "Unicode codepoint offset for a distinct provider raw text returned by content_ref." },
+    raw_content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a distinct provider raw text (maximum range 60000)." },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper"],
-      description: "Force a provider, or use auto fallback routing (default: auto)"
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
+      description: "Try this provider first with extraction fallback, or use auto priority (default: auto). Use routing_override_provider for a strict single-provider call."
+    },
+    routing_override_provider: {
+      type: "string",
+      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
+      description: "Disable automatic extraction routing and force this provider for this request. Reported visibly in routing.override_provider."
     },
     format: {
       type: "string",
@@ -323,7 +973,28 @@ var EXTRACT_PARAMETERS_SCHEMA = {
     },
     include_images: { type: "boolean", description: "Include image metadata when supported" },
     include_raw_html: { type: "boolean", description: "Include raw HTML when supported" },
-    render_js: { type: "boolean", description: "Render JavaScript before extraction when supported" }
+    render_js: { type: "boolean", description: "Render JavaScript before extraction when supported" },
+    max_urls: {
+      type: "integer",
+      minimum: 1,
+      maximum: 50,
+      description: "Maximum URLs to process in request order (default/operator ceiling: 10)"
+    },
+    max_context_chars: {
+      type: "integer",
+      minimum: 1e3,
+      maximum: 2e5,
+      description: "Aggregate inline content prefix budget in Unicode codepoints, applied before the per-result head/tail window (default/operator ceiling: 60000)"
+    },
+    deadline_seconds: { type: "integer", minimum: 1, maximum: 180, description: "Request deadline for extraction provider starts in seconds (default/operator ceiling: 30)." },
+    spans: {
+      type: "boolean",
+      description: "Return deterministic query-conditioned passages with Unicode codepoint offsets"
+    },
+    spans_query: {
+      type: "string",
+      description: "Optional ranking query for spans; lexical-density ranking is used when omitted"
+    }
   }
 };
 function titleFromUrl(url) {
@@ -395,7 +1066,8 @@ function getExtractApiKey(provider, runtimeConfig) {
     you: runtimeConfig.youApiKey,
     parallel: runtimeConfig.parallelApiKey,
     keenable: runtimeConfig.keenableApiKey,
-    serper: runtimeConfig.serperApiKey
+    serper: runtimeConfig.serperApiKey,
+    hound: runtimeConfig.houndMcpUrl
   };
   return keyMap[provider];
 }
@@ -404,6 +1076,9 @@ function keylessPublicAllowed(provider, runtimeConfig) {
 }
 function hasAnyExtractProviderCredential(runtimeConfig) {
   return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig));
+}
+function isExtractProviderAvailable(provider, runtimeConfig) {
+  return Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig);
 }
 var BLOCKED_EXTRACT_HOSTS = /* @__PURE__ */ new Set(["localhost", "metadata.google.internal", "metadata.internal"]);
 function isPrivateOrInternalIp(value) {
@@ -552,8 +1227,9 @@ async function extractTavily(urls, apiKey, outputFormat = "markdown", includeIma
   const results = [];
   for (const item of Array.isArray(data?.results) ? data.results : []) {
     const url = String(item?.url || "");
-    const content = String(item?.raw_content || item?.content || "");
-    results.push(normalizeExtractResult("tavily", url, String(item?.title || ""), content, content, {
+    const content = String(item?.content || item?.raw_content || "");
+    const rawContent = String(item?.raw_content || item?.content || "");
+    results.push(normalizeExtractResult("tavily", url, String(item?.title || ""), content, rawContent, {
       images: includeImages ? normalizeImages(item?.images) : void 0,
       metadata: item?.metadata && typeof item.metadata === "object" ? item.metadata : void 0
     }));
@@ -640,6 +1316,17 @@ async function extractYou(urls, apiKey, outputFormat = "markdown", includeImages
 var BASE64_MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(\s*data:image\/[^)]+\)/gi;
 var BASE64_HTML_IMAGE_RE = /<img\b(?=[^>]*\bsrc=["']data:image\/)[^>]*>/gi;
 var DEFAULT_EXTRACT_CHAR_LIMIT = 15e3;
+var DEFAULT_EXTRACT_MAX_URLS = 10;
+var HARD_EXTRACT_MAX_URLS = 50;
+var DEFAULT_EXTRACT_MAX_CONTEXT_CHARS = 6e4;
+var MIN_EXTRACT_MAX_CONTEXT_CHARS = 1e3;
+var HARD_EXTRACT_MAX_CONTEXT_CHARS = 2e5;
+function normalizedCodepoints(content) {
+  return Array.from(content.normalize("NFC"));
+}
+function codepointLength(content) {
+  return normalizedCodepoints(content).length;
+}
 function sanitizeExtractContent(content) {
   let out = content.replace(BASE64_MARKDOWN_IMAGE_RE, (_match, alt) => `[IMAGE: ${String(alt || "image").trim() || "image"}]`);
   out = out.replace(BASE64_HTML_IMAGE_RE, (tag) => {
@@ -650,21 +1337,23 @@ function sanitizeExtractContent(content) {
   return out;
 }
 function splitExtractContent(content, limit) {
+  const codepoints2 = normalizedCodepoints(content);
   const headChars = Math.min(Math.max(1, Math.floor(limit * 2 / 3)), Math.max(1, limit - 1));
   const tailChars = Math.min(Math.max(1, Math.floor(limit * 0.2)), Math.max(1, limit - headChars));
-  if (headChars + tailChars >= content.length) return { head: content, tail: "", omittedChars: 0 };
-  const head = content.slice(0, headChars).replace(/\s+$/, "");
-  const tail = content.slice(-tailChars).replace(/^\s+/, "");
-  return { head, tail, omittedChars: Math.max(0, content.length - head.length - tail.length) };
+  if (headChars + tailChars >= codepoints2.length) return { head: codepoints2.join(""), tail: "", omittedChars: 0 };
+  const head = codepoints2.slice(0, headChars).join("").replace(/\s+$/, "");
+  const tail = codepoints2.slice(-tailChars).join("").replace(/^\s+/, "");
+  return { head, tail, omittedChars: Math.max(0, codepoints2.length - codepointLength(head) - codepointLength(tail)) };
 }
 function formatTruncatedExtractContent(content, limit) {
-  const cleaned = sanitizeExtractContent(content);
-  if (cleaned.length <= limit) return { content: cleaned, truncated: false, originalChars: cleaned.length };
+  const cleaned = sanitizeExtractContent(content).normalize("NFC");
+  const originalChars = codepointLength(cleaned);
+  if (originalChars <= limit) return { content: cleaned, truncated: false, originalChars };
   const { head, tail, omittedChars } = splitExtractContent(cleaned, limit);
   const footer = [
     "",
     "---",
-    `[Content truncated: original ${cleaned.length} chars; omitted middle ${omittedChars} chars; showing head and tail.]`,
+    `[Content truncated: original ${originalChars} chars; omitted middle ${omittedChars} chars; showing head and tail.]`,
     "Raise pluginConfig.extractCharLimit for a larger inline budget, or extract a more specific URL for the omitted section."
   ].join("\n");
   return { content: `${head}
@@ -672,7 +1361,40 @@ function formatTruncatedExtractContent(content, limit) {
 [... omitted middle ...]
 
 ${tail}
-${footer}`, truncated: true, originalChars: cleaned.length };
+${footer}`, truncated: true, originalChars };
+}
+function fairShareAllocations(lengths, budget) {
+  if (!lengths.length) return [];
+  if (lengths.reduce((sum, length) => sum + length, 0) <= budget) return [...lengths];
+  const allocations = lengths.map(() => 0);
+  let active = lengths.map((_length, index) => index);
+  let remaining = budget;
+  while (active.length && remaining > 0) {
+    const share = Math.floor(remaining / active.length);
+    const remainder = remaining % active.length;
+    const satisfied = active.filter((index) => lengths[index] - allocations[index] <= share);
+    if (satisfied.length) {
+      for (const index of satisfied) {
+        const need = lengths[index] - allocations[index];
+        allocations[index] += need;
+        remaining -= need;
+      }
+      active = active.filter((index) => !satisfied.includes(index));
+      continue;
+    }
+    active.forEach((index, position) => {
+      const grant = share + (position < remainder ? 1 : 0);
+      allocations[index] += grant;
+      remaining -= grant;
+    });
+    break;
+  }
+  return allocations;
+}
+function boundedInteger(value, fallback, minimum, maximum) {
+  if (value == null) return fallback;
+  if (!Number.isInteger(value)) throw new Error("Extraction context limits must be integers");
+  return Math.min(maximum, Math.max(minimum, value));
 }
 function keenableExtractEndpoint(apiUrl, apiKey, publicAllowed) {
   const headers = { "X-Keenable-Title": "web-search-plus-plugin" };
@@ -733,7 +1455,7 @@ async function extractSerper(urls, apiKey, _outputFormat = "markdown", _includeI
   }
   return { provider: "serper", results };
 }
-async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, runtimeConfig = {}, disabledProviders = []) {
+async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, runtimeConfig = {}, disabledProviders = [], providerPriority = EXTRACT_PROVIDER_PRIORITY, contextOptions = {}) {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
     return {
@@ -743,7 +1465,37 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       routing: { requested_provider: requestedProvider }
     };
   }
-  const cleanedUrls = urls.map((url) => typeof url === "string" ? url.trim() : url);
+  let requestedMaxUrls;
+  let requestedMaxContextChars;
+  let deadlineSeconds;
+  try {
+    requestedMaxUrls = boundedInteger(contextOptions.maxUrls, DEFAULT_EXTRACT_MAX_URLS, 1, HARD_EXTRACT_MAX_URLS);
+    requestedMaxContextChars = boundedInteger(
+      contextOptions.maxContextChars,
+      runtimeConfig.extractMaxContextChars ?? DEFAULT_EXTRACT_MAX_CONTEXT_CHARS,
+      MIN_EXTRACT_MAX_CONTEXT_CHARS,
+      HARD_EXTRACT_MAX_CONTEXT_CHARS
+    );
+    deadlineSeconds = preflightDeadline(contextOptions.deadlineSeconds, runtimeConfig.extractDeadlineSeconds);
+  } catch (error2) {
+    return {
+      provider: requestedProvider,
+      results: [],
+      error: String(error2?.message || error2),
+      routing: { requested_provider: requestedProvider }
+    };
+  }
+  const operatorMaxUrls = Math.min(HARD_EXTRACT_MAX_URLS, Math.max(1, runtimeConfig.extractMaxUrls ?? DEFAULT_EXTRACT_MAX_URLS));
+  const operatorMaxContextChars = Math.min(
+    HARD_EXTRACT_MAX_CONTEXT_CHARS,
+    Math.max(MIN_EXTRACT_MAX_CONTEXT_CHARS, runtimeConfig.extractMaxContextChars ?? DEFAULT_EXTRACT_MAX_CONTEXT_CHARS)
+  );
+  const maxUrls = Math.min(requestedMaxUrls, operatorMaxUrls);
+  const maxContextChars = Math.min(requestedMaxContextChars, operatorMaxContextChars);
+  const deadlineAt = Date.now() + deadlineSeconds * 1e3;
+  const allCleanedUrls = urls.map((url) => typeof url === "string" ? url.trim() : url);
+  const cleanedUrls = allCleanedUrls.slice(0, maxUrls);
+  const omittedUrls = allCleanedUrls.slice(maxUrls);
   const invalidUrls = cleanedUrls.filter((url) => typeof url !== "string" || !/^https?:\/\//.test(url));
   if (invalidUrls.length) {
     return {
@@ -763,10 +1515,54 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       routing: { requested_provider: requestedProvider }
     };
   }
-  const baseProviders = requestedProvider === "auto" ? EXTRACT_PROVIDER_PRIORITY : [requestedProvider, ...EXTRACT_PROVIDER_PRIORITY.filter((item) => item !== requestedProvider)];
-  const providers = baseProviders.filter((item) => item === requestedProvider || !disabledProviders.includes(item));
+  const configuredPriority = [
+    ...providerPriority.filter((item) => EXTRACT_PROVIDER_PRIORITY.includes(item)),
+    ...EXTRACT_PROVIDER_PRIORITY.filter((item) => !providerPriority.includes(item))
+  ];
+  const baseProviders = contextOptions.strictProvider && requestedProvider !== "auto" ? [requestedProvider] : requestedProvider === "auto" ? configuredPriority : [requestedProvider, ...configuredPriority.filter((item) => item !== requestedProvider)];
+  const providers = baseProviders.filter(
+    (item) => (item === requestedProvider || !disabledProviders.includes(item)) && (requestedProvider !== "auto" || contextOptions.autoAllow?.[item] !== false)
+  );
+  const cacheKey = buildExtractCacheKey({
+    cache_version: EXTRACT_CACHE_VERSION,
+    urls: allCleanedUrls,
+    requested_provider: requestedProvider,
+    format: outputFormat,
+    controls: { include_images: includeImages, include_raw_html: includeRawHtml, render_js: renderJs, spans: contextOptions.spans === true, spans_query: contextOptions.spansQuery || null },
+    budgets: {
+      requested_max_urls: requestedMaxUrls,
+      requested_max_context_chars: requestedMaxContextChars,
+      operator_max_urls: operatorMaxUrls,
+      operator_max_context_chars: operatorMaxContextChars,
+      effective_max_urls: maxUrls,
+      effective_max_context_chars: maxContextChars,
+      extract_char_limit: runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT,
+      parallel_max_chars_per_result: runtimeConfig.parallelMaxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT,
+      parallel_max_chars_total: runtimeConfig.parallelMaxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
+      hound_max_content_chars: runtimeConfig.houndMaxContentChars ?? null,
+      deadline_seconds: deadlineSeconds
+    },
+    provider_policy: {
+      priority: configuredPriority,
+      disabled: [...disabledProviders].sort(),
+      auto_allow: contextOptions.autoAllow || {},
+      strict_provider: contextOptions.strictProvider === true,
+      // Credential availability affects which fallback can answer, while the
+      // credential values themselves never enter the identity.
+      available: Object.fromEntries(EXTRACT_PROVIDER_PRIORITY.map((item) => [item, Boolean(getExtractApiKey(item, runtimeConfig)) || keylessPublicAllowed(item, runtimeConfig)]))
+    },
+    endpoints: { hound_mcp_url: runtimeConfig.houndMcpUrl || null },
+    url_policy: { extract_allow_private_urls: runtimeConfig.extractAllowPrivateUrls === true },
+    storage_policy: "process_memory_only"
+  });
+  const cached = contextOptions.cacheBypass ? null : extractCacheGet(cacheKey);
+  if (cached) return cached;
   const errors = [];
   for (const currentProvider of providers) {
+    if (Date.now() >= deadlineAt) {
+      errors.push({ provider: currentProvider, error: "deadline_exceeded_before_provider_start" });
+      break;
+    }
     if (!EXTRACT_PROVIDER_PRIORITY.includes(currentProvider)) {
       errors.push({ provider: currentProvider, error: `Provider ${currentProvider} does not support extraction` });
       continue;
@@ -796,6 +1592,20 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         result = await extractKeenable(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
       } else if (currentProvider === "serper") {
         result = await extractSerper(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "hound") {
+        result = await extractHound(
+          cleanedUrls,
+          providerCredential,
+          outputFormat,
+          includeImages,
+          includeRawHtml,
+          renderJs,
+          {
+            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
+            maxResponseBytes: runtimeConfig.houndMaxResponseBytes,
+            maxContentChars: runtimeConfig.houndMaxContentChars
+          }
+        );
       } else {
         result = await extractYou(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }
@@ -806,23 +1616,84 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         continue;
       }
       const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
-      for (const item of resultList) {
-        if (item?.error) continue;
-        const originalContent = item.content;
-        if (item.content) {
-          const formatted = formatTruncatedExtractContent(item.content, charLimit);
-          item.content = formatted.content;
-          if (formatted.truncated) {
-            item.truncated = true;
-            item.original_chars = formatted.originalChars;
-          }
+      const contentItems = resultList.map((item, resultIndex) => ({ item, resultIndex })).filter(({ item }) => !item?.error && typeof item?.content === "string");
+      const fullText = resultList.map((item) => {
+        if (item?.error || typeof item?.content !== "string") return void 0;
+        const content = sanitizeExtractContent(item.content).normalize("NFC");
+        const rawContent = sanitizeExtractContent(typeof item.raw_content === "string" ? item.raw_content : item.content).normalize("NFC");
+        return {
+          content,
+          raw_content: rawContent === content ? void 0 : rawContent,
+          provider: item.provider
+        };
+      });
+      const cacheMaxChars = runtimeConfig.extractCacheMaxChars ?? DEFAULT_EXTRACT_CACHE_MAX_CHARS;
+      const cacheableFullText = fullTextChars(fullText) <= cacheMaxChars;
+      const sanitizedContent = contentItems.map(({ item }) => sanitizeExtractContent(item.content).normalize("NFC"));
+      const selectedSpans = contextOptions.spans ? sanitizedContent.map((content) => selectSpans(content, contextOptions.spansQuery)) : [];
+      const allocations = fairShareAllocations(
+        sanitizedContent.map((content) => codepointLength(content)),
+        maxContextChars
+      );
+      let truncated = false;
+      contentItems.forEach(({ item, resultIndex }, index) => {
+        const fullContent = sanitizedContent[index];
+        const fullLength = codepointLength(fullContent);
+        const globallyTruncated = fullLength > allocations[index];
+        const budgetedContent = globallyTruncated ? normalizedCodepoints(fullContent).slice(0, allocations[index]).join("") : fullContent;
+        const formatted = formatTruncatedExtractContent(budgetedContent, charLimit);
+        item.content = formatted.content;
+        if (globallyTruncated || formatted.truncated) {
+          item.truncated = true;
+          item.original_chars = fullLength;
+          truncated = true;
         }
-        if (item.raw_content) {
-          item.raw_content = item.raw_content === originalContent ? item.content : formatTruncatedExtractContent(item.raw_content, charLimit).content;
+        if ("raw_content" in item) item.raw_content = item.content;
+        if (contextOptions.spans) {
+          item.span_contract_version = 1;
+          item.spans = selectedSpans[index].map((span) => ({
+            ...span,
+            within_preview: item.content.includes(span.text)
+          }));
         }
+        const full = fullText[resultIndex];
+        if (full && cacheableFullText && !contextOptions.cacheBypass) {
+          item.full_content_ref = fullTextReference(cacheKey, resultIndex, full);
+          item.full_content_chars = codepointLength(full.content);
+        }
+      });
+      const warnings = [...result.warnings || []];
+      if (omittedUrls.length) {
+        warnings.push({
+          code: "wsp.extract.urls_omitted",
+          message: "One or more requested URLs were omitted by the extraction fan-out cap.",
+          details: { omitted_url_count: omittedUrls.length }
+        });
       }
-      return {
+      if (truncated) {
+        warnings.push({
+          code: "wsp.content.truncated",
+          message: "Inline extracted content was deterministically truncated to the call budget.",
+          details: { truncated_result_count: contentItems.filter(({ item }) => item.truncated).length }
+        });
+      }
+      const response = {
         ...result,
+        status: omittedUrls.length || truncated ? "degraded" : result.status || "success",
+        warnings,
+        limits_applied: {
+          extract: {
+            requested_url_count: allCleanedUrls.length,
+            processed_urls: cleanedUrls,
+            omitted_urls: omittedUrls,
+            omitted_url_count: omittedUrls.length,
+            max_urls: maxUrls,
+            max_context_chars: maxContextChars,
+            deadline_seconds: deadlineSeconds,
+            context_chars_returned: contentItems.reduce((sum, { item }) => sum + codepointLength(item.content), 0),
+            truncated
+          }
+        },
         routing: {
           provider: currentProvider,
           requested_provider: requestedProvider,
@@ -830,6 +1701,16 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           fallback_errors: errors
         }
       };
+      if (!contextOptions.cacheBypass && cacheableFullText) {
+        extractCachePut(
+          cacheKey,
+          response,
+          fullText,
+          runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES,
+          cacheMaxChars
+        );
+      }
+      return response;
     } catch (error2) {
       errors.push({ provider: currentProvider, error: String(error2?.message || error2) });
     }
@@ -840,6 +1721,209 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
     error: "All extraction providers failed",
     fallback_errors: errors,
     routing: { requested_provider: requestedProvider, fallback_used: errors.length > 0, fallback_errors: errors }
+  };
+}
+
+// diversity.ts
+var MULTI_LABEL_SUFFIXES = /* @__PURE__ */ new Set([
+  "ac.at",
+  "ac.jp",
+  "ac.nz",
+  "ac.uk",
+  "asn.au",
+  "co.at",
+  "co.in",
+  "co.jp",
+  "co.nz",
+  "co.uk",
+  "com.au",
+  "com.br",
+  "com.cn",
+  "com.hk",
+  "com.mx",
+  "com.my",
+  "com.sg",
+  "com.tr",
+  "edu.au",
+  "edu.cn",
+  "edu.hk",
+  "edu.in",
+  "edu.my",
+  "edu.sg",
+  "ed.jp",
+  "firm.in",
+  "gen.in",
+  "go.jp",
+  "gov.au",
+  "gov.cn",
+  "gov.hk",
+  "gov.in",
+  "gov.uk",
+  "govt.nz",
+  "gv.at",
+  "id.au",
+  "ind.in",
+  "ltd.uk",
+  "me.uk",
+  "ne.jp",
+  "net.au",
+  "net.cn",
+  "net.in",
+  "net.nz",
+  "or.at",
+  "or.jp",
+  "org.au",
+  "org.cn",
+  "org.hk",
+  "org.in",
+  "org.nz",
+  "org.uk",
+  "plc.uk",
+  "priv.at",
+  "sch.uk"
+]);
+var TRACKING_PARAMETERS = /* @__PURE__ */ new Set([
+  "dclid",
+  "fbclid",
+  "gclid",
+  "igshid",
+  "mc_cid",
+  "mc_eid",
+  "mkt_tok",
+  "msclkid",
+  "oly_anon_id",
+  "oly_enc_id",
+  "ref",
+  "vero_id",
+  "yclid",
+  "_ga"
+]);
+function parsedUrl(value) {
+  if (!value || /\s/.test(value)) return null;
+  try {
+    return new URL(value.includes("://") ? value : `http://${value}`);
+  } catch {
+    return null;
+  }
+}
+function registrableDomain(value) {
+  const parsed = parsedUrl(value);
+  if (!parsed) return "";
+  const host = parsed.hostname.replace(/\.$/, "").toLowerCase();
+  if (!host || host.includes(":") || /^\d+(?:\.\d+){3}$/.test(host)) return host;
+  const labels = host.split(".").filter(Boolean);
+  if (labels.length < 2) return host;
+  const suffix = labels.slice(-2).join(".");
+  return MULTI_LABEL_SUFFIXES.has(suffix) && labels.length >= 3 ? labels.slice(-3).join(".") : suffix;
+}
+function canonicalDiversityUrl(value) {
+  const parsed = parsedUrl(value);
+  if (!parsed) return "";
+  parsed.hash = "";
+  parsed.hostname = parsed.hostname.replace(/\.$/, "").toLowerCase();
+  if (parsed.protocol === "http:" && parsed.port === "80" || parsed.protocol === "https:" && parsed.port === "443") parsed.port = "";
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  const kept = [...parsed.searchParams.entries()].filter(([name]) => !name.toLowerCase().startsWith("utm_") && !TRACKING_PARAMETERS.has(name.toLowerCase())).sort(([leftName, leftValue], [rightName, rightValue]) => leftName.localeCompare(rightName) || leftValue.localeCompare(rightValue));
+  parsed.search = "";
+  for (const [name, valuePart] of kept) parsed.searchParams.append(name, valuePart);
+  return parsed.toString().replace(/\/$/, "");
+}
+function wordTrigrams(value) {
+  const words = [...String(value || "").toLocaleLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map((match) => match[0]);
+  return new Set(words.slice(0, -2).map((word, index) => `${word}\0${words[index + 1]}\0${words[index + 2]}`));
+}
+function snippetSimilarity(left, right) {
+  const leftTrigrams = wordTrigrams(left);
+  const rightTrigrams = wordTrigrams(right);
+  if (!leftTrigrams.size || !rightTrigrams.size) return 0;
+  const intersection = [...leftTrigrams].filter((value) => rightTrigrams.has(value)).length;
+  return intersection / (/* @__PURE__ */ new Set([...leftTrigrams, ...rightTrigrams])).size;
+}
+function snippet(item) {
+  return String(item.snippet || item.description || "");
+}
+function duplicateAnalysis(results, threshold = 0.6) {
+  const canonicalSeen = /* @__PURE__ */ new Map();
+  const urlDuplicates = /* @__PURE__ */ new Map();
+  results.forEach((item, index) => {
+    const canonical = canonicalDiversityUrl(String(item.url || ""));
+    if (!canonical) return;
+    const prior = canonicalSeen.get(canonical);
+    if (prior == null) canonicalSeen.set(canonical, index);
+    else urlDuplicates.set(index, prior);
+  });
+  const contentDuplicates = /* @__PURE__ */ new Map();
+  let nearDuplicatePairs = 0;
+  results.forEach((item, index) => {
+    for (let prior = 0; prior < index; prior += 1) {
+      if (snippetSimilarity(snippet(results[prior]), snippet(item)) >= threshold) {
+        nearDuplicatePairs += 1;
+        if (!contentDuplicates.has(index)) contentDuplicates.set(index, prior);
+      }
+    }
+  });
+  const duplicates = [];
+  results.forEach((_item, index) => {
+    if (urlDuplicates.has(index)) duplicates.push({ kind: "url", kept: urlDuplicates.get(index), dropped_candidate: index });
+    if (contentDuplicates.has(index)) duplicates.push({ kind: "content", kept: contentDuplicates.get(index), dropped_candidate: index });
+  });
+  return { duplicates, urlDuplicates: urlDuplicates.size, nearDuplicatePairs };
+}
+function rounded(value) {
+  return Number(value.toFixed(4));
+}
+function scoreDiversity(results, threshold = 0.6) {
+  const count = results.length;
+  if (!count) {
+    return {
+      score: 0,
+      components: { domain_diversity: 0, url_duplication: 0, content_diversity: 0, provider_mix: 0 },
+      duplicates: [],
+      dominant_domain: null
+    };
+  }
+  const domains = results.map((item) => registrableDomain(String(item.url || ""))).filter(Boolean);
+  const domainCounts = /* @__PURE__ */ new Map();
+  for (const domain of domains) domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
+  const dominant = [...domainCounts.entries()].sort(([leftDomain, leftCount], [rightDomain, rightCount]) => rightCount - leftCount || leftDomain.localeCompare(rightDomain))[0];
+  const analysis = duplicateAnalysis(results, threshold);
+  const pairCount = count * (count - 1) / 2;
+  const providers = results.map((item) => String(item.provider || "").trim()).filter(Boolean);
+  const providerCounts = /* @__PURE__ */ new Map();
+  for (const provider of providers) providerCounts.set(provider, (providerCounts.get(provider) || 0) + 1);
+  let providerMix = 1;
+  if (providerCounts.size > 1) {
+    const entropy = [...providerCounts.values()].reduce((sum, providerCount) => {
+      const share = providerCount / providers.length;
+      return sum - share * Math.log(share);
+    }, 0);
+    providerMix = entropy / Math.log(providerCounts.size);
+  }
+  const components = {
+    domain_diversity: rounded(domainCounts.size / count),
+    url_duplication: rounded(Math.max(0, 1 - analysis.urlDuplicates / count)),
+    content_diversity: rounded(pairCount ? Math.max(0, 1 - analysis.nearDuplicatePairs / pairCount) : 1),
+    provider_mix: rounded(Math.max(0, providerMix))
+  };
+  return {
+    score: rounded(Math.max(0, Math.min(
+      1,
+      0.4 * components.domain_diversity + 0.3 * components.url_duplication + 0.2 * components.content_diversity + 0.1 * components.provider_mix
+    ))),
+    components,
+    duplicates: analysis.duplicates,
+    dominant_domain: dominant ? { domain: dominant[0], share: rounded(dominant[1] / count) } : null
+  };
+}
+function rerankDuplicateCandidates(results, threshold = 0.6) {
+  const analysis = duplicateAnalysis(results, threshold);
+  const duplicateIndices = new Set(analysis.duplicates.map((item) => item.dropped_candidate));
+  return {
+    results: [
+      ...results.filter((_item, index) => !duplicateIndices.has(index)),
+      ...results.filter((_item, index) => duplicateIndices.has(index))
+    ],
+    duplicates: analysis.duplicates
   };
 }
 
@@ -883,6 +1967,23 @@ function selectResearchProviders(primaryProvider, providerPriority, availablePro
   }
   return ordered;
 }
+function withResearchDeadline(promise, remainingSeconds) {
+  if (remainingSeconds == null) return promise;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("research_deadline_exceeded")), Math.max(1, remainingSeconds * 1e3));
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error2) => {
+        clearTimeout(timer);
+        reject(error2);
+      }
+    );
+  });
+}
 async function runResearchMode(options) {
   const { query, researchProviders, executeSearch: executeSearch2, extractUrls, maxResults } = options;
   const maxExtractUrls = options.maxExtractUrls ?? 3;
@@ -891,25 +1992,37 @@ async function runResearchMode(options) {
   const start = now();
   const budgetExhausted = () => timeBudgetSeconds != null && now() - start >= timeBudgetSeconds;
   const providerErrors = [];
+  const providerAttempts = /* @__PURE__ */ new Map();
   const launched = [];
   for (const [index, provider] of researchProviders.entries()) {
     if (budgetExhausted()) {
-      providerErrors.push({ provider, error: "skipped: research time budget exhausted" });
+      const error2 = "skipped: research time budget exhausted";
+      providerErrors.push({ provider, error: error2 });
+      providerAttempts.set(index, { provider, outcome: "skipped", result_count: 0, error: error2 });
       continue;
     }
-    launched.push({ index, provider, promise: executeSearch2(provider) });
+    const elapsed = now() - start;
+    const remaining = timeBudgetSeconds == null ? null : Math.max(0, timeBudgetSeconds - elapsed);
+    launched.push({ index, provider, promise: withResearchDeadline(executeSearch2(provider), remaining) });
   }
   const resultsByIndex = /* @__PURE__ */ new Map();
   for (const { index, provider, promise } of launched) {
     try {
-      resultsByIndex.set(index, [provider, await promise]);
+      const response = await promise;
+      resultsByIndex.set(index, [provider, response]);
+      providerAttempts.set(index, { provider, outcome: "success", result_count: (response.results || []).length });
     } catch (error2) {
-      providerErrors.push({ provider, error: String(error2?.message || error2) });
+      const deadlineExceeded = String(error2?.message || error2) === "research_deadline_exceeded";
+      const message = deadlineExceeded ? "cancelled: research time budget exceeded after provider start" : String(error2?.message || error2);
+      providerErrors.push({ provider, error: message });
+      providerAttempts.set(index, { provider, outcome: deadlineExceeded ? "cancelled" : "failed", result_count: 0, error: message });
     }
   }
   const providerResults = [...resultsByIndex.keys()].sort((a, b) => a - b).map((index) => resultsByIndex.get(index));
   const { results: deduped, dedupCount } = deduplicateResultsAcrossProviders(providerResults, maxResults);
-  const urls = deduped.map((item) => item.url).filter(Boolean).slice(0, Math.max(0, maxExtractUrls));
+  const diversityRerank = options.diversityRerank ? rerankDuplicateCandidates(deduped) : { results: deduped, duplicates: [] };
+  const researchResults = diversityRerank.results;
+  const urls = researchResults.map((item) => item.url).filter(Boolean).slice(0, Math.max(0, maxExtractUrls));
   let extracted = { provider: null, results: [] };
   let extractionError = null;
   if (urls.length) {
@@ -929,21 +2042,30 @@ async function runResearchMode(options) {
     }
   }
   const routing = {
-    providers_queried: providerResults.map(([provider]) => provider),
+    providers_queried: launched.map(({ provider }) => provider),
+    provider_attempts: [...providerAttempts.entries()].sort(([left], [right]) => left - right).map(([, attempt]) => attempt),
     provider_errors: providerErrors,
     extraction_provider: extracted.provider ?? null
   };
   if (extractionError) routing.extraction_error = extractionError;
   const sourceSummaries = extracted.results || [];
+  const status = providerResults.length === 0 ? "failed" : providerErrors.length > 0 || extractionError ? "degraded" : "success";
   return {
+    status,
     mode: "research",
     provider: "research",
     query,
-    results: deduped,
+    results: researchResults,
     source_summaries: sourceSummaries,
+    ...status === "failed" ? { error: "All research providers failed" } : {},
     routing,
     metadata: {
       dedup_count: dedupCount,
+      diversity_rerank: {
+        enabled: options.diversityRerank === true,
+        moved_candidate_count: new Set(diversityRerank.duplicates.map((item) => item.dropped_candidate)).size,
+        duplicates: diversityRerank.duplicates
+      },
       providers_merged: providerResults.map(([provider]) => provider),
       extracted_url_count: sourceSummaries.length
     }
@@ -1096,13 +2218,13 @@ function rerankResultsForIntent(query, routingClass, results) {
     const url = item.url || "";
     const domain = resultDomain(url);
     const title = String(item.title || "").toLowerCase();
-    const snippet = String(item.snippet || item.description || "").toLowerCase();
+    const snippet2 = String(item.snippet || item.description || "").toLowerCase();
     let score = (results.length - idx) * 0.01;
     if (rules.boost.some((rule) => urlMatchesRule(url, rule))) score += 10;
     if (rules.demote.some((rule) => urlMatchesRule(url, rule))) score -= 6;
     if (routingClass === "official/vendor-release" && ["mistral", "anthropic", "openai", "nvidia", "google", "meta"].some((term) => domain.includes(term))) score += 3;
     if (routingClass === "official/regulatory" && (url.toLowerCase().endsWith(".pdf") || title.includes("pdf"))) score += 2;
-    if (q.includes("official") && (title.includes("official") || snippet.includes("official"))) score += 1;
+    if (q.includes("official") && (title.includes("official") || snippet2.includes("official"))) score += 1;
     return { score, idx, item };
   });
   const reranked = [...scored].sort((a, b) => b.score - a.score || a.idx - b.idx).map(({ item }) => ({ ...item }));
@@ -1149,14 +2271,15 @@ var MAX_SCORE_ADJUSTMENT = 1;
 var LATENCY_CEILING_SECONDS = 8;
 var PERFORMANCE_BASELINE = 0.75;
 var providerSamples = /* @__PURE__ */ new Map();
+var processStartedAt = Date.now();
 function nowSeconds() {
   return Date.now() / 1e3;
 }
-function recordProviderOutcome(provider, latencySeconds, resultCount, error2, now) {
+function recordProviderOutcome(provider, latencySeconds, resultCount2, error2, now) {
   const sample = {
     t: Math.floor(now ?? nowSeconds()),
     lat: Math.round(Math.max(0, Number(latencySeconds) || 0) * 1e3) / 1e3,
-    n: Math.max(0, Math.floor(Number(resultCount) || 0)),
+    n: Math.max(0, Math.floor(Number(resultCount2) || 0)),
     err: Boolean(error2)
   };
   const samples = providerSamples.get(provider) || [];
@@ -1202,6 +2325,15 @@ function performanceAdjustments(providers, now) {
     if (value !== 0) adjustments[provider] = value;
   }
   return adjustments;
+}
+function getProviderHealthSnapshot(providers, now) {
+  const nowMs = Date.now();
+  const snapshots = {};
+  for (const provider of providers) {
+    const performance = getProviderPerformance(provider, now);
+    snapshots[provider] = { ...performance || { samples: 0, success_rate: 0, empty_rate: 0, median_latency_seconds: null }, score_adjustment: performanceAdjustment(provider, now) };
+  }
+  return { scope: "process_local", process_started_at: new Date(processStartedAt).toISOString(), observed_since_seconds: Math.max(0, Math.floor((nowMs - processStartedAt) / 1e3)), providers: snapshots };
 }
 function __resetProviderStatsForTests() {
   providerSamples.clear();
@@ -1357,6 +2489,49 @@ function resolveLocale(provider, runtimeConfig, query) {
   };
 }
 
+// shadow-quality.ts
+var startedAt = Date.now();
+var observations = 0;
+var resultCount = 0;
+var domainCount = 0;
+var thinSnippets = 0;
+var degraded = 0;
+function recordShadowQualityObservation(payload) {
+  const results = Array.isArray(payload?.results) ? payload.results : [];
+  const domains = /* @__PURE__ */ new Set();
+  for (const result of results) {
+    try {
+      domains.add(new URL(String(result?.url || "")).hostname.replace(/^www\./, "").toLowerCase());
+    } catch {
+    }
+    if (String(result?.snippet || "").length < 40) thinSnippets += 1;
+  }
+  observations += 1;
+  resultCount += results.length;
+  domainCount += domains.size;
+  if (payload?.status === "degraded" || payload?.status === "failed") degraded += 1;
+}
+function getShadowQualitySnapshot() {
+  return {
+    scope: "process_local",
+    process_started_at: new Date(startedAt).toISOString(),
+    observations,
+    aggregate: {
+      average_result_count: observations ? Number((resultCount / observations).toFixed(3)) : 0,
+      average_domain_count: observations ? Number((domainCount / observations).toFixed(3)) : 0,
+      thin_snippet_rate: resultCount ? Number((thinSnippets / resultCount).toFixed(3)) : 0,
+      degraded_or_failed_rate: observations ? Number((degraded / observations).toFixed(3)) : 0
+    },
+    note: "Passive observations only; they do not alter routing or results."
+  };
+}
+
+// extract-benchmark.ts
+var latest = null;
+function saveExtractBenchmark(result) {
+  latest = structuredClone(result);
+}
+
 // index.ts
 var DEFAULT_CACHE_TTL = 3600;
 var RETRY_BACKOFF_MS = [1e3, 3e3, 9e3];
@@ -1368,7 +2543,7 @@ var TRANSIENT_HTTP_CODES = /* @__PURE__ */ new Set([408, 425, 429, 500, 502, 503
 var FAILURE_DECAY_SECONDS = 1800;
 var RATE_LIMIT_MAX_ATTEMPTS = 2;
 var MAX_RETRY_AFTER_WAIT_SECONDS = 30;
-var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable", "kilo_perplexity", "auto"];
+var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound", "auto"];
 var PARAMETERS_SCHEMA = {
   type: "object",
   required: ["query"],
@@ -1378,6 +2553,11 @@ var PARAMETERS_SCHEMA = {
       type: "string",
       enum: SEARCH_PROVIDER_ENUM,
       description: "Force a provider, or use auto routing (default: auto)"
+    },
+    routing_override_provider: {
+      type: "string",
+      enum: SEARCH_PROVIDER_ENUM.filter((provider) => provider !== "auto"),
+      description: "Disable automatic search routing and force this provider for this request. Reported visibly in routing.override_provider."
     },
     count: { type: "number", description: "Number of results (default: 5)" },
     depth: {
@@ -1430,10 +2610,13 @@ var ROUTING_CONFIG_ACTIONS = [
   "set_default_provider",
   "set_auto_routing",
   "set_provider_priority",
+  "set_extract_provider_priority",
   "set_fallback_provider",
   "disable_provider",
   "enable_provider",
   "set_confidence_threshold",
+  "set_profile",
+  "set_auto_allow",
   "reset"
 ];
 var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
@@ -1442,12 +2625,13 @@ var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
   properties: {
     action: { type: "string", enum: ROUTING_CONFIG_ACTIONS },
     provider: { type: "string", enum: [...SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto"), "none", "null"] },
-    enabled: { type: "boolean", description: "Used by set_auto_routing. True enables auto routing, false switches provider:auto to strict default_provider mode." },
-    providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Priority order. Missing providers are appended in default order." },
-    confidence_threshold: { type: "number", minimum: 0, maximum: 1 }
+    enabled: { type: "boolean", description: "Boolean value used by set_auto_routing and set_auto_allow." },
+    providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Search or extraction priority order, depending on the selected action. Missing providers are appended in default order." },
+    confidence_threshold: { type: "number", minimum: 0, maximum: 1 },
+    profile: { type: "string", enum: ["standard", "self_hosted"] }
   }
 };
-var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "perplexity", "kilo-perplexity", "you", "searxng", "keenable"];
+var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound"];
 var ProviderConfigError = class extends Error {
 };
 var ProviderRequestError = class extends Error {
@@ -1503,7 +2687,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function sha256(input) {
-  return crypto.createHash("sha256").update(input).digest("hex");
+  return crypto2.createHash("sha256").update(input).digest("hex");
 }
 function normalizeJsonForCache(value) {
   if (Array.isArray(value)) return value.map((item) => normalizeJsonForCache(item));
@@ -1594,11 +2778,11 @@ function __resetRuntimeStateForTests() {
 }
 function chooseTieWinner(query, winners, priority) {
   const orderedWinners = priority.filter((provider) => winners.includes(provider));
-  const candidates = orderedWinners.length ? orderedWinners : [...winners].sort();
-  if (candidates.length <= 1) return candidates[0];
-  const digest = sha256(`${query}|${candidates.join("|")}`);
-  const idx = parseInt(digest.slice(0, 8), 16) % candidates.length;
-  return candidates[idx];
+  const candidates2 = orderedWinners.length ? orderedWinners : [...winners].sort();
+  if (candidates2.length <= 1) return candidates2[0];
+  const digest = sha256(`${query}|${candidates2.join("|")}`);
+  const idx = parseInt(digest.slice(0, 8), 16) % candidates2.length;
+  return candidates2[idx];
 }
 function normalizeRequestedProvider(value) {
   if (!value || value === "auto") return "auto";
@@ -1685,13 +2869,12 @@ function getApiKey(provider, runtimeConfig) {
     exa: runtimeConfig.exaApiKey,
     linkup: runtimeConfig.linkupApiKey,
     firecrawl: runtimeConfig.firecrawlApiKey,
-    perplexity: runtimeConfig.perplexityApiKey,
-    "kilo-perplexity": runtimeConfig.kilocodeApiKey,
     you: runtimeConfig.youApiKey,
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
-    keenable: runtimeConfig.keenableApiKey
+    keenable: runtimeConfig.keenableApiKey,
+    hound: runtimeConfig.houndMcpUrl
   };
   return keyMap[provider];
 }
@@ -1703,12 +2886,11 @@ function validateApiKey(provider, runtimeConfig) {
   const key = getApiKey(provider, runtimeConfig);
   if (!key) {
     if (provider === "searxng") throw new ProviderConfigError("Missing SearXNG instance URL (pluginConfig.searxngInstanceUrl)");
-    if (provider === "perplexity") throw new ProviderConfigError("Missing API key for perplexity (PERPLEXITY_API_KEY or pluginConfig.perplexityApiKey)");
-    if (provider === "kilo-perplexity") throw new ProviderConfigError("Missing API key for kilo-perplexity (KILOCODE_API_KEY or pluginConfig.kilocodeApiKey)");
     if (provider === "keenable") {
       if (runtimeConfig.keenableAllowPublic === true) return "";
       throw new ProviderConfigError("Keenable requires an API key (pluginConfig.keenableApiKey) or the opt-in public tier (pluginConfig.keenableAllowPublic=true)");
     }
+    if (provider === "hound") throw new ProviderConfigError("Missing Hound MCP endpoint (pluginConfig.houndMcpUrl)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -1732,11 +2914,9 @@ var PROVIDER_FRESHNESS_FORMATS = {
   serpbase: { day: "day", week: "week", month: "month", year: "year" },
   // searchYou: freshness query param (native values match the unified ones)
   you: { day: "day", week: "week", month: "month", year: "year" },
-  // searchPerplexityCompatible: body.search_recency_filter
-  perplexity: { day: "day", week: "week", month: "month", year: "year" },
-  "kilo-perplexity": { day: "day", week: "week", month: "month", year: "year" },
   // searchSearxng: time_range query param
-  searxng: { day: "day", week: "week", month: "month", year: "year" }
+  searxng: { day: "day", week: "week", month: "month", year: "year" },
+  hound: { day: "day", week: "week", month: "month", year: "year" }
 };
 function normalizeFreshness(value) {
   if (value == null) return null;
@@ -2064,25 +3244,6 @@ var RAG_SIGNALS = {
   "\\bstatus of\\b": 3,
   "\\bsituation (in|with|around)\\b": 3.5
 };
-var DIRECT_ANSWER_SIGNALS = {
-  "\\bwhat is\\b": 3,
-  "\\bwhat are\\b": 2.5,
-  "\\bcurrent status\\b": 4,
-  "\\bstatus of\\b": 3.5,
-  "\\bstatus\\b": 2.5,
-  "\\bwhat happened with\\b": 4,
-  "\\bwhat'?s happening with\\b": 4,
-  "\\bas of (today|now)\\b": 4,
-  "\\bthis weekend\\b": 3.5,
-  "\\bevents? in\\b": 3.5,
-  "\\bthings to do in\\b": 4,
-  "\\bnear me\\b": 3,
-  "\\bcan you (tell me|summarize|explain)\\b": 3.5,
-  "\\bwann\\b": 3,
-  "\\bwer\\b": 3,
-  "\\bwo\\b": 2.5,
-  "\\bwie viele\\b": 3
-};
 var PRIVACY_SIGNALS = {
   "\\bprivate(ly)?\\b": 4,
   "\\banonymous(ly)?\\b": 4,
@@ -2326,7 +3487,6 @@ var QueryAnalyzer = class {
     const rag = this.calculateSignalScore(query, RAG_SIGNALS);
     const privacy = this.calculateSignalScore(query, PRIVACY_SIGNALS);
     const linkupSource = this.calculateSignalScore(query, LINKUP_SOURCE_SIGNALS);
-    const direct = this.calculateSignalScore(query, DIRECT_ANSWER_SIGNALS);
     const exaDeep = this.calculateSignalScore(query, EXA_DEEP_SIGNALS);
     const exaDeepReasoning = this.calculateSignalScore(query, EXA_DEEP_REASONING_SIGNALS);
     const brandBonus = this.detectProductBrandCombo(query);
@@ -2355,8 +3515,6 @@ var QueryAnalyzer = class {
       firecrawl: discovery.total + research.total * 0.35 + recency.score * 0.25,
       parallel: research.total * 0.5 + discovery.total * 0.5,
       serpbase: shopping.total + localNews.total + recency.score * 0.35,
-      perplexity: direct.total + localNews.total * 0.4 + recency.score * 0.55,
-      "kilo-perplexity": direct.total + localNews.total * 0.4 + recency.score * 0.55,
       you: rag.total + recency.score * 0.25,
       searxng: privacy.total,
       // Keenable is a last-resort fallback: no query-class signals boost it.
@@ -2372,8 +3530,6 @@ var QueryAnalyzer = class {
       firecrawl: [...discovery.matches, ...research.matches],
       parallel: [...research.matches, ...discovery.matches],
       serpbase: [...shopping.matches, ...localNews.matches],
-      perplexity: direct.matches,
-      "kilo-perplexity": direct.matches,
       you: rag.matches,
       searxng: privacy.matches,
       keenable: []
@@ -2550,8 +3706,8 @@ async function searchExa(query, apiKey, maxResults, exaDepth, includeDomains, ex
     const results2 = [];
     if (synthesis) results2.push({ title: `Exa ${exaDepth.replace(/-/g, " ")} synthesis`, url: "", snippet: synthesis, full_synthesis: synthesis, score: 1, grounding: grounding.slice(0, 10), type: "synthesis" });
     for (const item of (data.results || []).slice(0, maxResults)) {
-      const snippet = item.text ? String(item.text).slice(0, 800) : (item.highlights || [])[0] || "";
-      results2.push({ title: item.title || "", url: item.url || "", snippet, score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author, type: "source" });
+      const snippet2 = item.text ? String(item.text).slice(0, 800) : (item.highlights || [])[0] || "";
+      results2.push({ title: item.title || "", url: item.url || "", snippet: snippet2, score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author, type: "source" });
     }
     return { provider: "exa", query, exa_depth: exaDepth, results: results2, images: [], answer: synthesis || results2[1]?.snippet || "", grounding, metadata: { synthesis_length: synthesis.length, source_count: (data.results || []).length } };
   }
@@ -2638,40 +3794,6 @@ async function searchParallel(query, apiKey, maxResults, includeDomains, exclude
     return { title: item.title || titleFromUrl2(item.url || ""), url: item.url || item.link || "", snippet: excerpts.length ? excerpts.join(" ... ") : item.snippet || item.description || "", score: Number((1 - i * 0.05).toFixed(3)) };
   });
   return { provider: "parallel", query, results, images: [], answer: results[0]?.snippet || "", metadata: { search_id: data.search_id, session_id: data.session_id } };
-}
-async function searchPerplexityCompatible(provider, query, apiKey, maxResults, timeRange) {
-  const body = {
-    model: provider === "perplexity" ? "sonar-pro" : "perplexity/sonar-pro",
-    messages: [
-      { role: "system", content: "Answer with concise factual summary and include source URLs." },
-      { role: "user", content: query }
-    ],
-    temperature: 0.2
-  };
-  if (timeRange) body.search_recency_filter = timeRange;
-  const url = provider === "perplexity" ? "https://api.perplexity.ai/chat/completions" : "https://api.kilo.ai/api/gateway/chat/completions";
-  const data = await httpJson(url, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const answer = String(data?.choices?.[0]?.message?.content || "").trim();
-  let citations = Array.isArray(data?.citations) ? data.citations : [];
-  if (!citations.length) {
-    const matches = answer.match(/https?:\/\/[^\s)\]}>"']+/g) || [];
-    citations = [...new Set(matches)];
-  }
-  const results = [];
-  const answerTitle = provider === "perplexity" ? "Perplexity Answer" : "Kilo Perplexity Answer";
-  if (answer) results.push({ title: `${answerTitle}: ${query.slice(0, 80)}`, url: "https://www.perplexity.ai", snippet: answer.replace(/\[\d+\]/g, "").trim().slice(0, 500), score: 1 });
-  for (const [i, citation] of citations.slice(0, Math.max(0, maxResults - 1)).entries()) {
-    const url2 = typeof citation === "string" ? citation : citation?.url || "";
-    const title = typeof citation === "string" ? titleFromUrl2(url2) : citation?.title || titleFromUrl2(url2);
-    results.push({ title, url: url2, snippet: `Source cited in Perplexity answer [citation ${i + 1}]`, score: Number((0.9 - i * 0.1).toFixed(3)) });
-  }
-  return { provider, query, results, images: [], answer, metadata: { model: body.model, usage: data.usage || {} } };
-}
-async function searchPerplexity(query, apiKey, maxResults, timeRange) {
-  return searchPerplexityCompatible("perplexity", query, apiKey, maxResults, timeRange);
-}
-async function searchKiloPerplexity(query, apiKey, maxResults, timeRange) {
-  return searchPerplexityCompatible("kilo-perplexity", query, apiKey, maxResults, timeRange);
 }
 async function searchYou(query, apiKey, maxResults, timeRange, locale) {
   const url = new URL("https://ydc-index.io/v1/search");
@@ -2792,7 +3914,8 @@ function buildQualityReport(result, routingInfo, errors, cooldownSkips, provider
     fallback_chain: { providers_considered: providersConsidered, provider_errors: errors, cooldown_skips: cooldownSkips },
     extract_recommended: extractReasons.length > 0,
     extract_reasons: extractReasons,
-    authority_signals: routingClass ? buildAuthoritySignals(routingClass, results) : null
+    authority_signals: routingClass ? buildAuthoritySignals(routingClass, results) : null,
+    diversity: scoreDiversity(results)
   };
 }
 async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
@@ -2800,7 +3923,12 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     const query = String(params.query || "").trim();
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
     const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
-    const requestedProvider = normalizeRequestedProvider(params.provider);
+    const routingOverride = params.routing_override_provider == null ? null : normalizeRequestedProvider(params.routing_override_provider);
+    if (routingOverride === "auto") return { ok: false, payload: { error: "Search failed: routing_override_provider must name a provider" } };
+    if (routingOverride && params.provider && params.provider !== "auto" && params.provider !== routingOverride) {
+      return { ok: false, payload: { error: "Search failed: provider and routing_override_provider disagree" } };
+    }
+    const requestedProvider = routingOverride || normalizeRequestedProvider(params.provider);
     let freshness = null;
     let searchType = null;
     try {
@@ -2813,9 +3941,10 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : void 0;
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : void 0;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
-    const routingConfig = routingConfigResult.config;
+    const routingConfig = applyRoutingProfile(routingConfigResult.config);
     const configuredProviders = ALL_PROVIDERS.filter((p) => providerIsConfigured(p, runtimeConfig));
     const enabledProviders = configuredProviders.filter((provider2) => !routingConfig.disabled_providers.includes(provider2));
+    const autoEnabledProviders = enabledProviders.filter((candidate) => routingConfig.auto_allow[candidate] !== false);
     const braveOptions = {
       safesearch: runtimeConfig.braveSafesearch
     };
@@ -2830,8 +3959,17 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       if (!enabledProviders.length) {
         return { ok: false, payload: { error: "Search failed: all configured providers are disabled in routing preferences" } };
       }
+      if (!autoEnabledProviders.length) {
+        return {
+          ok: false,
+          payload: {
+            error: routingConfig.profile === "self_hosted" ? "Search failed: self_hosted profile requires pluginConfig.searxngInstanceUrl or Keenable credentials/public-tier opt-in" : "Search failed: no configured providers are allowed for automatic routing; select one explicitly or enable auto_allow",
+            routing: { requested_provider: "auto", profile: routingConfig.profile }
+          }
+        };
+      }
       if (!routingConfig.auto_routing) {
-        const strictDefault = pickStrictDefaultProvider(enabledProviders, routingConfig);
+        const strictDefault = pickStrictDefaultProvider(autoEnabledProviders, routingConfig);
         if (!strictDefault) {
           return { ok: false, payload: { error: "Search failed: auto routing is disabled but default_provider is missing, disabled, or not configured" } };
         }
@@ -2839,7 +3977,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         strictProviderMode = true;
         routingInfo = { requested_provider: "auto", auto_routed: false, provider, fixed_provider_mode: true, reason: "auto_routing_disabled" };
       } else {
-        const selection = selectAutoProvider(query, enabledProviders, routingConfig);
+        const selection = selectAutoProvider(query, autoEnabledProviders, routingConfig);
         provider = selection.provider;
         routingInfo = selection.routing;
         exaDepthHint = selection.routing.exa_depth || "normal";
@@ -2853,8 +3991,14 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       validateApiKey(provider, runtimeConfig);
       routingInfo = { requested_provider: provider, auto_routed: false, provider, fixed_provider_mode: true, reason: "explicit_provider" };
     }
+    routingInfo = {
+      ...routingInfo,
+      profile: routingConfig.profile,
+      ...routingOverride ? { override_provider: routingOverride, override_mode: "forced_provider" } : {},
+      ...routingConfig.profile === "self_hosted" && requestedProvider !== "auto" ? { explicit_profile_override: true } : {}
+    };
     if (provider === "exa" && params.depth) exaDepthHint = params.depth;
-    const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, enabledProviders, routingConfig);
+    const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, autoEnabledProviders, routingConfig);
     const eligibleProviders = [];
     const cooldownSkips = [];
     if (strictProviderMode) {
@@ -2882,10 +4026,24 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
       if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
       if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
-      if (p === "perplexity") return searchPerplexity(query, key, count, timeRange);
-      if (p === "kilo-perplexity") return searchKiloPerplexity(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange, locale);
       if (p === "keenable") return searchKeenable(query, key || void 0, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
+      if (p === "hound") {
+        if (searchType && searchType !== "search") throw new ProviderConfigError("Hound supports search_type=search only");
+        return searchHound(
+          query,
+          key,
+          count,
+          timeRange,
+          includeDomains,
+          excludeDomains,
+          void 0,
+          {
+            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
+            maxResponseBytes: runtimeConfig.houndMaxResponseBytes
+          }
+        );
+      }
       return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
     };
     if (params.mode === "research") {
@@ -2895,7 +4053,9 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         availableResearchProviders.add(provider);
       }
       let researchProviders;
-      if (Array.isArray(params.research_providers) && params.research_providers.length) {
+      if (routingOverride) {
+        researchProviders = [provider];
+      } else if (Array.isArray(params.research_providers) && params.research_providers.length) {
         researchProviders = [...new Set(params.research_providers.map((value) => normalizeProviderName(value)))].filter(providerEligibleForResearch);
       } else {
         researchProviders = selectResearchProviders(
@@ -2905,6 +4065,8 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
           3
         );
       }
+      const researchFanout = preflightResearchFanout(researchProviders);
+      researchProviders = researchFanout.providers;
       if (!researchProviders.length) {
         return { ok: false, payload: sanitizeOutput({ error: "No configured providers available for research mode", provider, query, routing: routingInfo, cooldown_skips: cooldownSkips }) };
       }
@@ -2914,25 +4076,38 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         query,
         researchProviders,
         executeSearch: async (p) => {
-          const startedAt = Date.now();
+          const startedAt2 = Date.now();
           try {
             const response = await executeWithRetry(() => runProvider(p));
-            recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, (response.results || []).length, false);
+            recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, (response.results || []).length, false);
             resetProviderHealth(p);
             return response;
           } catch (error2) {
             if (!(error2 instanceof ProviderConfigError)) {
-              recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, 0, true);
+              recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, 0, true);
               markProviderFailure(p, String(error2?.message || error2), error2?.retryAfter);
             }
             throw error2;
           }
         },
-        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers),
+        extractUrls: (urls) => extractPlus(
+          urls,
+          routingOverride || "auto",
+          "markdown",
+          false,
+          false,
+          false,
+          runtimeConfig,
+          routingConfig.disabled_providers,
+          routingConfig.extract_provider_priority,
+          { autoAllow: routingConfig.auto_allow, strictProvider: Boolean(routingOverride) }
+        ),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
-        timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null
+        timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
+        diversityRerank: runtimeConfig.qualityDiversityRerank === true
       });
+      result2.metadata = { ...result2.metadata || {}, budget_preflight: { research: researchFanout, daily_quota: "not_supported_without_persistent_ledger" } };
       if (freshness) {
         result2.metadata = {
           ...result2.metadata || {},
@@ -2974,17 +4149,17 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     const errors = [];
     const successes = [];
     for (const p of eligibleProviders) {
-      const startedAt = Date.now();
+      const startedAt2 = Date.now();
       try {
         const result2 = await executeWithRetry(() => runProvider(p));
-        recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, (result2.results || []).length, false);
+        recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, (result2.results || []).length, false);
         resetProviderHealth(p);
         successes.push([p, result2]);
         if (strictProviderMode || (result2.results || []).length >= count || errors.length === 0) break;
       } catch (error2) {
         const message = sanitizeOutput(String(error2?.message || error2));
         const isConfigError = error2 instanceof ProviderConfigError;
-        if (!isConfigError) recordProviderOutcome(p, (Date.now() - startedAt) / 1e3, 0, true);
+        if (!isConfigError) recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, 0, true);
         const skipCooldown = strictProviderMode || isConfigError;
         const cooldown = skipCooldown ? { cooldown_seconds: 0 } : markProviderFailure(p, message, error2?.retryAfter);
         errors.push({ provider: p, error: message, ...skipCooldown ? {} : { cooldown_seconds: cooldown.cooldown_seconds } });
@@ -3062,11 +4237,15 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
 }
 function routingConfigStatus(loadResult) {
   return sanitizeOutput({
+    storage_scope: "process_local",
+    expires_on_host_restart: true,
+    namespace: loadResult.path,
     config_path: loadResult.path,
     source: loadResult.source,
     warning: loadResult.warning,
     quarantine_path: loadResult.quarantine_path,
-    config: loadResult.config
+    config: loadResult.config,
+    effective_config: applyRoutingProfile(loadResult.config)
   });
 }
 function updateRoutingPreferences(pluginConfig, mutator) {
@@ -3082,7 +4261,7 @@ function updateRoutingPreferences(pluginConfig, mutator) {
 function executeRoutingConfigAction(pluginConfig, params) {
   const action = String(params?.action || "show");
   if (action === "show") return routingConfigStatus(loadRoutingPreferences(pluginConfig));
-  if (action === "reset") return sanitizeOutput(resetRoutingPreferences(pluginConfig));
+  if (action === "reset") return routingConfigStatus(resetRoutingPreferences(pluginConfig));
   if (action === "set_default_provider") {
     return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
       const provider = String(params?.provider || "").trim().toLowerCase();
@@ -3102,6 +4281,21 @@ function executeRoutingConfigAction(pluginConfig, params) {
       for (const provider of DEFAULT_PROVIDER_PRIORITY) {
         if (!config.provider_priority.includes(provider)) config.provider_priority.push(provider);
       }
+    }));
+  }
+  if (action === "set_extract_provider_priority") {
+    if (!Array.isArray(params?.providers) || !params.providers.length) throw new Error("set_extract_provider_priority requires a non-empty providers array");
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      const requested = [...new Set(params.providers.map((value) => normalizeProviderName(value)))];
+      for (const provider of requested) {
+        if (!DEFAULT_EXTRACT_PROVIDER_PRIORITY.includes(provider)) {
+          throw new Error(`Provider does not support extraction: ${provider}`);
+        }
+      }
+      config.extract_provider_priority = [
+        ...requested,
+        ...DEFAULT_EXTRACT_PROVIDER_PRIORITY.filter((provider) => !requested.includes(provider))
+      ];
     }));
   }
   if (action === "set_fallback_provider") {
@@ -3129,13 +4323,77 @@ function executeRoutingConfigAction(pluginConfig, params) {
       config.confidence_threshold = Number(params?.confidence_threshold);
     }));
   }
+  if (action === "set_profile") {
+    const profile = String(params?.profile || "").trim().toLowerCase();
+    if (profile !== "standard" && profile !== "self_hosted") throw new Error("set_profile requires profile=standard or self_hosted");
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.profile = profile;
+    }));
+  }
+  if (action === "set_auto_allow") {
+    if (typeof params?.enabled !== "boolean") throw new Error("set_auto_allow requires enabled=true or false");
+    const provider = normalizeProviderName(params?.provider);
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.auto_allow = { ...config.auto_allow, [provider]: params.enabled };
+    }));
+  }
   throw new Error(`Unsupported routing config action: ${action}`);
 }
 function register(api) {
   api.registerTool(
     {
+      name: "web_search_health_plus",
+      description: "Read-only process-local provider health from adaptive routing samples. Reports only what this host process has observed since it started; no HTTP endpoint or persisted history is used.",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot() }) }] };
+      }
+    },
+    { optional: true }
+  );
+  const BENCHMARK_LATENCY_CEILING_MS = 3e4;
+  const BENCHMARK_CONTENT_TARGET_CHARS_PER_URL = 5e3;
+  const BENCHMARK_SCORE_WEIGHTS = { success_rate: 0.6, latency: 0.2, content_yield: 0.2 };
+  const benchmarkScore = (successRate, latencyMs, returnedChars, urlCount) => {
+    const latency = Math.max(0, 1 - latencyMs / BENCHMARK_LATENCY_CEILING_MS);
+    const content = Math.min(1, returnedChars / Math.max(1, urlCount * BENCHMARK_CONTENT_TARGET_CHARS_PER_URL));
+    return Number((0.6 * successRate + 0.2 * latency + 0.2 * content).toFixed(3));
+  };
+  api.registerTool(
+    {
+      name: "web_extract_benchmark_plus",
+      description: "Explicit opt-in extraction benchmark. Never runs automatically; makes at most max_provider_calls (1-3) direct provider calls, bypasses the response cache, and returns a process-local priority recommendation. Hound remains excluded unless auto_allow.hound=true.",
+      parameters: { type: "object", required: ["urls"], properties: { urls: { type: "array", minItems: 1, maxItems: 3, items: { type: "string" } }, max_provider_calls: { type: "integer", minimum: 1, maximum: 3 } } },
+      async execute(_id, params) {
+        try {
+          const pluginConfig = api.pluginConfig ?? {};
+          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const routing = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
+          const maxCalls = Math.max(1, Math.min(3, Math.floor(Number(params?.max_provider_calls ?? 3))));
+          const candidates2 = routing.extract_provider_priority.filter((provider) => !routing.disabled_providers.includes(provider) && routing.auto_allow[provider] !== false && isExtractProviderAvailable(provider, runtimeConfig)).slice(0, maxCalls);
+          const attempts = [];
+          for (const provider of candidates2) {
+            const startedAt2 = Date.now();
+            const response = await extractPlus(params.urls, provider, "markdown", false, false, false, runtimeConfig, routing.disabled_providers, routing.extract_provider_priority, { autoAllow: routing.auto_allow, strictProvider: true, cacheBypass: true });
+            const returnedChars = (response.results || []).reduce((sum, item) => sum + String(item?.content || "").length, 0);
+            const successCount = (response.results || []).filter((item) => String(item?.content || "").length > 0).length;
+            attempts.push({ provider, latency_ms: Date.now() - startedAt2, status: response.error ? "failed" : "success", result_count: response.results.length, returned_chars: returnedChars, success_rate: Number((successCount / Math.max(1, params.urls.length)).toFixed(3)), score: benchmarkScore(successCount / Math.max(1, params.urls.length), Date.now() - startedAt2, returnedChars, params.urls.length), error: response.error });
+          }
+          const priority_recommendation = attempts.filter((attempt) => attempt.status === "success" && attempt.result_count > 0).sort((left, right) => right.score - left.score || left.latency_ms - right.latency_ms).map((attempt) => attempt.provider);
+          const result = { scope: "process_local", explicit_opt_in: true, score_weights: BENCHMARK_SCORE_WEIGHTS, max_provider_calls: maxCalls, provider_calls_made: attempts.length, hound_auto_allow: routing.auto_allow.hound === true, attempts, priority_recommendation };
+          saveExtractBenchmark(result);
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
+        } catch (error2) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error2?.message || error2) })) }] };
+        }
+      }
+    },
+    { optional: true }
+  );
+  api.registerTool(
+    {
       name: "web_search_plus",
-      description: "Search the web with intelligent multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity, You.com, and SearXNG. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
+      description: "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and the local Hound MCP sidecar. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and extract top sources for grounding.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id, params) {
         try {
@@ -3146,6 +4404,7 @@ function register(api) {
             const failure = result.payload;
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(failure)) }] };
           }
+          recordShadowQualityObservation(result.payload);
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result.payload)) }] };
         } catch (error2) {
           return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` }] };
@@ -3157,7 +4416,7 @@ function register(api) {
   api.registerTool(
     {
       name: "web_routing_config_plus",
-      description: "Show or update persistent routing preferences for web_search_plus. Keeps routing behavior in a JSON file separate from provider secrets.",
+      description: "Show or update process-local routing preferences for web_search_plus and web_extract_plus. Updates remain in the selected in-memory namespace only until the host process restarts; no routing file is read or written.",
       parameters: ROUTING_CONFIG_PARAMETERS_SCHEMA,
       async execute(_id, params) {
         try {
@@ -3173,7 +4432,7 @@ function register(api) {
   api.registerTool(
     {
       name: "web_extract_plus",
-      description: "Extract URL content with automatic fallback across Firecrawl, Linkup, Tavily, Exa, and You.com, with per-URL errors and unified output.",
+      description: "Extract URL content across configured providers, including optional local Hound MCP, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig = api.pluginConfig ?? {};
@@ -3181,18 +4440,42 @@ function register(api) {
       },
       async execute(_id, params) {
         try {
+          if (typeof params?.content_ref === "string") {
+            const content = readCachedExtractContent(
+              params.content_ref,
+              params?.content_start == null ? 0 : Number(params.content_start),
+              params?.content_end == null ? void 0 : Number(params.content_end),
+              params?.raw_content_start == null ? void 0 : Number(params.raw_content_start),
+              params?.raw_content_end == null ? void 0 : Number(params.raw_content_end)
+            );
+            return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(content)) }] };
+          }
           const pluginConfig = api.pluginConfig ?? {};
           const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const routingPreferences = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
+          const routingOverride = typeof params?.routing_override_provider === "string" ? params.routing_override_provider : null;
+          if (routingOverride && params?.provider && params.provider !== "auto" && params.provider !== routingOverride) throw new Error("provider and routing_override_provider disagree");
           const result = await extractPlus(
             Array.isArray(params?.urls) ? params.urls : typeof params?.urls === "string" ? [params.urls] : [],
-            params?.provider || "auto",
+            routingOverride || params?.provider || "auto",
             params?.format === "html" ? "html" : "markdown",
             Boolean(params?.include_images),
             Boolean(params?.include_raw_html),
             Boolean(params?.render_js),
             runtimeConfig,
-            loadRoutingPreferences(pluginConfig).config.disabled_providers
+            routingPreferences.disabled_providers,
+            routingPreferences.extract_provider_priority,
+            {
+              maxUrls: params?.max_urls,
+              maxContextChars: params?.max_context_chars,
+              spans: params?.spans === true,
+              spansQuery: typeof params?.spans_query === "string" ? params.spans_query : void 0,
+              autoAllow: routingPreferences.auto_allow,
+              deadlineSeconds: params?.deadline_seconds,
+              strictProvider: Boolean(routingOverride)
+            }
           );
+          if (routingOverride) result.routing = { ...result.routing || { requested_provider: routingOverride }, override_provider: routingOverride, override_mode: "forced_provider" };
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error2) {
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error2?.message || error2) })) }] };

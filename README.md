@@ -1,4 +1,4 @@
-# web-search-plus-plugin-v2
+# Web Search Plus Plugin
 
 <p align="center">
   <img src="docs/assets/web-search-plus-logo.png" alt="web search plus logo" width="180">
@@ -6,16 +6,15 @@
 
 Native OpenClaw plugin for one clean set of web tools.
 
-Current version: **3.2.0**
-
-> **Status: synced with the Hermes engine v2.9 line.**
-> v3.2.0 brings this OpenClaw build back to feature parity with **[hermes-web-search-plus](https://github.com/robbyczgw-cla/hermes-web-search-plus)** (v2.5–v2.9 plus the unreleased Parallel budget change), adapted for the in-process, scanner-safe OpenClaw runtime. The Hermes repo remains the engine source of truth; host-runtime-specific Hermes features (subprocess loaders, filesystem paging, bench/eval tooling) are intentionally not ported.
+Current version: **3.3.0**
 
 It registers:
 
 - `web_search_plus` — Routing v2 intelligent multi-provider web search with research mode and canonical-source reranking
 - `web_extract_plus` — Tavily-first URL extraction across supported providers
-- `web_routing_config_plus` — in-memory runtime routing preferences manager
+- `web_routing_config_plus` — process-local routing preferences, valid until host restart
+- `web_search_health_plus` — read-only process-local provider health and shadow-quality observations
+- `web_extract_benchmark_plus` — explicit bounded extraction-provider benchmark with a process-local recommendation
 
 `web_answer_plus` is removed in v3.0.0. Use search plus extraction; fewer tools, less mush.
 
@@ -53,7 +52,7 @@ Runtime credentials still come from explicit OpenClaw plugin config fields. The 
 ### Search providers
 
 - **Serper** — Google-style web/news/shopping/local
-- **Brave** — broad current web and fallback; guarded in auto routing
+- **Brave** — independent-index current web and multilingual search in the default auto pool
 - **Tavily** — research-oriented search
 - **Exa** — semantic discovery, similar-page, docs/API, arXiv, deep search
 - **Querit** — multilingual/current AI search; guarded in auto routing
@@ -61,11 +60,10 @@ Runtime credentials still come from explicit OpenClaw plugin config fields. The 
 - **Firecrawl** — search with scrape-friendly metadata and vendor/source pages
 - **Parallel** — search and extraction; guarded in auto routing
 - **SerpBase** — Google-style alternate search; guarded in auto routing
-- **Perplexity** — direct answer-style web results via `https://api.perplexity.ai/chat/completions`; guarded in auto routing
-- **Kilo Perplexity** — gateway route via `https://api.kilo.ai/api/gateway/chat/completions`; guarded in auto routing
 - **You.com** — current web / RAG-style snippets
 - **SearXNG** — self-hosted metasearch
 - **Keenable** — independent web index; keyed or opt-in keyless public tier, lowest-priority fallback
+- **Hound** — optional local MCP sidecar; explicit-only until deliberately auto-allowed ([setup and security guide](docs/HOUND.md))
 
 ### Extraction providers
 
@@ -79,10 +77,21 @@ Auto fallback order:
 - You.com
 - Keenable (keyed or opt-in keyless public tier)
 - Serper (webpage scraper via `scrape.serper.dev`, last resort)
+- Hound (local MCP sidecar, guarded and explicit-only by default)
 
-Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net. Extraction targets are validated against private/internal destinations by default (see `extractAllowPrivateUrls`), oversized pages return a head/tail window governed by `extractCharLimit`, and inline base64 images are replaced with `[IMAGE: alt]` placeholders.
+Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net. Extraction targets are validated against private/internal destinations by default (see `extractAllowPrivateUrls`). Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; `max_urls` and `max_context_chars` may request lower limits, while `extractMaxUrls` and `extractMaxContextChars` set operator ceilings. The aggregate budget first selects a deterministic prefix; `extractCharLimit` then turns an oversized prefix into the documented head/tail window with a truncation marker. Inline base64 images are replaced with `[IMAGE: alt]` placeholders. Inline `raw_content` mirrors the final budgeted `content`; a distinct provider raw text is retained only behind `full_content_ref`. Call `web_extract_plus` with that reference plus `content_start`/`content_end` to read a content range (at most 60,000 Unicode codepoints). When distinct provider raw text exists, the reference read reports its availability and length; request it with its own `raw_content_start`/`raw_content_end` range. The reference is only valid while its process-local cache entry remains in the LRU; restart or eviction expires both ranges.
+
+Set `spans: true` to add up to three deterministic, non-overlapping passages per successful result. `spans_query` conditions lexical ranking. Span offsets address the complete cleaned NFC text in Unicode codepoints using half-open `[start,end)` ranges; `within_preview` reports whether the selected text survived inline truncation.
 
 ## Configuration
+
+`web_search_health_plus` is a read-only tool for the adaptive provider samples collected by the current host process. It reports its process start time and only in-process observations; it does not run an HTTP server or retain history after restart.
+
+The same tool includes passive shadow-quality aggregates from completed successful search requests (result/domain counts, thin snippets, and degraded outcomes). They are observational only and never change routing or returned sources.
+
+Use `routing_override_provider` on `web_search_plus` or `web_extract_plus` to force a configured provider for one call and disable automatic selection. The response's `routing.override_provider` makes that override explicit.
+
+`web_extract_benchmark_plus` is the only way to benchmark extraction providers. It is never automatic, has a hard limit of one to three provider calls, bypasses the cache, and returns a process-local recommended priority. Hound is excluded unless its existing `auto_allow` gate is enabled.
 
 Use explicit OpenClaw plugin config fields. The runtime uses only plugin config fields for credentials.
 
@@ -97,11 +106,10 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `firecrawlApiKey`
 - `parallelApiKey`
 - `serpbaseApiKey`
-- `perplexityApiKey`
-- `kilocodeApiKey`
 - `youApiKey`
 - `searxngInstanceUrl`
 - `keenableApiKey`
+- `houndMcpUrl`
 
 ### Extra fields
 
@@ -109,8 +117,14 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `searxngAllowPrivate`
 - `routingConfigPath` — optional namespace for in-memory routing preferences
 - `keenableAllowPublic` — opt-in keyless Keenable public tier (unauthenticated shared service, off by default)
+- `houndTimeoutSeconds` / `houndMaxResponseBytes` / `houndMaxContentChars` — bounded local Hound MCP transport and extraction request limits; see [the Hound guide](docs/HOUND.md)
 - `extractAllowPrivateUrls` — opt-in: allow extraction of private/internal URLs (trusted intranets only)
-- `extractCharLimit` — inline character budget per extracted page before head/tail truncation (default 15000)
+- `extractCharLimit` — per-result inline character budget applied after aggregate prefix allocation and before head/tail truncation (default 15000)
+- `extractMaxUrls` — operator ceiling for URLs processed per extraction call (default 10, hard maximum 50)
+- `extractMaxContextChars` — operator ceiling for aggregate inline extraction content (default 60000 Unicode codepoints, maximum 200000)
+- `extractCacheMaxEntries` — process-local LRU capacity for completed extraction requests (default 64, range 1–500; lost on host restart)
+- `extractCacheMaxChars` — process-local full-text cache budget in Unicode codepoints (default 4,000,000, range 1–20,000,000); an oversized response is returned normally but has no `full_content_ref`
+- `extractDeadlineSeconds` — request-scoped provider-start deadline ceiling (default 30 seconds, range 1–180); no daily quota is kept because that would require a persistent ledger
 - `localeCountry` / `localeLanguage` — default search locale for Serper, Brave, Querit, Firecrawl, You.com, and SearXNG; `localeLanguage: "auto"` enables conservative query language inference. Explicit location hints in the query win the country; query language never implies the country. Without these fields the providers keep their us/en defaults.
 - `parallelMaxCharsPerResult` / `parallelMaxCharsTotal` — Parallel extraction full-content budgets (defaults 60000 / 120000)
 - `qualityBlockedDomains` / `qualityAllowedDomains` — extend or rescue from the built-in spam/mirror result blocklist
@@ -152,10 +166,14 @@ Classes:
 - oss-discovery → Exa similar-page discovery
 - answer/synthesis → flags `answer_mode_recommended`; it does **not** resurrect `web_answer_plus`
 
-Default conservative auto pool: You.com, Serper, Exa, Firecrawl, Tavily, Linkup.
-Guarded providers require `auto_allow=true` in routing preferences: Brave, SerpBase, Querit, Parallel, Perplexity, Kilo Perplexity.
+Default conservative auto pool: You.com, Serper, Brave, Exa, Firecrawl, Tavily, Linkup.
+Guarded providers require `auto_allow=true` in routing preferences: SerpBase, Querit, Parallel, Hound. Brave is in the default Classic auto pool for independent-index source diversity; operators can still set `auto_allow.brave=false`. Hound remains explicit-only until `web_routing_config_plus(action="set_auto_allow", provider="hound", enabled=true)` is called.
 
-Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, and `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source) for canonical-source routing classes.
+Search `provider_priority` and extraction `extract_provider_priority` are independent. Partial extraction lists are completed in the public Tavily-first order, and can be updated with `web_routing_config_plus(action="set_extract_provider_priority", providers=[...])`.
+
+`web_routing_config_plus(action="set_profile", profile="self_hosted")` derives a local-first routing view: SearXNG then Keenable for search, and Keenable first for extraction. Other providers are excluded from automatic selection and fallback but remain available when explicitly requested. Auto mode fails with a clear readiness error until `searxngInstanceUrl`, `keenableApiKey`, or the opted-in Keenable public tier is configured. Return to the normal pool with `profile="standard"`. The setup CLI also exposes `--preset self-hosted`.
+
+Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source), and a deterministic `diversity` score. The score combines registrable-domain coverage, canonical-URL uniqueness, snippet-trigram diversity, and provider mix. Set `qualityDiversityRerank: true` to move near-duplicate Research candidates behind the diverse head without removing results.
 
 Auto routing additionally learns from recent provider behavior: every call records latency, result volume, and errors into an in-memory rolling window, and routing scores get a bounded (±1.0) adjustment (`routing.adaptive_adjustments`) once enough fresh samples exist — enough to break ties, never enough to override a clear query-class winner.
 
@@ -182,7 +200,7 @@ For routing classes where source authority beats snippet luck (`official/vendor-
 3. Deduplicates results across providers.
 4. Extracts the top `research_extract_count` URLs (default 3, max 5) via `web_extract_plus` auto fallback into `source_summaries`.
 
-Research mode is best-effort: provider or extraction failures produce diagnostics in `routing.provider_errors` / `routing.extraction_error` instead of failing the whole call. A `research_time_budget` (seconds, default 55) gates which providers launch and whether extraction runs. Quality reports are always attached.
+Research mode is best-effort: each launched/skipped provider is recorded in `routing.provider_attempts`; provider or extraction failures produce diagnostics in `routing.provider_errors` / `routing.extraction_error`. Partial evidence returns `status="degraded"`, while total fan-out failure returns a complete `status="failed"` envelope. A `research_time_budget` (seconds, default 55) gates launches, cancels the response wait for started overruns, and gates extraction. Quality reports are attached once after the merge. Optional `qualityDiversityRerank` moves later URL/content duplicate candidates behind the diverse result head before source extraction.
 
 ```json
 {
@@ -202,7 +220,10 @@ Supported actions:
 - `show`
 - `set_default_provider`
 - `set_auto_routing`
+- `set_auto_allow`
 - `set_provider_priority`
+- `set_extract_provider_priority`
+- `set_profile`
 - `set_fallback_provider`
 - `disable_provider`
 - `enable_provider`

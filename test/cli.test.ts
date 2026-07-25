@@ -13,9 +13,11 @@ test("onboarding CLI lists providers and presets", async () => {
   const providers = JSON.parse((await execFileAsync(process.execPath, [CLI, "list", "providers", "--json"])).stdout);
   assert.ok(providers.some((provider: any) => provider.name === "parallel" && provider.guarded === true));
   assert.ok(providers.some((provider: any) => provider.name === "serpbase" && provider.guarded === true));
+  assert.ok(providers.some((provider: any) => provider.name === "hound" && provider.guarded === true));
 
   const presets = JSON.parse((await execFileAsync(process.execPath, [CLI, "list", "presets", "--json"])).stdout);
   assert.deepEqual(presets.starter.providers, ["you", "serper", "linkup"]);
+  assert.deepEqual(presets["self-hosted"].providers, ["searxng", "keenable"]);
 });
 
 test("onboarding CLI status and config commands persist explicit plugin fields", async () => {
@@ -30,6 +32,7 @@ test("onboarding CLI status and config commands persist explicit plugin fields",
     const status = JSON.parse((await execFileAsync(process.execPath, [CLI, "status", "--config", config, "--json"])).stdout);
     assert.deepEqual(status.configured_providers.sort(), ["serper", "you"]);
     assert.equal(status.answer_tool_removed, true);
+    assert.equal(status.self_hosted_ready, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

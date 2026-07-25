@@ -1,10 +1,15 @@
 import dns from "dns/promises";
 import net from "net";
+import crypto from "crypto";
 import type { RuntimeConfig } from "./runtime-config.ts";
+import { DEFAULT_EXTRACT_PROVIDER_PRIORITY, type ExtractProviderName } from "./routing-config.ts";
+import { selectSpans, type SemanticSpan } from "./span-extraction.ts";
+import { extractHound } from "./hound-provider.ts";
+import { preflightDeadline } from "./budget-preflight.ts";
 
 type Json = Record<string, any>;
 
-export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable" | "serper";
+export type { ExtractProviderName } from "./routing-config.ts";
 export type ExtractFormat = "markdown" | "html";
 
 export type ExtractImage = {
@@ -22,11 +27,32 @@ export type ExtractResult = {
   raw_html?: string;
   metadata?: Json;
   error?: string;
+  truncated?: boolean;
+  original_chars?: number;
+  span_contract_version?: 1;
+  spans?: Array<SemanticSpan & { within_preview: boolean }>;
+  full_content_ref?: string;
+  full_content_chars?: number;
 };
 
 export type ExtractResponse = {
   provider: string;
   results: ExtractResult[];
+  status?: "success" | "degraded" | "failed";
+  warnings?: Json[];
+  limits_applied?: {
+    extract: {
+      requested_url_count: number;
+      processed_urls: string[];
+      omitted_urls: string[];
+      omitted_url_count: number;
+      max_urls: number;
+      max_context_chars: number;
+      deadline_seconds: number;
+      context_chars_returned: number;
+      truncated: boolean;
+    };
+  };
   error?: string;
   fallback_errors?: Json[];
   routing?: {
@@ -37,18 +63,159 @@ export type ExtractResponse = {
   };
 };
 
+export const EXTRACT_CACHE_VERSION = 1;
+export const DEFAULT_EXTRACT_CACHE_MAX_ENTRIES = 64;
+// Four million codepoints keeps several ordinary full-text pages available
+// without allowing this process-local cache to retain unbounded host memory.
+export const DEFAULT_EXTRACT_CACHE_MAX_CHARS = 4_000_000;
+
+type FullTextRecord = { content: string; raw_content?: string; provider: ExtractProviderName };
+type ExtractCacheEntry = { response: ExtractResponse; fullText: Array<FullTextRecord | undefined>; chars: number };
+const extractCache = new Map<string, ExtractCacheEntry>();
+// Running total of cached full-text characters. Kept incrementally because
+// recomputing it walks and re-normalizes every cached string on every write.
+let extractCacheChars = 0;
+
+function stableJson(value: any): any {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stableJson(item)]));
+  }
+  return value;
+}
+
+function cloneResponse(response: ExtractResponse): ExtractResponse {
+  return structuredClone(response);
+}
+
+// This is intentionally a complete request identity, not an URL cache. It has
+// no credentials: endpoint addresses are operational routing inputs, keys are
+// deliberately absent.
+export function buildExtractCacheKey(identity: Record<string, any>): string {
+  return crypto.createHash("sha256").update(JSON.stringify(stableJson(identity))).digest("hex");
+}
+
+function extractCacheGet(key: string): ExtractResponse | null {
+  const entry = extractCache.get(key);
+  if (!entry) return null;
+  // Map insertion order is the LRU order.
+  extractCache.delete(key);
+  extractCache.set(key, entry);
+  return cloneResponse(entry.response);
+}
+
+function fullTextChars(fullText: Array<FullTextRecord | undefined>): number {
+  return fullText.reduce((total, record) => total + (record ? codepointLength(record.content) + codepointLength(record.raw_content ?? "") : 0), 0);
+}
+
+function extractCachePut(
+  key: string,
+  response: ExtractResponse,
+  fullText: Array<FullTextRecord | undefined>,
+  maxEntries: number,
+  maxChars: number,
+): boolean {
+  const entryChars = fullTextChars(fullText);
+  const previous = extractCache.get(key);
+  if (previous) extractCacheChars -= previous.chars;
+  extractCache.delete(key);
+  // An entry that cannot fit on its own is not cached: retaining it would
+  // empty useful entries while still exceeding the configured memory budget.
+  if (entryChars > maxChars) return false;
+  extractCache.set(key, { response: cloneResponse(response), fullText: structuredClone(fullText), chars: entryChars });
+  extractCacheChars += entryChars;
+  while (extractCache.size > maxEntries || extractCacheChars > maxChars) {
+    const oldestKey = extractCache.keys().next().value!;
+    extractCacheChars -= extractCache.get(oldestKey)!.chars;
+    extractCache.delete(oldestKey);
+  }
+  return extractCache.has(key);
+}
+
+export const MAX_FULLTEXT_RANGE_CHARS = 60000;
+
+function contentVersion(record: FullTextRecord): string {
+  return crypto.createHash("sha256").update(`${record.provider}\u0000${record.content}\u0000${record.raw_content ?? record.content}`).digest("hex").slice(0, 16);
+}
+
+function fullTextReference(cacheKey: string, index: number, record: FullTextRecord): string {
+  return `wspx:${EXTRACT_CACHE_VERSION}:${cacheKey}:${index}:${contentVersion(record)}`;
+}
+
+function codepointSlice(content: string, start: number, end: number): string {
+  return Array.from(content).slice(start, end).join("");
+}
+
+// References are capabilities only for the lifetime of their LRU entry. They
+// are not persisted and cannot be reconstructed after eviction or restart.
+export function readCachedExtractContent(reference: string, start = 0, end?: number, rawStart?: number, rawEnd?: number): Json {
+  const match = /^wspx:(\d+):([a-f0-9]{64}):(\d+):([a-f0-9]{16})$/.exec(String(reference || ""));
+  if (!match || Number(match[1]) !== EXTRACT_CACHE_VERSION) throw new Error("Unknown or expired extraction content reference");
+  const entry = extractCache.get(match[2]);
+  const index = Number(match[3]);
+  const record = entry?.fullText[index];
+  if (!record || contentVersion(record) !== match[4]) throw new Error("Unknown or expired extraction content reference");
+  const totalChars = Array.from(record.content).length;
+  if (!Number.isInteger(start) || start < 0 || start > totalChars) throw new Error("content_start must be a valid Unicode codepoint offset");
+  const resolvedEnd = end == null ? Math.min(totalChars, start + MAX_FULLTEXT_RANGE_CHARS) : end;
+  if (!Number.isInteger(resolvedEnd) || resolvedEnd < start || resolvedEnd > totalChars || resolvedEnd - start > MAX_FULLTEXT_RANGE_CHARS) {
+    throw new Error(`content_end must select at most ${MAX_FULLTEXT_RANGE_CHARS} Unicode codepoints`);
+  }
+  extractCache.delete(match[2]);
+  extractCache.set(match[2], entry!);
+  const response: Json = {
+    content_ref: reference,
+    range: { start, end: resolvedEnd, total_chars: totalChars },
+    content: codepointSlice(record.content, start, resolvedEnd),
+    provider: record.provider,
+  };
+  if (record.raw_content == null) {
+    response.raw_content = codepointSlice(record.content, start, resolvedEnd);
+    return response;
+  }
+  const rawTotalChars = Array.from(record.raw_content).length;
+  response.raw_content_available = true;
+  response.raw_content_chars = rawTotalChars;
+  if (rawStart == null && rawEnd == null) return response;
+  const resolvedRawStart = rawStart == null ? 0 : rawStart;
+  if (!Number.isInteger(resolvedRawStart) || resolvedRawStart < 0 || resolvedRawStart > rawTotalChars) {
+    throw new Error("raw_content_start must be a valid Unicode codepoint offset");
+  }
+  const resolvedRawEnd = rawEnd == null ? Math.min(rawTotalChars, resolvedRawStart + MAX_FULLTEXT_RANGE_CHARS) : rawEnd;
+  if (!Number.isInteger(resolvedRawEnd) || resolvedRawEnd < resolvedRawStart || resolvedRawEnd > rawTotalChars || resolvedRawEnd - resolvedRawStart > MAX_FULLTEXT_RANGE_CHARS) {
+    throw new Error(`raw_content_end must select at most ${MAX_FULLTEXT_RANGE_CHARS} Unicode codepoints`);
+  }
+  response.raw_content_range = { start: resolvedRawStart, end: resolvedRawEnd, total_chars: rawTotalChars };
+  response.raw_content = codepointSlice(record.raw_content, resolvedRawStart, resolvedRawEnd);
+  return response;
+}
+
+export function __resetExtractCacheForTests(): void {
+  extractCache.clear();
+  extractCacheChars = 0;
+}
+
 // Extraction fallback order: Tavily-first stays; Keenable is a low-priority
 // fallback and Serper's webpage scraper is a last-resort fallback at the end.
-export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"];
+export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
-  required: ["urls"],
   properties: {
-    urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
+    urls: { type: "array", items: { type: "string" }, description: "URLs to extract (required unless content_ref is supplied)" },
+    content_ref: { type: "string", description: "Process-local full-content reference returned by a prior extraction; valid only while its cache entry remains live." },
+    content_start: { type: "integer", minimum: 0, description: "Unicode codepoint offset at which to read a referenced full text (default 0)." },
+    content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a referenced full text (maximum range 60000)." },
+    raw_content_start: { type: "integer", minimum: 0, description: "Unicode codepoint offset for a distinct provider raw text returned by content_ref." },
+    raw_content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a distinct provider raw text (maximum range 60000)." },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper"],
-      description: "Force a provider, or use auto fallback routing (default: auto)",
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
+      description: "Try this provider first with extraction fallback, or use auto priority (default: auto). Use routing_override_provider for a strict single-provider call.",
+    },
+    routing_override_provider: {
+      type: "string",
+      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
+      description: "Disable automatic extraction routing and force this provider for this request. Reported visibly in routing.override_provider.",
     },
     format: {
       type: "string",
@@ -58,6 +225,27 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     include_images: { type: "boolean", description: "Include image metadata when supported" },
     include_raw_html: { type: "boolean", description: "Include raw HTML when supported" },
     render_js: { type: "boolean", description: "Render JavaScript before extraction when supported" },
+    max_urls: {
+      type: "integer",
+      minimum: 1,
+      maximum: 50,
+      description: "Maximum URLs to process in request order (default/operator ceiling: 10)",
+    },
+    max_context_chars: {
+      type: "integer",
+      minimum: 1000,
+      maximum: 200000,
+      description: "Aggregate inline content prefix budget in Unicode codepoints, applied before the per-result head/tail window (default/operator ceiling: 60000)",
+    },
+    deadline_seconds: { type: "integer", minimum: 1, maximum: 180, description: "Request deadline for extraction provider starts in seconds (default/operator ceiling: 30)." },
+    spans: {
+      type: "boolean",
+      description: "Return deterministic query-conditioned passages with Unicode codepoint offsets",
+    },
+    spans_query: {
+      type: "string",
+      description: "Optional ranking query for spans; lexical-density ranking is used when omitted",
+    },
   },
 };
 
@@ -146,6 +334,7 @@ function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeC
     parallel: runtimeConfig.parallelApiKey,
     keenable: runtimeConfig.keenableApiKey,
     serper: runtimeConfig.serperApiKey,
+    hound: runtimeConfig.houndMcpUrl,
   };
   return keyMap[provider];
 }
@@ -157,6 +346,10 @@ function keylessPublicAllowed(provider: ExtractProviderName, runtimeConfig: Runt
 
 export function hasAnyExtractProviderCredential(runtimeConfig: RuntimeConfig): boolean {
   return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig));
+}
+
+export function isExtractProviderAvailable(provider: ExtractProviderName, runtimeConfig: RuntimeConfig): boolean {
+  return Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig);
 }
 
 // --- Private/internal extraction target guard (SSRF) -----------------------
@@ -355,8 +548,9 @@ export async function extractTavily(
   const results: ExtractResult[] = [];
   for (const item of Array.isArray(data?.results) ? data.results : []) {
     const url = String(item?.url || "");
-    const content = String(item?.raw_content || item?.content || "");
-    results.push(normalizeExtractResult("tavily", url, String(item?.title || ""), content, content, {
+    const content = String(item?.content || item?.raw_content || "");
+    const rawContent = String(item?.raw_content || item?.content || "");
+    results.push(normalizeExtractResult("tavily", url, String(item?.title || ""), content, rawContent, {
       images: includeImages ? normalizeImages(item?.images) : undefined,
       metadata: item?.metadata && typeof item.metadata === "object" ? item.metadata : undefined,
     }));
@@ -494,6 +688,30 @@ export async function extractYou(
 const BASE64_MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(\s*data:image\/[^)]+\)/gi;
 const BASE64_HTML_IMAGE_RE = /<img\b(?=[^>]*\bsrc=["']data:image\/)[^>]*>/gi;
 export const DEFAULT_EXTRACT_CHAR_LIMIT = 15000;
+export const DEFAULT_EXTRACT_MAX_URLS = 10;
+export const HARD_EXTRACT_MAX_URLS = 50;
+export const DEFAULT_EXTRACT_MAX_CONTEXT_CHARS = 60000;
+export const MIN_EXTRACT_MAX_CONTEXT_CHARS = 1000;
+export const HARD_EXTRACT_MAX_CONTEXT_CHARS = 200000;
+
+export type ExtractContextOptions = {
+  maxUrls?: number;
+  maxContextChars?: number;
+  spans?: boolean;
+  spansQuery?: string;
+  autoAllow?: Partial<Record<ExtractProviderName, boolean>>;
+  deadlineSeconds?: number;
+  strictProvider?: boolean;
+  cacheBypass?: boolean;
+};
+
+function normalizedCodepoints(content: string): string[] {
+  return Array.from(content.normalize("NFC"));
+}
+
+function codepointLength(content: string): number {
+  return normalizedCodepoints(content).length;
+}
 
 export function sanitizeExtractContent(content: string): string {
   let out = content.replace(BASE64_MARKDOWN_IMAGE_RE, (_match, alt) => `[IMAGE: ${String(alt || "image").trim() || "image"}]`);
@@ -506,27 +724,66 @@ export function sanitizeExtractContent(content: string): string {
 }
 
 function splitExtractContent(content: string, limit: number): { head: string; tail: string; omittedChars: number } {
+  const codepoints = normalizedCodepoints(content);
   const headChars = Math.min(Math.max(1, Math.floor((limit * 2) / 3)), Math.max(1, limit - 1));
   const tailChars = Math.min(Math.max(1, Math.floor(limit * 0.2)), Math.max(1, limit - headChars));
-  if (headChars + tailChars >= content.length) return { head: content, tail: "", omittedChars: 0 };
-  const head = content.slice(0, headChars).replace(/\s+$/, "");
-  const tail = content.slice(-tailChars).replace(/^\s+/, "");
-  return { head, tail, omittedChars: Math.max(0, content.length - head.length - tail.length) };
+  if (headChars + tailChars >= codepoints.length) return { head: codepoints.join(""), tail: "", omittedChars: 0 };
+  const head = codepoints.slice(0, headChars).join("").replace(/\s+$/, "");
+  const tail = codepoints.slice(-tailChars).join("").replace(/^\s+/, "");
+  return { head, tail, omittedChars: Math.max(0, codepoints.length - codepointLength(head) - codepointLength(tail)) };
 }
 
 // Return inline-safe extract content: sanitized, and truncated to a head/tail
 // window when it exceeds the limit.
 export function formatTruncatedExtractContent(content: string, limit: number): { content: string; truncated: boolean; originalChars: number } {
-  const cleaned = sanitizeExtractContent(content);
-  if (cleaned.length <= limit) return { content: cleaned, truncated: false, originalChars: cleaned.length };
+  const cleaned = sanitizeExtractContent(content).normalize("NFC");
+  const originalChars = codepointLength(cleaned);
+  if (originalChars <= limit) return { content: cleaned, truncated: false, originalChars };
   const { head, tail, omittedChars } = splitExtractContent(cleaned, limit);
   const footer = [
     "",
     "---",
-    `[Content truncated: original ${cleaned.length} chars; omitted middle ${omittedChars} chars; showing head and tail.]`,
+    `[Content truncated: original ${originalChars} chars; omitted middle ${omittedChars} chars; showing head and tail.]`,
     "Raise pluginConfig.extractCharLimit for a larger inline budget, or extract a more specific URL for the omitted section.",
   ].join("\n");
-  return { content: `${head}\n\n[... omitted middle ...]\n\n${tail}\n${footer}`, truncated: true, originalChars: cleaned.length };
+  return { content: `${head}\n\n[... omitted middle ...]\n\n${tail}\n${footer}`, truncated: true, originalChars };
+}
+
+// Stable water-filling: short documents return unused allocation to longer
+// peers, and indivisible remainder goes to earlier results.
+export function fairShareAllocations(lengths: number[], budget: number): number[] {
+  if (!lengths.length) return [];
+  if (lengths.reduce((sum, length) => sum + length, 0) <= budget) return [...lengths];
+  const allocations = lengths.map(() => 0);
+  let active = lengths.map((_length, index) => index);
+  let remaining = budget;
+  while (active.length && remaining > 0) {
+    const share = Math.floor(remaining / active.length);
+    const remainder = remaining % active.length;
+    const satisfied = active.filter((index) => lengths[index] - allocations[index] <= share);
+    if (satisfied.length) {
+      for (const index of satisfied) {
+        const need = lengths[index] - allocations[index];
+        allocations[index] += need;
+        remaining -= need;
+      }
+      active = active.filter((index) => !satisfied.includes(index));
+      continue;
+    }
+    active.forEach((index, position) => {
+      const grant = share + (position < remainder ? 1 : 0);
+      allocations[index] += grant;
+      remaining -= grant;
+    });
+    break;
+  }
+  return allocations;
+}
+
+function boundedInteger(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
+  if (value == null) return fallback;
+  if (!Number.isInteger(value)) throw new Error("Extraction context limits must be integers");
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 // A present key always uses the authenticated route; with no key, the keyless
@@ -628,6 +885,8 @@ export async function extractPlus(
   renderJs = false,
   runtimeConfig: RuntimeConfig = {},
   disabledProviders: string[] = [],
+  providerPriority: readonly ExtractProviderName[] = EXTRACT_PROVIDER_PRIORITY,
+  contextOptions: ExtractContextOptions = {},
 ): Promise<ExtractResponse> {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
@@ -639,7 +898,37 @@ export async function extractPlus(
     };
   }
 
-  const cleanedUrls = urls.map((url) => (typeof url === "string" ? url.trim() : url));
+  let requestedMaxUrls: number;
+  let requestedMaxContextChars: number;
+  let deadlineSeconds: number;
+  try {
+    requestedMaxUrls = boundedInteger(contextOptions.maxUrls, DEFAULT_EXTRACT_MAX_URLS, 1, HARD_EXTRACT_MAX_URLS);
+    requestedMaxContextChars = boundedInteger(
+      contextOptions.maxContextChars,
+      runtimeConfig.extractMaxContextChars ?? DEFAULT_EXTRACT_MAX_CONTEXT_CHARS,
+      MIN_EXTRACT_MAX_CONTEXT_CHARS,
+      HARD_EXTRACT_MAX_CONTEXT_CHARS,
+    );
+    deadlineSeconds = preflightDeadline(contextOptions.deadlineSeconds, runtimeConfig.extractDeadlineSeconds);
+  } catch (error: any) {
+    return {
+      provider: requestedProvider,
+      results: [],
+      error: String(error?.message || error),
+      routing: { requested_provider: requestedProvider },
+    };
+  }
+  const operatorMaxUrls = Math.min(HARD_EXTRACT_MAX_URLS, Math.max(1, runtimeConfig.extractMaxUrls ?? DEFAULT_EXTRACT_MAX_URLS));
+  const operatorMaxContextChars = Math.min(
+    HARD_EXTRACT_MAX_CONTEXT_CHARS,
+    Math.max(MIN_EXTRACT_MAX_CONTEXT_CHARS, runtimeConfig.extractMaxContextChars ?? DEFAULT_EXTRACT_MAX_CONTEXT_CHARS),
+  );
+  const maxUrls = Math.min(requestedMaxUrls, operatorMaxUrls);
+  const maxContextChars = Math.min(requestedMaxContextChars, operatorMaxContextChars);
+  const deadlineAt = Date.now() + deadlineSeconds * 1000;
+  const allCleanedUrls = urls.map((url) => (typeof url === "string" ? url.trim() : url));
+  const cleanedUrls = allCleanedUrls.slice(0, maxUrls);
+  const omittedUrls = allCleanedUrls.slice(maxUrls) as string[];
   const invalidUrls = cleanedUrls.filter((url) => typeof url !== "string" || !/^https?:\/\//.test(url));
   if (invalidUrls.length) {
     return {
@@ -661,15 +950,63 @@ export async function extractPlus(
     };
   }
 
-  const baseProviders = requestedProvider === "auto"
-    ? EXTRACT_PROVIDER_PRIORITY
-    : [requestedProvider, ...EXTRACT_PROVIDER_PRIORITY.filter((item) => item !== requestedProvider)] as ExtractProviderName[];
+  const configuredPriority = [
+    ...providerPriority.filter((item) => EXTRACT_PROVIDER_PRIORITY.includes(item)),
+    ...EXTRACT_PROVIDER_PRIORITY.filter((item) => !providerPriority.includes(item)),
+  ];
+  const baseProviders = contextOptions.strictProvider && requestedProvider !== "auto"
+    ? [requestedProvider] as ExtractProviderName[]
+    : requestedProvider === "auto"
+    ? configuredPriority
+    : [requestedProvider, ...configuredPriority.filter((item) => item !== requestedProvider)] as ExtractProviderName[];
   // Routing preferences' disabled_providers also apply to extraction fallback;
   // an explicitly requested provider is still tried first, matching search semantics.
-  const providers = baseProviders.filter((item) => item === requestedProvider || !disabledProviders.includes(item));
+  const providers = baseProviders.filter((item) =>
+    (item === requestedProvider || !disabledProviders.includes(item))
+    && (requestedProvider !== "auto" || contextOptions.autoAllow?.[item] !== false)
+  );
+
+  const cacheKey = buildExtractCacheKey({
+    cache_version: EXTRACT_CACHE_VERSION,
+    urls: allCleanedUrls,
+    requested_provider: requestedProvider,
+    format: outputFormat,
+    controls: { include_images: includeImages, include_raw_html: includeRawHtml, render_js: renderJs, spans: contextOptions.spans === true, spans_query: contextOptions.spansQuery || null },
+    budgets: {
+      requested_max_urls: requestedMaxUrls,
+      requested_max_context_chars: requestedMaxContextChars,
+      operator_max_urls: operatorMaxUrls,
+      operator_max_context_chars: operatorMaxContextChars,
+      effective_max_urls: maxUrls,
+      effective_max_context_chars: maxContextChars,
+      extract_char_limit: runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT,
+      parallel_max_chars_per_result: runtimeConfig.parallelMaxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT,
+      parallel_max_chars_total: runtimeConfig.parallelMaxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
+      hound_max_content_chars: runtimeConfig.houndMaxContentChars ?? null,
+      deadline_seconds: deadlineSeconds,
+    },
+    provider_policy: {
+      priority: configuredPriority,
+      disabled: [...disabledProviders].sort(),
+      auto_allow: contextOptions.autoAllow || {},
+      strict_provider: contextOptions.strictProvider === true,
+      // Credential availability affects which fallback can answer, while the
+      // credential values themselves never enter the identity.
+      available: Object.fromEntries(EXTRACT_PROVIDER_PRIORITY.map((item) => [item, Boolean(getExtractApiKey(item, runtimeConfig)) || keylessPublicAllowed(item, runtimeConfig)])),
+    },
+    endpoints: { hound_mcp_url: runtimeConfig.houndMcpUrl || null },
+    url_policy: { extract_allow_private_urls: runtimeConfig.extractAllowPrivateUrls === true },
+    storage_policy: "process_memory_only",
+  });
+  const cached = contextOptions.cacheBypass ? null : extractCacheGet(cacheKey);
+  if (cached) return cached;
 
   const errors: Json[] = [];
   for (const currentProvider of providers) {
+    if (Date.now() >= deadlineAt) {
+      errors.push({ provider: currentProvider, error: "deadline_exceeded_before_provider_start" });
+      break;
+    }
     if (!EXTRACT_PROVIDER_PRIORITY.includes(currentProvider)) {
       errors.push({ provider: currentProvider, error: `Provider ${currentProvider} does not support extraction` });
       continue;
@@ -701,6 +1038,20 @@ export async function extractPlus(
         result = await extractKeenable(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
       } else if (currentProvider === "serper") {
         result = await extractSerper(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "hound") {
+        result = await extractHound(
+          cleanedUrls as string[],
+          providerCredential!,
+          outputFormat,
+          includeImages,
+          includeRawHtml,
+          renderJs,
+          {
+            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
+            maxResponseBytes: runtimeConfig.houndMaxResponseBytes,
+            maxContentChars: runtimeConfig.houndMaxContentChars,
+          },
+        );
       } else {
         result = await extractYou(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       }
@@ -713,24 +1064,97 @@ export async function extractPlus(
       }
 
       const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
-      for (const item of resultList) {
-        if (item?.error) continue;
-        const originalContent = item.content;
-        if (item.content) {
-          const formatted = formatTruncatedExtractContent(item.content, charLimit);
-          item.content = formatted.content;
-          if (formatted.truncated) {
-            (item as any).truncated = true;
-            (item as any).original_chars = formatted.originalChars;
-          }
+      const contentItems = resultList
+        .map((item, resultIndex) => ({ item, resultIndex }))
+        .filter(({ item }) => !item?.error && typeof item?.content === "string");
+      const fullText = resultList.map((item): FullTextRecord | undefined => {
+        if (item?.error || typeof item?.content !== "string") return undefined;
+        const content = sanitizeExtractContent(item.content).normalize("NFC");
+        const rawContent = sanitizeExtractContent(typeof item.raw_content === "string" ? item.raw_content : item.content).normalize("NFC");
+        return {
+          content,
+          raw_content: rawContent === content ? undefined : rawContent,
+          provider: item.provider,
+        };
+      });
+      const cacheMaxChars = runtimeConfig.extractCacheMaxChars ?? DEFAULT_EXTRACT_CACHE_MAX_CHARS;
+      const cacheableFullText = fullTextChars(fullText) <= cacheMaxChars;
+      const sanitizedContent = contentItems.map(({ item }) => sanitizeExtractContent(item.content).normalize("NFC"));
+      const selectedSpans = contextOptions.spans
+        ? sanitizedContent.map((content) => selectSpans(content, contextOptions.spansQuery))
+        : [];
+      const allocations = fairShareAllocations(
+        sanitizedContent.map((content) => codepointLength(content)),
+        maxContextChars,
+      );
+      let truncated = false;
+      contentItems.forEach(({ item, resultIndex }, index) => {
+        const fullContent = sanitizedContent[index];
+        const fullLength = codepointLength(fullContent);
+        const globallyTruncated = fullLength > allocations[index];
+        // Hermes applies both limits in order: the aggregate allocation is a
+        // deterministic source prefix, then the per-result limit windows that
+        // prefix into its head and tail.
+        const budgetedContent = globallyTruncated
+          ? normalizedCodepoints(fullContent).slice(0, allocations[index]).join("")
+          : fullContent;
+        const formatted = formatTruncatedExtractContent(budgetedContent, charLimit);
+        item.content = formatted.content;
+        if (globallyTruncated || formatted.truncated) {
+          item.truncated = true;
+          item.original_chars = fullLength;
+          truncated = true;
         }
-        if (item.raw_content) {
-          item.raw_content = item.raw_content === originalContent ? item.content : formatTruncatedExtractContent(item.raw_content, charLimit).content;
+        // Match Hermes' outward compatibility projection: provider raw text
+        // remains in the process-local full-text record, while inline
+        // raw_content mirrors the already-budgeted content.
+        if ("raw_content" in item) item.raw_content = item.content;
+        if (contextOptions.spans) {
+          item.span_contract_version = 1;
+          item.spans = selectedSpans[index].map((span) => ({
+            ...span,
+            within_preview: item.content.includes(span.text),
+          }));
         }
+        const full = fullText[resultIndex];
+        if (full && cacheableFullText && !contextOptions.cacheBypass) {
+          item.full_content_ref = fullTextReference(cacheKey, resultIndex, full);
+          item.full_content_chars = codepointLength(full.content);
+        }
+      });
+      const warnings: Json[] = [...(result.warnings || [])];
+      if (omittedUrls.length) {
+        warnings.push({
+          code: "wsp.extract.urls_omitted",
+          message: "One or more requested URLs were omitted by the extraction fan-out cap.",
+          details: { omitted_url_count: omittedUrls.length },
+        });
+      }
+      if (truncated) {
+        warnings.push({
+          code: "wsp.content.truncated",
+          message: "Inline extracted content was deterministically truncated to the call budget.",
+          details: { truncated_result_count: contentItems.filter(({ item }) => item.truncated).length },
+        });
       }
 
-      return {
+      const response: ExtractResponse = {
         ...result,
+        status: omittedUrls.length || truncated ? "degraded" : result.status || "success",
+        warnings,
+        limits_applied: {
+          extract: {
+            requested_url_count: allCleanedUrls.length,
+            processed_urls: cleanedUrls as string[],
+            omitted_urls: omittedUrls,
+            omitted_url_count: omittedUrls.length,
+            max_urls: maxUrls,
+            max_context_chars: maxContextChars,
+            deadline_seconds: deadlineSeconds,
+            context_chars_returned: contentItems.reduce((sum, { item }) => sum + codepointLength(item.content), 0),
+            truncated,
+          },
+        },
         routing: {
           provider: currentProvider,
           requested_provider: requestedProvider,
@@ -738,6 +1162,18 @@ export async function extractPlus(
           fallback_errors: errors,
         },
       };
+      // Only successful/degraded provider output is cacheable. Failed calls
+      // carry transient diagnostics and must be retried on a later request.
+      if (!contextOptions.cacheBypass && cacheableFullText) {
+        extractCachePut(
+          cacheKey,
+          response,
+          fullText,
+          runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES,
+          cacheMaxChars,
+        );
+      }
+      return response;
     } catch (error: any) {
       errors.push({ provider: currentProvider, error: String(error?.message || error) });
     }
