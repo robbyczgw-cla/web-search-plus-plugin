@@ -1,5 +1,6 @@
 import dns from "dns/promises";
 import net from "net";
+import crypto from "crypto";
 import type { RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_EXTRACT_PROVIDER_PRIORITY, type ExtractProviderName } from "./routing-config.ts";
 import { selectSpans, type SemanticSpan } from "./span-extraction.ts";
@@ -57,6 +58,50 @@ export type ExtractResponse = {
     fallback_errors?: Json[];
   };
 };
+
+export const EXTRACT_CACHE_VERSION = 1;
+export const DEFAULT_EXTRACT_CACHE_MAX_ENTRIES = 64;
+
+type ExtractCacheEntry = { response: ExtractResponse };
+const extractCache = new Map<string, ExtractCacheEntry>();
+
+function stableJson(value: any): any {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stableJson(item)]));
+  }
+  return value;
+}
+
+function cloneResponse(response: ExtractResponse): ExtractResponse {
+  return structuredClone(response);
+}
+
+// This is intentionally a complete request identity, not an URL cache. It has
+// no credentials: endpoint addresses are operational routing inputs, keys are
+// deliberately absent.
+export function buildExtractCacheKey(identity: Record<string, any>): string {
+  return crypto.createHash("sha256").update(JSON.stringify(stableJson(identity))).digest("hex");
+}
+
+function extractCacheGet(key: string): ExtractResponse | null {
+  const entry = extractCache.get(key);
+  if (!entry) return null;
+  // Map insertion order is the LRU order.
+  extractCache.delete(key);
+  extractCache.set(key, entry);
+  return cloneResponse(entry.response);
+}
+
+function extractCachePut(key: string, response: ExtractResponse, maxEntries: number): void {
+  extractCache.delete(key);
+  extractCache.set(key, { response: cloneResponse(response) });
+  while (extractCache.size > maxEntries) extractCache.delete(extractCache.keys().next().value!);
+}
+
+export function __resetExtractCacheForTests(): void {
+  extractCache.clear();
+}
 
 // Extraction fallback order: Tavily-first stays; Keenable is a low-priority
 // fallback and Serper's webpage scraper is a last-resort fallback at the end.
@@ -806,6 +851,39 @@ export async function extractPlus(
     && (requestedProvider !== "auto" || contextOptions.autoAllow?.[item] !== false)
   );
 
+  const cacheKey = buildExtractCacheKey({
+    cache_version: EXTRACT_CACHE_VERSION,
+    urls: allCleanedUrls,
+    requested_provider: requestedProvider,
+    format: outputFormat,
+    controls: { include_images: includeImages, include_raw_html: includeRawHtml, render_js: renderJs, spans: contextOptions.spans === true, spans_query: contextOptions.spansQuery || null },
+    budgets: {
+      requested_max_urls: requestedMaxUrls,
+      requested_max_context_chars: requestedMaxContextChars,
+      operator_max_urls: operatorMaxUrls,
+      operator_max_context_chars: operatorMaxContextChars,
+      effective_max_urls: maxUrls,
+      effective_max_context_chars: maxContextChars,
+      extract_char_limit: runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT,
+      parallel_max_chars_per_result: runtimeConfig.parallelMaxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT,
+      parallel_max_chars_total: runtimeConfig.parallelMaxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
+      hound_max_content_chars: runtimeConfig.houndMaxContentChars ?? null,
+    },
+    provider_policy: {
+      priority: configuredPriority,
+      disabled: [...disabledProviders].sort(),
+      auto_allow: contextOptions.autoAllow || {},
+      // Credential availability affects which fallback can answer, while the
+      // credential values themselves never enter the identity.
+      available: Object.fromEntries(EXTRACT_PROVIDER_PRIORITY.map((item) => [item, Boolean(getExtractApiKey(item, runtimeConfig)) || keylessPublicAllowed(item, runtimeConfig)])),
+    },
+    endpoints: { hound_mcp_url: runtimeConfig.houndMcpUrl || null },
+    url_policy: { extract_allow_private_urls: runtimeConfig.extractAllowPrivateUrls === true },
+    storage_policy: "process_memory_only",
+  });
+  const cached = extractCacheGet(cacheKey);
+  if (cached) return cached;
+
   const errors: Json[] = [];
   for (const currentProvider of providers) {
     if (!EXTRACT_PROVIDER_PRIORITY.includes(currentProvider)) {
@@ -924,7 +1002,7 @@ export async function extractPlus(
         });
       }
 
-      return {
+      const response: ExtractResponse = {
         ...result,
         status: omittedUrls.length || truncated ? "degraded" : result.status || "success",
         warnings,
@@ -947,6 +1025,10 @@ export async function extractPlus(
           fallback_errors: errors,
         },
       };
+      // Only successful/degraded provider output is cacheable. Failed calls
+      // carry transient diagnostics and must be retried on a later request.
+      extractCachePut(cacheKey, response, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
+      return response;
     } catch (error: any) {
       errors.push({ provider: currentProvider, error: String(error?.message || error) });
     }

@@ -115,6 +115,7 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `extractCharLimit` — inline character budget per extracted page before head/tail truncation (default 15000)
 - `extractMaxUrls` — operator ceiling for URLs processed per extraction call (default 10, hard maximum 50)
 - `extractMaxContextChars` — operator ceiling for aggregate inline extraction content (default 60000 Unicode codepoints, maximum 200000)
+- `extractCacheMaxEntries` — process-local LRU capacity for completed extraction requests (default 64, range 1–500; lost on host restart)
 - `localeCountry` / `localeLanguage` — default search locale for Serper, Brave, Querit, Firecrawl, You.com, and SearXNG; `localeLanguage: "auto"` enables conservative query language inference. Explicit location hints in the query win the country; query language never implies the country. Without these fields the providers keep their us/en defaults.
 - `parallelMaxCharsPerResult` / `parallelMaxCharsTotal` — Parallel extraction full-content budgets (defaults 60000 / 120000)
 - `qualityBlockedDomains` / `qualityAllowedDomains` — extend or rescue from the built-in spam/mirror result blocklist

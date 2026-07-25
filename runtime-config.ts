@@ -30,6 +30,8 @@ export type RuntimeConfig = {
   // context returned by one call.
   extractMaxUrls?: number;
   extractMaxContextChars?: number;
+  // Process-local extraction LRU capacity. No entries survive a host restart.
+  extractCacheMaxEntries?: number;
   // Default search locale (ISO 3166-1 alpha-2 country, ISO 639-1 language or
   // "auto" for conservative query language inference). Without these the
   // locale-capable providers keep their us/en defaults.
@@ -75,6 +77,7 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
       : undefined,
     extractMaxUrls: maybePositiveInt(pluginConfig?.extractMaxUrls),
     extractMaxContextChars: maybePositiveInt(pluginConfig?.extractMaxContextChars),
+    extractCacheMaxEntries: maybeBoundedInt(pluginConfig?.extractCacheMaxEntries, 1, 500),
     localeCountry: maybeString(pluginConfig?.localeCountry),
     localeLanguage: maybeString(pluginConfig?.localeLanguage),
     parallelMaxCharsPerResult: maybePositiveInt(pluginConfig?.parallelMaxCharsPerResult),
@@ -86,4 +89,9 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
 function maybePositiveInt(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+}
+
+function maybeBoundedInt(value: unknown, minimum: number, maximum: number): number | undefined {
+  const parsed = maybePositiveInt(value);
+  return parsed == null ? undefined : Math.min(maximum, Math.max(minimum, parsed));
 }

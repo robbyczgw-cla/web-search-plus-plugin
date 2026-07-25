@@ -1,5 +1,5 @@
 // index.ts
-import crypto from "crypto";
+import crypto2 from "crypto";
 import dns2 from "dns/promises";
 import net2 from "net";
 
@@ -161,6 +161,7 @@ function getRuntimeConfig(pluginConfig) {
     extractCharLimit: Number.isFinite(Number(pluginConfig?.extractCharLimit)) && Number(pluginConfig?.extractCharLimit) > 0 ? Math.max(1e3, Math.floor(Number(pluginConfig.extractCharLimit))) : void 0,
     extractMaxUrls: maybePositiveInt(pluginConfig?.extractMaxUrls),
     extractMaxContextChars: maybePositiveInt(pluginConfig?.extractMaxContextChars),
+    extractCacheMaxEntries: maybeBoundedInt(pluginConfig?.extractCacheMaxEntries, 1, 500),
     localeCountry: maybeString(pluginConfig?.localeCountry),
     localeLanguage: maybeString(pluginConfig?.localeLanguage),
     parallelMaxCharsPerResult: maybePositiveInt(pluginConfig?.parallelMaxCharsPerResult),
@@ -171,6 +172,10 @@ function getRuntimeConfig(pluginConfig) {
 function maybePositiveInt(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : void 0;
+}
+function maybeBoundedInt(value, minimum, maximum) {
+  const parsed = maybePositiveInt(value);
+  return parsed == null ? void 0 : Math.min(maximum, Math.max(minimum, parsed));
 }
 
 // routing-config.ts
@@ -354,6 +359,7 @@ function resetRoutingPreferences(pluginConfig = {}) {
 // extract.ts
 import dns from "dns/promises";
 import net from "net";
+import crypto from "crypto";
 
 // span-extraction.ts
 var TOKEN_RE = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu;
@@ -789,6 +795,34 @@ async function extractHound(urls, endpoint, outputFormat = "markdown", includeIm
 }
 
 // extract.ts
+var EXTRACT_CACHE_VERSION = 1;
+var DEFAULT_EXTRACT_CACHE_MAX_ENTRIES = 64;
+var extractCache = /* @__PURE__ */ new Map();
+function stableJson(value) {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stableJson(item)]));
+  }
+  return value;
+}
+function cloneResponse(response) {
+  return structuredClone(response);
+}
+function buildExtractCacheKey(identity) {
+  return crypto.createHash("sha256").update(JSON.stringify(stableJson(identity))).digest("hex");
+}
+function extractCacheGet(key) {
+  const entry = extractCache.get(key);
+  if (!entry) return null;
+  extractCache.delete(key);
+  extractCache.set(key, entry);
+  return cloneResponse(entry.response);
+}
+function extractCachePut(key, response, maxEntries) {
+  extractCache.delete(key);
+  extractCache.set(key, { response: cloneResponse(response) });
+  while (extractCache.size > maxEntries) extractCache.delete(extractCache.keys().next().value);
+}
 var EXTRACT_PROVIDER_PRIORITY = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 var EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
@@ -1349,6 +1383,38 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
   const providers = baseProviders.filter(
     (item) => (item === requestedProvider || !disabledProviders.includes(item)) && (requestedProvider !== "auto" || contextOptions.autoAllow?.[item] !== false)
   );
+  const cacheKey = buildExtractCacheKey({
+    cache_version: EXTRACT_CACHE_VERSION,
+    urls: allCleanedUrls,
+    requested_provider: requestedProvider,
+    format: outputFormat,
+    controls: { include_images: includeImages, include_raw_html: includeRawHtml, render_js: renderJs, spans: contextOptions.spans === true, spans_query: contextOptions.spansQuery || null },
+    budgets: {
+      requested_max_urls: requestedMaxUrls,
+      requested_max_context_chars: requestedMaxContextChars,
+      operator_max_urls: operatorMaxUrls,
+      operator_max_context_chars: operatorMaxContextChars,
+      effective_max_urls: maxUrls,
+      effective_max_context_chars: maxContextChars,
+      extract_char_limit: runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT,
+      parallel_max_chars_per_result: runtimeConfig.parallelMaxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT,
+      parallel_max_chars_total: runtimeConfig.parallelMaxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
+      hound_max_content_chars: runtimeConfig.houndMaxContentChars ?? null
+    },
+    provider_policy: {
+      priority: configuredPriority,
+      disabled: [...disabledProviders].sort(),
+      auto_allow: contextOptions.autoAllow || {},
+      // Credential availability affects which fallback can answer, while the
+      // credential values themselves never enter the identity.
+      available: Object.fromEntries(EXTRACT_PROVIDER_PRIORITY.map((item) => [item, Boolean(getExtractApiKey(item, runtimeConfig)) || keylessPublicAllowed(item, runtimeConfig)]))
+    },
+    endpoints: { hound_mcp_url: runtimeConfig.houndMcpUrl || null },
+    url_policy: { extract_allow_private_urls: runtimeConfig.extractAllowPrivateUrls === true },
+    storage_policy: "process_memory_only"
+  });
+  const cached = extractCacheGet(cacheKey);
+  if (cached) return cached;
   const errors = [];
   for (const currentProvider of providers) {
     if (!EXTRACT_PROVIDER_PRIORITY.includes(currentProvider)) {
@@ -1454,7 +1520,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           details: { truncated_result_count: contentItems.filter((item) => item.truncated).length }
         });
       }
-      return {
+      const response = {
         ...result,
         status: omittedUrls.length || truncated ? "degraded" : result.status || "success",
         warnings,
@@ -1477,6 +1543,8 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           fallback_errors: errors
         }
       };
+      extractCachePut(cacheKey, response, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
+      return response;
     } catch (error2) {
       errors.push({ provider: currentProvider, error: String(error2?.message || error2) });
     }
@@ -2395,7 +2463,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function sha256(input) {
-  return crypto.createHash("sha256").update(input).digest("hex");
+  return crypto2.createHash("sha256").update(input).digest("hex");
 }
 function normalizeJsonForCache(value) {
   if (Array.isArray(value)) return value.map((item) => normalizeJsonForCache(item));

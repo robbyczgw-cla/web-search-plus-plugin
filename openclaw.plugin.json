@@ -128,6 +128,10 @@
         "type": "number",
         "description": "Operator ceiling for aggregate inline extraction content in Unicode codepoints (default 60000, range 1000-200000)."
       },
+      "extractCacheMaxEntries": {
+        "type": "number",
+        "description": "Maximum process-local LRU entries for completed extraction requests (default 64, range 1-500). Entries are discarded when the host restarts."
+      },
       "localeCountry": {
         "type": "string",
         "description": "Default search country (ISO 3166-1 alpha-2, e.g. \"at\") for locale-capable providers (Serper, Brave, Querit, Firecrawl, You.com). Explicit location hints in the query still win. Without this the providers keep their us defaults."

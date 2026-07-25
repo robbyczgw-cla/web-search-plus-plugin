@@ -8,6 +8,8 @@ import {
   extractYou,
   extractPlus,
   hasAnyExtractProviderCredential,
+  __resetExtractCacheForTests,
+  buildExtractCacheKey,
 } from "../extract.ts";
 import { register } from "../index.ts";
 
@@ -190,6 +192,28 @@ test("extractPlus auto uses exa when only exa is available", async () => {
       assert.equal(result.provider, "exa");
       assert.equal(calls.length, 1);
       assert.equal(calls[0].url, "https://api.exa.ai/contents");
+    },
+  );
+});
+
+test("extract cache preserves complete response data and uses request-exact identity", async () => {
+  __resetExtractCacheForTests();
+  const identityA = buildExtractCacheKey({ cache_version: 1, urls: ["https://example.com/a"], budgets: { max: 10 }, controls: { render_js: false } });
+  const identityB = buildExtractCacheKey({ controls: { render_js: true }, budgets: { max: 10 }, urls: ["https://example.com/a"], cache_version: 1 });
+  assert.notEqual(identityA, identityB);
+
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com/cache", title: "Cached", raw_content: "complete provider content", metadata: { source: "provider" } }] }),
+    async (calls) => {
+      const config = { tavilyApiKey: "tvly-test", extractCacheMaxEntries: 2 };
+      const first = await extractPlus(["https://example.com/cache"], "tavily", "markdown", false, false, false, config);
+      const second = await extractPlus(["https://example.com/cache"], "tavily", "markdown", false, false, false, config);
+      assert.equal(calls.length, 1);
+      assert.deepEqual(second, first);
+      assert.equal(second.results[0].content, "complete provider content");
+      assert.equal(second.results[0].raw_content, "complete provider content");
+      assert.equal(second.results[0].provider, "tavily");
+      assert.deepEqual(second.results[0].metadata, { source: "provider" });
     },
   );
 });
