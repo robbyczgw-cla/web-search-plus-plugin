@@ -78,7 +78,7 @@ Auto fallback order:
 - Keenable (keyed or opt-in keyless public tier)
 - Serper (webpage scraper via `scrape.serper.dev`, last resort)
 
-Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net. Extraction targets are validated against private/internal destinations by default (see `extractAllowPrivateUrls`), oversized pages return a head/tail window governed by `extractCharLimit`, and inline base64 images are replaced with `[IMAGE: alt]` placeholders.
+Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net. Extraction targets are validated against private/internal destinations by default (see `extractAllowPrivateUrls`). Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; `max_urls` and `max_context_chars` may request lower limits, while `extractMaxUrls` and `extractMaxContextChars` set operator ceilings. Oversized pages return a head/tail window governed by `extractCharLimit`, and inline base64 images are replaced with `[IMAGE: alt]` placeholders.
 
 ## Configuration
 
@@ -107,6 +107,8 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `keenableAllowPublic` — opt-in keyless Keenable public tier (unauthenticated shared service, off by default)
 - `extractAllowPrivateUrls` — opt-in: allow extraction of private/internal URLs (trusted intranets only)
 - `extractCharLimit` — inline character budget per extracted page before head/tail truncation (default 15000)
+- `extractMaxUrls` — operator ceiling for URLs processed per extraction call (default 10, hard maximum 50)
+- `extractMaxContextChars` — operator ceiling for aggregate inline extraction content (default 60000 Unicode codepoints, maximum 200000)
 - `localeCountry` / `localeLanguage` — default search locale for Serper, Brave, Querit, Firecrawl, You.com, and SearXNG; `localeLanguage: "auto"` enables conservative query language inference. Explicit location hints in the query win the country; query language never implies the country. Without these fields the providers keep their us/en defaults.
 - `parallelMaxCharsPerResult` / `parallelMaxCharsTotal` — Parallel extraction full-content budgets (defaults 60000 / 120000)
 - `qualityBlockedDomains` / `qualityAllowedDomains` — extend or rescue from the built-in spam/mirror result blocklist

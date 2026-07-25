@@ -1762,6 +1762,10 @@ export function register(api: any) {
             runtimeConfig,
             loadRoutingPreferences(pluginConfig).config.disabled_providers,
             loadRoutingPreferences(pluginConfig).config.extract_provider_priority,
+            {
+              maxUrls: params?.max_urls,
+              maxContextChars: params?.max_context_chars,
+            },
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error: any) {

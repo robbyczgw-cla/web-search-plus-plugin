@@ -22,6 +22,10 @@ export type RuntimeConfig = {
   // Inline character budget per extracted page before head/tail truncation
   // (default 15000, minimum 1000).
   extractCharLimit?: number;
+  // Operator ceilings for extraction fan-out and the aggregate inline
+  // context returned by one call.
+  extractMaxUrls?: number;
+  extractMaxContextChars?: number;
   // Default search locale (ISO 3166-1 alpha-2 country, ISO 639-1 language or
   // "auto" for conservative query language inference). Without these the
   // locale-capable providers keep their us/en defaults.
@@ -59,6 +63,8 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     extractCharLimit: Number.isFinite(Number(pluginConfig?.extractCharLimit)) && Number(pluginConfig?.extractCharLimit) > 0
       ? Math.max(1000, Math.floor(Number(pluginConfig.extractCharLimit)))
       : undefined,
+    extractMaxUrls: maybePositiveInt(pluginConfig?.extractMaxUrls),
+    extractMaxContextChars: maybePositiveInt(pluginConfig?.extractMaxContextChars),
     localeCountry: maybeString(pluginConfig?.localeCountry),
     localeLanguage: maybeString(pluginConfig?.localeLanguage),
     parallelMaxCharsPerResult: maybePositiveInt(pluginConfig?.parallelMaxCharsPerResult),

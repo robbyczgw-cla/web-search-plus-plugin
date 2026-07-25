@@ -8,6 +8,7 @@
 ### Changed
 - Promoted Brave Search into the default Classic Routing v2 auto pool for independent-index source diversity. Explicit `auto_allow.brave=false` still opts it out. (Hermes v3.0.0)
 - Added independent `extract_provider_priority` routing preferences plus the `set_extract_provider_priority` config action. Partial lists append missing extraction providers in the stable Tavily-first default order without changing search priority. (Hermes v3.0.0)
+- Added bounded extraction context: request-order URL fan-out caps, operator ceilings, deterministic fair-share allocation across successful results, NFC Unicode-codepoint accounting, degraded status, and truthful omission/truncation metadata. (Hermes v3.0.0)
 
 ### Fixed
 - Removed stale Perplexity/Kilo credential, freshness, setup, and provider claims from active package metadata and documentation after the source-only provider removal. Historical changelog entries remain intact. (Hermes v3.0.2)

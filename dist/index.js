@@ -155,6 +155,8 @@ function getRuntimeConfig(pluginConfig) {
     keenableAllowPublic: pluginConfig?.keenableAllowPublic === true ? true : void 0,
     extractAllowPrivateUrls: pluginConfig?.extractAllowPrivateUrls === true ? true : void 0,
     extractCharLimit: Number.isFinite(Number(pluginConfig?.extractCharLimit)) && Number(pluginConfig?.extractCharLimit) > 0 ? Math.max(1e3, Math.floor(Number(pluginConfig.extractCharLimit))) : void 0,
+    extractMaxUrls: maybePositiveInt(pluginConfig?.extractMaxUrls),
+    extractMaxContextChars: maybePositiveInt(pluginConfig?.extractMaxContextChars),
     localeCountry: maybeString(pluginConfig?.localeCountry),
     localeLanguage: maybeString(pluginConfig?.localeLanguage),
     parallelMaxCharsPerResult: maybePositiveInt(pluginConfig?.parallelMaxCharsPerResult),
@@ -341,7 +343,19 @@ var EXTRACT_PARAMETERS_SCHEMA = {
     },
     include_images: { type: "boolean", description: "Include image metadata when supported" },
     include_raw_html: { type: "boolean", description: "Include raw HTML when supported" },
-    render_js: { type: "boolean", description: "Render JavaScript before extraction when supported" }
+    render_js: { type: "boolean", description: "Render JavaScript before extraction when supported" },
+    max_urls: {
+      type: "integer",
+      minimum: 1,
+      maximum: 50,
+      description: "Maximum URLs to process in request order (default/operator ceiling: 10)"
+    },
+    max_context_chars: {
+      type: "integer",
+      minimum: 1e3,
+      maximum: 2e5,
+      description: "Aggregate inline content budget in Unicode codepoints (default/operator ceiling: 60000)"
+    }
   }
 };
 function titleFromUrl(url) {
@@ -658,6 +672,17 @@ async function extractYou(urls, apiKey, outputFormat = "markdown", includeImages
 var BASE64_MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(\s*data:image\/[^)]+\)/gi;
 var BASE64_HTML_IMAGE_RE = /<img\b(?=[^>]*\bsrc=["']data:image\/)[^>]*>/gi;
 var DEFAULT_EXTRACT_CHAR_LIMIT = 15e3;
+var DEFAULT_EXTRACT_MAX_URLS = 10;
+var HARD_EXTRACT_MAX_URLS = 50;
+var DEFAULT_EXTRACT_MAX_CONTEXT_CHARS = 6e4;
+var MIN_EXTRACT_MAX_CONTEXT_CHARS = 1e3;
+var HARD_EXTRACT_MAX_CONTEXT_CHARS = 2e5;
+function normalizedCodepoints(content) {
+  return Array.from(content.normalize("NFC"));
+}
+function codepointLength(content) {
+  return normalizedCodepoints(content).length;
+}
 function sanitizeExtractContent(content) {
   let out = content.replace(BASE64_MARKDOWN_IMAGE_RE, (_match, alt) => `[IMAGE: ${String(alt || "image").trim() || "image"}]`);
   out = out.replace(BASE64_HTML_IMAGE_RE, (tag) => {
@@ -668,21 +693,23 @@ function sanitizeExtractContent(content) {
   return out;
 }
 function splitExtractContent(content, limit) {
+  const codepoints = normalizedCodepoints(content);
   const headChars = Math.min(Math.max(1, Math.floor(limit * 2 / 3)), Math.max(1, limit - 1));
   const tailChars = Math.min(Math.max(1, Math.floor(limit * 0.2)), Math.max(1, limit - headChars));
-  if (headChars + tailChars >= content.length) return { head: content, tail: "", omittedChars: 0 };
-  const head = content.slice(0, headChars).replace(/\s+$/, "");
-  const tail = content.slice(-tailChars).replace(/^\s+/, "");
-  return { head, tail, omittedChars: Math.max(0, content.length - head.length - tail.length) };
+  if (headChars + tailChars >= codepoints.length) return { head: codepoints.join(""), tail: "", omittedChars: 0 };
+  const head = codepoints.slice(0, headChars).join("").replace(/\s+$/, "");
+  const tail = codepoints.slice(-tailChars).join("").replace(/^\s+/, "");
+  return { head, tail, omittedChars: Math.max(0, codepoints.length - codepointLength(head) - codepointLength(tail)) };
 }
 function formatTruncatedExtractContent(content, limit) {
-  const cleaned = sanitizeExtractContent(content);
-  if (cleaned.length <= limit) return { content: cleaned, truncated: false, originalChars: cleaned.length };
+  const cleaned = sanitizeExtractContent(content).normalize("NFC");
+  const originalChars = codepointLength(cleaned);
+  if (originalChars <= limit) return { content: cleaned, truncated: false, originalChars };
   const { head, tail, omittedChars } = splitExtractContent(cleaned, limit);
   const footer = [
     "",
     "---",
-    `[Content truncated: original ${cleaned.length} chars; omitted middle ${omittedChars} chars; showing head and tail.]`,
+    `[Content truncated: original ${originalChars} chars; omitted middle ${omittedChars} chars; showing head and tail.]`,
     "Raise pluginConfig.extractCharLimit for a larger inline budget, or extract a more specific URL for the omitted section."
   ].join("\n");
   return { content: `${head}
@@ -690,7 +717,40 @@ function formatTruncatedExtractContent(content, limit) {
 [... omitted middle ...]
 
 ${tail}
-${footer}`, truncated: true, originalChars: cleaned.length };
+${footer}`, truncated: true, originalChars };
+}
+function fairShareAllocations(lengths, budget) {
+  if (!lengths.length) return [];
+  if (lengths.reduce((sum, length) => sum + length, 0) <= budget) return [...lengths];
+  const allocations = lengths.map(() => 0);
+  let active = lengths.map((_length, index) => index);
+  let remaining = budget;
+  while (active.length && remaining > 0) {
+    const share = Math.floor(remaining / active.length);
+    const remainder = remaining % active.length;
+    const satisfied = active.filter((index) => lengths[index] - allocations[index] <= share);
+    if (satisfied.length) {
+      for (const index of satisfied) {
+        const need = lengths[index] - allocations[index];
+        allocations[index] += need;
+        remaining -= need;
+      }
+      active = active.filter((index) => !satisfied.includes(index));
+      continue;
+    }
+    active.forEach((index, position) => {
+      const grant = share + (position < remainder ? 1 : 0);
+      allocations[index] += grant;
+      remaining -= grant;
+    });
+    break;
+  }
+  return allocations;
+}
+function boundedInteger(value, fallback, minimum, maximum) {
+  if (value == null) return fallback;
+  if (!Number.isInteger(value)) throw new Error("Extraction context limits must be integers");
+  return Math.min(maximum, Math.max(minimum, value));
 }
 function keenableExtractEndpoint(apiUrl, apiKey, publicAllowed) {
   const headers = { "X-Keenable-Title": "web-search-plus-plugin" };
@@ -751,7 +811,7 @@ async function extractSerper(urls, apiKey, _outputFormat = "markdown", _includeI
   }
   return { provider: "serper", results };
 }
-async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, runtimeConfig = {}, disabledProviders = [], providerPriority = EXTRACT_PROVIDER_PRIORITY) {
+async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, runtimeConfig = {}, disabledProviders = [], providerPriority = EXTRACT_PROVIDER_PRIORITY, contextOptions = {}) {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
     return {
@@ -761,7 +821,34 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       routing: { requested_provider: requestedProvider }
     };
   }
-  const cleanedUrls = urls.map((url) => typeof url === "string" ? url.trim() : url);
+  let requestedMaxUrls;
+  let requestedMaxContextChars;
+  try {
+    requestedMaxUrls = boundedInteger(contextOptions.maxUrls, DEFAULT_EXTRACT_MAX_URLS, 1, HARD_EXTRACT_MAX_URLS);
+    requestedMaxContextChars = boundedInteger(
+      contextOptions.maxContextChars,
+      runtimeConfig.extractMaxContextChars ?? DEFAULT_EXTRACT_MAX_CONTEXT_CHARS,
+      MIN_EXTRACT_MAX_CONTEXT_CHARS,
+      HARD_EXTRACT_MAX_CONTEXT_CHARS
+    );
+  } catch (error2) {
+    return {
+      provider: requestedProvider,
+      results: [],
+      error: String(error2?.message || error2),
+      routing: { requested_provider: requestedProvider }
+    };
+  }
+  const operatorMaxUrls = Math.min(HARD_EXTRACT_MAX_URLS, Math.max(1, runtimeConfig.extractMaxUrls ?? DEFAULT_EXTRACT_MAX_URLS));
+  const operatorMaxContextChars = Math.min(
+    HARD_EXTRACT_MAX_CONTEXT_CHARS,
+    Math.max(MIN_EXTRACT_MAX_CONTEXT_CHARS, runtimeConfig.extractMaxContextChars ?? DEFAULT_EXTRACT_MAX_CONTEXT_CHARS)
+  );
+  const maxUrls = Math.min(requestedMaxUrls, operatorMaxUrls);
+  const maxContextChars = Math.min(requestedMaxContextChars, operatorMaxContextChars);
+  const allCleanedUrls = urls.map((url) => typeof url === "string" ? url.trim() : url);
+  const cleanedUrls = allCleanedUrls.slice(0, maxUrls);
+  const omittedUrls = allCleanedUrls.slice(maxUrls);
   const invalidUrls = cleanedUrls.filter((url) => typeof url !== "string" || !/^https?:\/\//.test(url));
   if (invalidUrls.length) {
     return {
@@ -828,23 +915,64 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         continue;
       }
       const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
-      for (const item of resultList) {
-        if (item?.error) continue;
+      const contentItems = resultList.filter((item) => !item?.error && typeof item?.content === "string");
+      const sanitizedContent = contentItems.map((item) => sanitizeExtractContent(item.content).normalize("NFC"));
+      const allocations = fairShareAllocations(
+        sanitizedContent.map((content) => codepointLength(content)),
+        maxContextChars
+      );
+      let truncated = false;
+      contentItems.forEach((item, index) => {
         const originalContent = item.content;
-        if (item.content) {
-          const formatted = formatTruncatedExtractContent(item.content, charLimit);
-          item.content = formatted.content;
-          if (formatted.truncated) {
-            item.truncated = true;
-            item.original_chars = formatted.originalChars;
-          }
+        const fullContent = sanitizedContent[index];
+        const fullLength = codepointLength(fullContent);
+        const globallyTruncated = fullLength > allocations[index];
+        const formatted = globallyTruncated ? {
+          content: normalizedCodepoints(fullContent).slice(0, allocations[index]).join(""),
+          truncated: true,
+          originalChars: fullLength
+        } : formatTruncatedExtractContent(fullContent, charLimit);
+        item.content = formatted.content;
+        if (formatted.truncated) {
+          item.truncated = true;
+          item.original_chars = formatted.originalChars;
+          truncated = true;
         }
         if (item.raw_content) {
-          item.raw_content = item.raw_content === originalContent ? item.content : formatTruncatedExtractContent(item.raw_content, charLimit).content;
+          item.raw_content = item.raw_content === originalContent ? item.content : globallyTruncated ? normalizedCodepoints(sanitizeExtractContent(item.raw_content)).slice(0, allocations[index]).join("") : formatTruncatedExtractContent(item.raw_content, charLimit).content;
         }
+      });
+      const warnings = [...result.warnings || []];
+      if (omittedUrls.length) {
+        warnings.push({
+          code: "wsp.extract.urls_omitted",
+          message: "One or more requested URLs were omitted by the extraction fan-out cap.",
+          details: { omitted_url_count: omittedUrls.length }
+        });
+      }
+      if (truncated) {
+        warnings.push({
+          code: "wsp.content.truncated",
+          message: "Inline extracted content was deterministically truncated to the call budget.",
+          details: { truncated_result_count: contentItems.filter((item) => item.truncated).length }
+        });
       }
       return {
         ...result,
+        status: omittedUrls.length || truncated ? "degraded" : result.status || "success",
+        warnings,
+        limits_applied: {
+          extract: {
+            requested_url_count: allCleanedUrls.length,
+            processed_urls: cleanedUrls,
+            omitted_urls: omittedUrls,
+            omitted_url_count: omittedUrls.length,
+            max_urls: maxUrls,
+            max_context_chars: maxContextChars,
+            context_chars_returned: contentItems.reduce((sum, item) => sum + codepointLength(item.content), 0),
+            truncated
+          }
+        },
         routing: {
           provider: currentProvider,
           requested_provider: requestedProvider,
@@ -3194,7 +3322,11 @@ function register(api) {
             Boolean(params?.render_js),
             runtimeConfig,
             loadRoutingPreferences(pluginConfig).config.disabled_providers,
-            loadRoutingPreferences(pluginConfig).config.extract_provider_priority
+            loadRoutingPreferences(pluginConfig).config.extract_provider_priority,
+            {
+              maxUrls: params?.max_urls,
+              maxContextChars: params?.max_context_chars
+            }
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error2) {

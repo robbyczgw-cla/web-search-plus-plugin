@@ -28,7 +28,7 @@ Run:
 web-search-plus-setup setup --preset starter --config ./web-search-plus-plugin.config.json
 ```
 
-Tavily is the default first extraction provider in auto mode. The fallback chain is Tavily → Exa → Linkup → Parallel → Firecrawl → You.com → Keenable → Serper (webpage scraper). Extraction targets are validated against private/internal destinations by default; oversized pages return a head/tail window governed by `extractCharLimit`.
+Tavily is the default first extraction provider in auto mode. The fallback chain is Tavily → Exa → Linkup → Parallel → Firecrawl → You.com → Keenable → Serper (webpage scraper). Extraction targets are validated against private/internal destinations by default. Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; request-side `max_urls`/`max_context_chars` can lower those limits and operator settings can impose ceilings. Oversized pages return a head/tail window governed by `extractCharLimit`.
 
 ## Config fields
 
@@ -55,6 +55,8 @@ Extra settings:
 - `keenableAllowPublic` (opt-in keyless Keenable public tier)
 - `extractAllowPrivateUrls` (opt-in private/internal extraction targets)
 - `extractCharLimit` (inline extract budget, default 15000)
+- `extractMaxUrls` (operator URL ceiling, default 10)
+- `extractMaxContextChars` (operator aggregate context ceiling, default 60000)
 - `localeCountry` / `localeLanguage` (default search locale; `"auto"` language enables query inference)
 - `parallelMaxCharsPerResult` / `parallelMaxCharsTotal` (Parallel extract budgets)
 - `qualityBlockedDomains` / `qualityAllowedDomains` (spam/mirror blocklist overrides)
