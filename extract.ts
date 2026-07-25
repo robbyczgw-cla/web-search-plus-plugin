@@ -1,10 +1,11 @@
 import dns from "dns/promises";
 import net from "net";
 import type { RuntimeConfig } from "./runtime-config.ts";
+import { DEFAULT_EXTRACT_PROVIDER_PRIORITY, type ExtractProviderName } from "./routing-config.ts";
 
 type Json = Record<string, any>;
 
-export type ExtractProviderName = "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable" | "serper";
+export type { ExtractProviderName } from "./routing-config.ts";
 export type ExtractFormat = "markdown" | "html";
 
 export type ExtractImage = {
@@ -39,7 +40,7 @@ export type ExtractResponse = {
 
 // Extraction fallback order: Tavily-first stays; Keenable is a low-priority
 // fallback and Serper's webpage scraper is a last-resort fallback at the end.
-export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"];
+export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -628,6 +629,7 @@ export async function extractPlus(
   renderJs = false,
   runtimeConfig: RuntimeConfig = {},
   disabledProviders: string[] = [],
+  providerPriority: readonly ExtractProviderName[] = EXTRACT_PROVIDER_PRIORITY,
 ): Promise<ExtractResponse> {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
@@ -661,9 +663,13 @@ export async function extractPlus(
     };
   }
 
+  const configuredPriority = [
+    ...providerPriority.filter((item) => EXTRACT_PROVIDER_PRIORITY.includes(item)),
+    ...EXTRACT_PROVIDER_PRIORITY.filter((item) => !providerPriority.includes(item)),
+  ];
   const baseProviders = requestedProvider === "auto"
-    ? EXTRACT_PROVIDER_PRIORITY
-    : [requestedProvider, ...EXTRACT_PROVIDER_PRIORITY.filter((item) => item !== requestedProvider)] as ExtractProviderName[];
+    ? configuredPriority
+    : [requestedProvider, ...configuredPriority.filter((item) => item !== requestedProvider)] as ExtractProviderName[];
   // Routing preferences' disabled_providers also apply to extraction fallback;
   // an explicitly requested provider is still tried first, matching search semantics.
   const providers = baseProviders.filter((item) => item === requestedProvider || !disabledProviders.includes(item));

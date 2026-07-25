@@ -1,7 +1,9 @@
 export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "you" | "searxng" | "parallel" | "serpbase" | "keenable";
+export type ExtractProviderName = Extract<ProviderName, "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable" | "serper">;
 
 // Keenable stays last: it never displaces a configured keyed provider.
 export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "searxng", "keenable"];
+export const DEFAULT_EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"];
 
 export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "parallel"];
 
@@ -10,6 +12,7 @@ export type RoutingPreferences = {
   auto_routing: boolean;
   default_provider: ProviderName | null;
   provider_priority: ProviderName[];
+  extract_provider_priority: ExtractProviderName[];
   fallback_provider: ProviderName | null;
   disabled_providers: ProviderName[];
   confidence_threshold: number;
@@ -30,6 +33,7 @@ export const DEFAULT_ROUTING_PREFERENCES: RoutingPreferences = {
   auto_routing: true,
   default_provider: null,
   provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
+  extract_provider_priority: [...DEFAULT_EXTRACT_PROVIDER_PRIORITY],
   fallback_provider: null,
   disabled_providers: [],
   confidence_threshold: 0.4,
@@ -42,6 +46,7 @@ function cloneConfig(config: RoutingPreferences): RoutingPreferences {
   return {
     ...config,
     provider_priority: [...config.provider_priority],
+    extract_provider_priority: [...config.extract_provider_priority],
     disabled_providers: [...config.disabled_providers],
     auto_allow: { ...config.auto_allow },
   };
@@ -91,6 +96,24 @@ function normalizePriority(values: unknown): ProviderName[] {
   return completed;
 }
 
+function normalizeExtractPriority(values: unknown): ExtractProviderName[] {
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new Error("Extract provider priority must be a non-empty array");
+  }
+  const requested: ExtractProviderName[] = [];
+  for (const value of values) {
+    const provider = normalizeProviderName(value);
+    if (!(DEFAULT_EXTRACT_PROVIDER_PRIORITY as ProviderName[]).includes(provider)) {
+      throw new Error(`Provider does not support extraction: ${provider}`);
+    }
+    if (!requested.includes(provider as ExtractProviderName)) requested.push(provider as ExtractProviderName);
+  }
+  for (const provider of DEFAULT_EXTRACT_PROVIDER_PRIORITY) {
+    if (!requested.includes(provider)) requested.push(provider);
+  }
+  return requested;
+}
+
 function normalizeAutoAllow(value: unknown): Record<ProviderName, boolean> {
   const defaults = { ...DEFAULT_ROUTING_PREFERENCES.auto_allow };
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaults;
@@ -125,6 +148,7 @@ export function validateRoutingPreferences(raw: unknown): RoutingPreferences {
   config.auto_routing = input.auto_routing == null ? config.auto_routing : Boolean(input.auto_routing);
   config.default_provider = input.default_provider == null ? config.default_provider : normalizeOptionalProvider(input.default_provider);
   config.provider_priority = input.provider_priority == null ? config.provider_priority : normalizePriority(input.provider_priority);
+  config.extract_provider_priority = input.extract_provider_priority == null ? config.extract_provider_priority : normalizeExtractPriority(input.extract_provider_priority);
   config.fallback_provider = input.fallback_provider == null ? config.fallback_provider : normalizeOptionalProvider(input.fallback_provider);
   config.disabled_providers = input.disabled_providers == null ? config.disabled_providers : normalizeProviderList(input.disabled_providers);
   config.confidence_threshold = input.confidence_threshold == null ? config.confidence_threshold : normalizeThreshold(input.confidence_threshold);

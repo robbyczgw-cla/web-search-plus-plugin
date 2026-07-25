@@ -55,6 +55,7 @@ test("web_routing_config_plus shows defaults without leaking secrets", async () 
 
   assert.equal(payload.config.auto_routing, true);
   assert.equal(payload.config.default_provider, null);
+  assert.deepEqual(payload.config.extract_provider_priority.slice(0, 3), ["tavily", "exa", "linkup"]);
   assert.equal(payload.config.confidence_threshold, 0.4);
   assert.equal(JSON.stringify(payload).includes("serper-secret"), false);
   assert.equal(payload.config_path, `memory:${file}`);
@@ -68,6 +69,7 @@ test("web_routing_config_plus supports set/show/reset actions", async () => {
   await tool.execute("cfg-default", { action: "set_default_provider", provider: "tavily" });
   await tool.execute("cfg-auto", { action: "set_auto_routing", enabled: false });
   await tool.execute("cfg-priority", { action: "set_provider_priority", providers: ["brave", "serper"] });
+  await tool.execute("cfg-extract-priority", { action: "set_extract_provider_priority", providers: ["serper", "linkup"] });
   await tool.execute("cfg-fallback", { action: "set_fallback_provider", provider: "serper" });
   await tool.execute("cfg-disable", { action: "disable_provider", provider: "brave" });
   await tool.execute("cfg-enable", { action: "enable_provider", provider: "brave" });
@@ -77,6 +79,7 @@ test("web_routing_config_plus supports set/show/reset actions", async () => {
   assert.equal(show.config.default_provider, "tavily");
   assert.equal(show.config.auto_routing, false);
   assert.deepEqual(show.config.provider_priority.slice(0, 3), ["brave", "serper", "tavily"]);
+  assert.deepEqual(show.config.extract_provider_priority.slice(0, 4), ["serper", "linkup", "tavily", "exa"]);
   assert.equal(show.config.fallback_provider, "serper");
   assert.deepEqual(show.config.disabled_providers, []);
   assert.equal(show.config.confidence_threshold, 0.75);
@@ -84,6 +87,16 @@ test("web_routing_config_plus supports set/show/reset actions", async () => {
   const reset = JSON.parse((await tool.execute("cfg-reset", { action: "reset" })).content[0].text);
   assert.equal(reset.config.auto_routing, true);
   assert.equal(reset.backup_path, undefined);
+});
+
+test("web_routing_config_plus rejects search-only providers in extract priority", async () => {
+  const { file } = makeRoutingConfigPath();
+  const tool = withRegistered({ routingConfigPath: file }).get("web_routing_config_plus");
+  const response = await tool.execute("cfg-extract-invalid", {
+    action: "set_extract_provider_priority",
+    providers: ["brave"],
+  });
+  assert.match(response.content[0].text, /does not support extraction: brave/);
 });
 
 test("web_routing_config_plus rejects removed answer-style providers", async () => {

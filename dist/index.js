@@ -168,12 +168,14 @@ function maybePositiveInt(value) {
 
 // routing-config.ts
 var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "searxng", "keenable"];
+var DEFAULT_EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"];
 var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "parallel"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 2,
   auto_routing: true,
   default_provider: null,
   provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
+  extract_provider_priority: [...DEFAULT_EXTRACT_PROVIDER_PRIORITY],
   fallback_provider: null,
   disabled_providers: [],
   confidence_threshold: 0.4,
@@ -184,6 +186,7 @@ function cloneConfig(config) {
   return {
     ...config,
     provider_priority: [...config.provider_priority],
+    extract_provider_priority: [...config.extract_provider_priority],
     disabled_providers: [...config.disabled_providers],
     auto_allow: { ...config.auto_allow }
   };
@@ -227,6 +230,23 @@ function normalizePriority(values) {
   }
   return completed;
 }
+function normalizeExtractPriority(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new Error("Extract provider priority must be a non-empty array");
+  }
+  const requested = [];
+  for (const value of values) {
+    const provider = normalizeProviderName(value);
+    if (!DEFAULT_EXTRACT_PROVIDER_PRIORITY.includes(provider)) {
+      throw new Error(`Provider does not support extraction: ${provider}`);
+    }
+    if (!requested.includes(provider)) requested.push(provider);
+  }
+  for (const provider of DEFAULT_EXTRACT_PROVIDER_PRIORITY) {
+    if (!requested.includes(provider)) requested.push(provider);
+  }
+  return requested;
+}
 function normalizeAutoAllow(value) {
   const defaults = { ...DEFAULT_ROUTING_PREFERENCES.auto_allow };
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaults;
@@ -256,6 +276,7 @@ function validateRoutingPreferences(raw) {
   config.auto_routing = input.auto_routing == null ? config.auto_routing : Boolean(input.auto_routing);
   config.default_provider = input.default_provider == null ? config.default_provider : normalizeOptionalProvider(input.default_provider);
   config.provider_priority = input.provider_priority == null ? config.provider_priority : normalizePriority(input.provider_priority);
+  config.extract_provider_priority = input.extract_provider_priority == null ? config.extract_provider_priority : normalizeExtractPriority(input.extract_provider_priority);
   config.fallback_provider = input.fallback_provider == null ? config.fallback_provider : normalizeOptionalProvider(input.fallback_provider);
   config.disabled_providers = input.disabled_providers == null ? config.disabled_providers : normalizeProviderList(input.disabled_providers);
   config.confidence_threshold = input.confidence_threshold == null ? config.confidence_threshold : normalizeThreshold(input.confidence_threshold);
@@ -302,7 +323,7 @@ function resetRoutingPreferences(pluginConfig = {}) {
 // extract.ts
 import dns from "dns/promises";
 import net from "net";
-var EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"];
+var EXTRACT_PROVIDER_PRIORITY = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 var EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
   required: ["urls"],
@@ -730,7 +751,7 @@ async function extractSerper(urls, apiKey, _outputFormat = "markdown", _includeI
   }
   return { provider: "serper", results };
 }
-async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, runtimeConfig = {}, disabledProviders = []) {
+async function extractPlus(urls, provider = "auto", outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, runtimeConfig = {}, disabledProviders = [], providerPriority = EXTRACT_PROVIDER_PRIORITY) {
   const requestedProvider = provider || "auto";
   if (!Array.isArray(urls) || urls.length === 0) {
     return {
@@ -760,7 +781,11 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       routing: { requested_provider: requestedProvider }
     };
   }
-  const baseProviders = requestedProvider === "auto" ? EXTRACT_PROVIDER_PRIORITY : [requestedProvider, ...EXTRACT_PROVIDER_PRIORITY.filter((item) => item !== requestedProvider)];
+  const configuredPriority = [
+    ...providerPriority.filter((item) => EXTRACT_PROVIDER_PRIORITY.includes(item)),
+    ...EXTRACT_PROVIDER_PRIORITY.filter((item) => !providerPriority.includes(item))
+  ];
+  const baseProviders = requestedProvider === "auto" ? configuredPriority : [requestedProvider, ...configuredPriority.filter((item) => item !== requestedProvider)];
   const providers = baseProviders.filter((item) => item === requestedProvider || !disabledProviders.includes(item));
   const errors = [];
   for (const currentProvider of providers) {
@@ -1427,6 +1452,7 @@ var ROUTING_CONFIG_ACTIONS = [
   "set_default_provider",
   "set_auto_routing",
   "set_provider_priority",
+  "set_extract_provider_priority",
   "set_fallback_provider",
   "disable_provider",
   "enable_provider",
@@ -1440,7 +1466,7 @@ var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     action: { type: "string", enum: ROUTING_CONFIG_ACTIONS },
     provider: { type: "string", enum: [...SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto"), "none", "null"] },
     enabled: { type: "boolean", description: "Used by set_auto_routing. True enables auto routing, false switches provider:auto to strict default_provider mode." },
-    providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Priority order. Missing providers are appended in default order." },
+    providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Search or extraction priority order, depending on the selected action. Missing providers are appended in default order." },
     confidence_threshold: { type: "number", minimum: 0, maximum: 1 }
   }
 };
@@ -2858,7 +2884,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
             throw error2;
           }
         },
-        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers),
+        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers, routingConfig.extract_provider_priority),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null
@@ -3034,6 +3060,21 @@ function executeRoutingConfigAction(pluginConfig, params) {
       }
     }));
   }
+  if (action === "set_extract_provider_priority") {
+    if (!Array.isArray(params?.providers) || !params.providers.length) throw new Error("set_extract_provider_priority requires a non-empty providers array");
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      const requested = [...new Set(params.providers.map((value) => normalizeProviderName(value)))];
+      for (const provider of requested) {
+        if (!DEFAULT_EXTRACT_PROVIDER_PRIORITY.includes(provider)) {
+          throw new Error(`Provider does not support extraction: ${provider}`);
+        }
+      }
+      config.extract_provider_priority = [
+        ...requested,
+        ...DEFAULT_EXTRACT_PROVIDER_PRIORITY.filter((provider) => !requested.includes(provider))
+      ];
+    }));
+  }
   if (action === "set_fallback_provider") {
     return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
       const provider = String(params?.provider || "").trim().toLowerCase();
@@ -3065,7 +3106,7 @@ function register(api) {
   api.registerTool(
     {
       name: "web_search_plus",
-      description: "Search the web with intelligent multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity, You.com, and SearXNG. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
+      description: "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, and Keenable. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id, params) {
         try {
@@ -3121,7 +3162,8 @@ function register(api) {
             Boolean(params?.include_raw_html),
             Boolean(params?.render_js),
             runtimeConfig,
-            loadRoutingPreferences(pluginConfig).config.disabled_providers
+            loadRoutingPreferences(pluginConfig).config.disabled_providers,
+            loadRoutingPreferences(pluginConfig).config.extract_provider_priority
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error2) {

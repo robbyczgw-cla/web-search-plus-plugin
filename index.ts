@@ -3,7 +3,7 @@ import dns from "dns/promises";
 import net from "net";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
-import { DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
+import { DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
@@ -95,6 +95,7 @@ const ROUTING_CONFIG_ACTIONS = [
   "set_default_provider",
   "set_auto_routing",
   "set_provider_priority",
+  "set_extract_provider_priority",
   "set_fallback_provider",
   "disable_provider",
   "enable_provider",
@@ -109,7 +110,7 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     action: { type: "string", enum: ROUTING_CONFIG_ACTIONS },
     provider: { type: "string", enum: [...SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto"), "none", "null"] },
     enabled: { type: "boolean", description: "Used by set_auto_routing. True enables auto routing, false switches provider:auto to strict default_provider mode." },
-    providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Priority order. Missing providers are appended in default order." },
+    providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Search or extraction priority order, depending on the selected action. Missing providers are appended in default order." },
     confidence_threshold: { type: "number", minimum: 0, maximum: 1 },
   },
 };
@@ -1450,7 +1451,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
             throw error;
           }
         },
-        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers),
+        extractUrls: (urls) => extractPlus(urls, "auto", "markdown", false, false, false, runtimeConfig, routingConfig.disabled_providers, routingConfig.extract_provider_priority),
         maxResults: count,
         maxExtractUrls: researchExtractCount,
         timeBudgetSeconds: Number.isFinite(researchTimeBudget) && researchTimeBudget > 0 ? researchTimeBudget : null,
@@ -1651,6 +1652,21 @@ function executeRoutingConfigAction(pluginConfig: Record<string, any>, params: R
       }
     }));
   }
+  if (action === "set_extract_provider_priority") {
+    if (!Array.isArray(params?.providers) || !params.providers.length) throw new Error("set_extract_provider_priority requires a non-empty providers array");
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      const requested = [...new Set(params.providers.map((value: string) => normalizeProviderName(value)))];
+      for (const provider of requested) {
+        if (!(DEFAULT_EXTRACT_PROVIDER_PRIORITY as ProviderName[]).includes(provider)) {
+          throw new Error(`Provider does not support extraction: ${provider}`);
+        }
+      }
+      config.extract_provider_priority = [
+        ...requested,
+        ...DEFAULT_EXTRACT_PROVIDER_PRIORITY.filter((provider) => !requested.includes(provider)),
+      ] as typeof config.extract_provider_priority;
+    }));
+  }
   if (action === "set_fallback_provider") {
     return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
       const provider = String(params?.provider || "").trim().toLowerCase();
@@ -1684,7 +1700,7 @@ export function register(api: any) {
     {
       name: "web_search_plus",
       description:
-        "Search the web with intelligent multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Perplexity, You.com, and SearXNG. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
+        "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, and Keenable. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id: string, params: ToolParams) {
         try {
@@ -1745,6 +1761,7 @@ export function register(api: any) {
             Boolean(params?.render_js),
             runtimeConfig,
             loadRoutingPreferences(pluginConfig).config.disabled_providers,
+            loadRoutingPreferences(pluginConfig).config.extract_provider_priority,
           );
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error: any) {

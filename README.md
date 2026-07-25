@@ -151,6 +151,8 @@ Classes:
 Default conservative auto pool: You.com, Serper, Brave, Exa, Firecrawl, Tavily, Linkup.
 Guarded providers require `auto_allow=true` in routing preferences: SerpBase, Querit, Parallel. Brave is in the default Classic auto pool for independent-index source diversity; operators can still set `auto_allow.brave=false`.
 
+Search `provider_priority` and extraction `extract_provider_priority` are independent. Partial extraction lists are completed in the public Tavily-first order, and can be updated with `web_routing_config_plus(action="set_extract_provider_priority", providers=[...])`.
+
 Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, and `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source) for canonical-source routing classes.
 
 Auto routing additionally learns from recent provider behavior: every call records latency, result volume, and errors into an in-memory rolling window, and routing scores get a bounded (±1.0) adjustment (`routing.adaptive_adjustments`) once enough fresh samples exist — enough to break ties, never enough to override a clear query-class winner.

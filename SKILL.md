@@ -66,6 +66,8 @@ Auto routing is class-aware and benchmark-backed. Key classes: multilingual/curr
 Default auto pool: You.com, Serper, Brave, Exa, Firecrawl, Tavily, Linkup.
 Guarded providers require `auto_allow[provider]=true` for auto routing: SerpBase, Querit, Parallel. Brave is auto-allowed by default for independent-index source diversity and can still be disabled explicitly.
 
+`provider_priority` controls search only. `extract_provider_priority` independently controls `web_extract_plus(provider="auto")`; missing extraction providers are appended in the stable Tavily-first default order.
+
 Every search routing object exposes `language_hint`, `routing_class`, and `routing_policy`. Pass `quality_report: true` for provider scores, result quality hints, fallback diagnostics, and `authority_signals` (canonical/demoted domain hits and primary-source top-result flag). Recent provider latency/success behavior feeds bounded adaptive score adjustments (`routing.adaptive_adjustments`).
 
 Known SEO mirror/scraper domains are filtered from results and one domain is capped at two head slots (`metadata.result_filter`); `site:`/`include_domains` constraints bypass both. `freshness: day|week|month|year` applies native recency filters where supported (`metadata.freshness`), `search_type: news` uses Serper's native news vertical (`metadata.search_type`), and `localeCountry`/`localeLanguage` steer provider locale (`metadata.locale`).
