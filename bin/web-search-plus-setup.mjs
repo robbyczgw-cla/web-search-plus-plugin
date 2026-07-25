@@ -17,6 +17,7 @@ const PROVIDERS = [
   { name: "serpbase", field: "serpbaseApiKey", capability: "Google-style alternate search; guarded in auto routing", starter: false, guarded: true },
   { name: "searxng", field: "searxngInstanceUrl", capability: "self-hosted privacy metasearch", starter: false, guarded: false },
   { name: "keenable", field: "keenableApiKey", capability: "independent web index search and extraction; keyless public tier via keenableAllowPublic=true", starter: false, guarded: false },
+  { name: "hound", field: "houndMcpUrl", capability: "local MCP metasearch and browser-backed extraction; explicit-only by default", starter: false, guarded: true },
 ];
 
 const PRESETS = {

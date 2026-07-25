@@ -2,7 +2,7 @@
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
   "version": "3.2.0",
-  "description": "One clean set of source-only web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, You.com, SearXNG, and Keenable.",
+  "description": "One clean set of source-only web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and a local Hound MCP sidecar.",
   "contracts": {
     "tools": [
       "web_search_plus",
@@ -95,6 +95,22 @@
       "keenableAllowPublic": {
         "type": "boolean",
         "description": "Opt-in: allow Keenable's keyless public tier. Queries and fetched URLs are sent to an unauthenticated shared service (~1000 req/hour, no SLA). Off by default."
+      },
+      "houndMcpUrl": {
+        "type": "string",
+        "description": "Loopback-only Hound Streamable HTTP MCP endpoint, exactly http://127.0.0.1:<port>/mcp or http://[::1]:<port>/mcp."
+      },
+      "houndTimeoutSeconds": {
+        "type": "number",
+        "description": "Hound MCP call deadline in seconds (default 120, range 5-180)."
+      },
+      "houndMaxResponseBytes": {
+        "type": "number",
+        "description": "Maximum bytes accepted from one Hound MCP response (default 2097152, hard maximum 16777216)."
+      },
+      "houndMaxContentChars": {
+        "type": "number",
+        "description": "Maximum content characters requested from Hound smart_fetch per URL (default 40000, range 500-200000)."
       },
       "extractAllowPrivateUrls": {
         "type": "boolean",
@@ -229,6 +245,26 @@
     "keenableAllowPublic": {
       "label": "Allow Keenable keyless public tier",
       "description": "Sends queries and fetched URLs to Keenable's unauthenticated shared service. Off by default.",
+      "sensitive": false
+    },
+    "houndMcpUrl": {
+      "label": "Hound MCP URL",
+      "placeholder": "http://127.0.0.1:8765/mcp",
+      "sensitive": false
+    },
+    "houndTimeoutSeconds": {
+      "label": "Hound timeout seconds",
+      "placeholder": "120",
+      "sensitive": false
+    },
+    "houndMaxResponseBytes": {
+      "label": "Hound response byte limit",
+      "placeholder": "2097152",
+      "sensitive": false
+    },
+    "houndMaxContentChars": {
+      "label": "Hound extract character request",
+      "placeholder": "40000",
       "sensitive": false
     },
     "extractAllowPrivateUrls": {

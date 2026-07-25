@@ -8,6 +8,7 @@ import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
 import { scoreDiversity } from "./diversity.ts";
+import { searchHound } from "./hound-provider.ts";
 import { __resetProviderStatsForTests, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
 import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
 
@@ -32,7 +33,7 @@ export const RATE_LIMIT_MAX_ATTEMPTS = 2;
 // the cooldown ladder instead of blocking the current request.
 export const MAX_RETRY_AFTER_WAIT_SECONDS = 30;
 
-const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "auto"];
+const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound", "auto"];
 
 const PARAMETERS_SCHEMA = {
   type: "object",
@@ -119,7 +120,7 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
 };
 
 type Json = Record<string, any>;
-const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable"];
+const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound"];
 type ToolParams = {
   query: string;
   provider?: ProviderName | "auto";
@@ -434,6 +435,7 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
     keenable: runtimeConfig.keenableApiKey,
+    hound: runtimeConfig.houndMcpUrl,
   };
   return keyMap[provider];
 }
@@ -453,6 +455,7 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
       if (runtimeConfig.keenableAllowPublic === true) return "";
       throw new ProviderConfigError("Keenable requires an API key (pluginConfig.keenableApiKey) or the opt-in public tier (pluginConfig.keenableAllowPublic=true)");
     }
+    if (provider === "hound") throw new ProviderConfigError("Missing Hound MCP endpoint (pluginConfig.houndMcpUrl)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -489,6 +492,7 @@ export const PROVIDER_FRESHNESS_FORMATS: Record<string, Record<string, string>> 
   you: { day: "day", week: "week", month: "month", year: "year" },
   // searchSearxng: time_range query param
   searxng: { day: "day", week: "week", month: "month", year: "year" },
+  hound: { day: "day", week: "week", month: "month", year: "year" },
 };
 
 export function normalizeFreshness(value?: string | null): string | null {
@@ -1430,6 +1434,22 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange, locale);
       if (p === "keenable") return searchKeenable(query, key || undefined, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
+      if (p === "hound") {
+        if (searchType !== "search") throw new ProviderConfigError("Hound supports search_type=search only");
+        return searchHound(
+          query,
+          key,
+          count,
+          timeRange,
+          includeDomains,
+          excludeDomains,
+          undefined,
+          {
+            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
+            maxResponseBytes: runtimeConfig.houndMaxResponseBytes,
+          },
+        ) as Promise<SearchResponse>;
+      }
       return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
     };
 
@@ -1744,7 +1764,7 @@ export function register(api: any) {
     {
       name: "web_search_plus",
       description:
-        "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, and Keenable. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
+        "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and the local Hound MCP sidecar. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id: string, params: ToolParams) {
         try {

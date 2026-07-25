@@ -16,6 +16,10 @@ export type RuntimeConfig = {
   // Opt-in: routes queries and fetched URLs to Keenable's unauthenticated
   // public endpoints (~1000 req/hour shared, no SLA). Off by default.
   keenableAllowPublic?: boolean;
+  houndMcpUrl?: string;
+  houndTimeoutSeconds?: number;
+  houndMaxResponseBytes?: number;
+  houndMaxContentChars?: number;
   // Opt-in: allow web_extract_plus to target private/internal URLs (trusted
   // intranet extraction). Off by default.
   extractAllowPrivateUrls?: boolean;
@@ -61,6 +65,10 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : undefined,
     keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
     keenableAllowPublic: pluginConfig?.keenableAllowPublic === true ? true : undefined,
+    houndMcpUrl: maybeString(pluginConfig?.houndMcpUrl),
+    houndTimeoutSeconds: maybePositiveInt(pluginConfig?.houndTimeoutSeconds),
+    houndMaxResponseBytes: maybePositiveInt(pluginConfig?.houndMaxResponseBytes),
+    houndMaxContentChars: maybePositiveInt(pluginConfig?.houndMaxContentChars),
     extractAllowPrivateUrls: pluginConfig?.extractAllowPrivateUrls === true ? true : undefined,
     extractCharLimit: Number.isFinite(Number(pluginConfig?.extractCharLimit)) && Number(pluginConfig?.extractCharLimit) > 0
       ? Math.max(1000, Math.floor(Number(pluginConfig.extractCharLimit)))

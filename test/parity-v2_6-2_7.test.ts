@@ -16,10 +16,10 @@ test.beforeEach(() => {
   __resetRoutingPreferencesForTests();
 });
 
-test("keenable is registered as lowest-priority provider", () => {
-  assert.equal(DEFAULT_PROVIDER_PRIORITY[DEFAULT_PROVIDER_PRIORITY.length - 1], "keenable");
-  // Serper's webpage scraper sits after keenable as the extraction last resort.
-  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY.slice(-2), ["keenable", "serper"]);
+test("hound extends the low-priority provider tails without displacing keenable", () => {
+  assert.deepEqual(DEFAULT_PROVIDER_PRIORITY.slice(-2), ["keenable", "hound"]);
+  // Hound is guarded and comes after the existing Keenable/Serper extraction fallbacks.
+  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY.slice(-3), ["keenable", "serper", "hound"]);
 });
 
 test("keyed keenable search uses the authenticated endpoint", async (t) => {

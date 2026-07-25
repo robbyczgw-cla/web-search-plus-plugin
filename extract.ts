@@ -3,6 +3,7 @@ import net from "net";
 import type { RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_EXTRACT_PROVIDER_PRIORITY, type ExtractProviderName } from "./routing-config.ts";
 import { selectSpans, type SemanticSpan } from "./span-extraction.ts";
+import { extractHound } from "./hound-provider.ts";
 
 type Json = Record<string, any>;
 
@@ -67,7 +68,7 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
       description: "Force a provider, or use auto fallback routing (default: auto)",
     },
     format: {
@@ -186,6 +187,7 @@ function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeC
     parallel: runtimeConfig.parallelApiKey,
     keenable: runtimeConfig.keenableApiKey,
     serper: runtimeConfig.serperApiKey,
+    hound: runtimeConfig.houndMcpUrl,
   };
   return keyMap[provider];
 }
@@ -837,6 +839,20 @@ export async function extractPlus(
         result = await extractKeenable(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
       } else if (currentProvider === "serper") {
         result = await extractSerper(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "hound") {
+        result = await extractHound(
+          cleanedUrls as string[],
+          providerCredential!,
+          outputFormat,
+          includeImages,
+          includeRawHtml,
+          renderJs,
+          {
+            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
+            maxResponseBytes: runtimeConfig.houndMaxResponseBytes,
+            maxContentChars: runtimeConfig.houndMaxContentChars,
+          },
+        );
       } else {
         result = await extractYou(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       }

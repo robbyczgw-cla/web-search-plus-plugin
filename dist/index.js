@@ -153,6 +153,10 @@ function getRuntimeConfig(pluginConfig) {
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0,
     keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
     keenableAllowPublic: pluginConfig?.keenableAllowPublic === true ? true : void 0,
+    houndMcpUrl: maybeString(pluginConfig?.houndMcpUrl),
+    houndTimeoutSeconds: maybePositiveInt(pluginConfig?.houndTimeoutSeconds),
+    houndMaxResponseBytes: maybePositiveInt(pluginConfig?.houndMaxResponseBytes),
+    houndMaxContentChars: maybePositiveInt(pluginConfig?.houndMaxContentChars),
     extractAllowPrivateUrls: pluginConfig?.extractAllowPrivateUrls === true ? true : void 0,
     extractCharLimit: Number.isFinite(Number(pluginConfig?.extractCharLimit)) && Number(pluginConfig?.extractCharLimit) > 0 ? Math.max(1e3, Math.floor(Number(pluginConfig.extractCharLimit))) : void 0,
     extractMaxUrls: maybePositiveInt(pluginConfig?.extractMaxUrls),
@@ -170,9 +174,9 @@ function maybePositiveInt(value) {
 }
 
 // routing-config.ts
-var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "searxng", "keenable"];
-var DEFAULT_EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper"];
-var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "parallel"];
+var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "searxng", "keenable", "hound"];
+var DEFAULT_EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "hound"];
+var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "parallel", "hound"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 2,
   profile: "standard",
@@ -496,6 +500,294 @@ function selectSpans(text, query, options = {}) {
   return selected.map(({ candidate, score }) => ({ ...candidate, score }));
 }
 
+// hound-transport.ts
+var HoundTransportError = class extends Error {
+  constructor(code = "hound_mcp_unavailable") {
+    super(code);
+    this.name = "HoundTransportError";
+  }
+};
+function validateHoundEndpoint(value) {
+  const endpoint = String(value || "").trim();
+  if (!endpoint || endpoint.includes("?") || endpoint.includes("#")) throw new Error("hound_endpoint_invalid");
+  let parsed;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new Error("hound_endpoint_invalid");
+  }
+  if (parsed.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(parsed.hostname) || !parsed.port || parsed.pathname !== "/mcp" || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("hound_endpoint_invalid");
+  }
+  return endpoint;
+}
+function parseWirePayload(text) {
+  const candidates2 = text.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).filter(Boolean);
+  const payloadText = candidates2.length ? candidates2[candidates2.length - 1] : text.trim();
+  if (!payloadText) return {};
+  const payload = JSON.parse(payloadText);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("invalid_mcp_payload");
+  return payload;
+}
+async function readBoundedResponse(response, maxResponseBytes) {
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) throw new Error("hound_response_too_large");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > maxResponseBytes) throw new Error("hound_response_too_large");
+  if (!response.ok && response.status !== 202) throw new Error(`hound_http_${response.status}`);
+  return parseWirePayload(new TextDecoder().decode(bytes));
+}
+function toolPayload(result) {
+  if (result.isError === true) throw new Error("hound_mcp_call_failed");
+  if (result.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)) {
+    return result.structuredContent;
+  }
+  for (const item of Array.isArray(result.content) ? result.content : []) {
+    if (item?.type !== "text" || typeof item.text !== "string") continue;
+    try {
+      const parsed = JSON.parse(item.text);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+    }
+  }
+  throw new Error("hound_mcp_contract_failed");
+}
+async function callHoundTool(endpointValue, tool, argumentsValue, options = {}) {
+  const endpoint = validateHoundEndpoint(endpointValue);
+  const timeoutSeconds = Math.min(180, Math.max(5, Math.floor(options.timeoutSeconds ?? 120)));
+  const maxResponseBytes = Math.min(16 * 1024 * 1024, Math.max(1024, Math.floor(options.maxResponseBytes ?? 2 * 1024 * 1024)));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1e3);
+  timer.unref?.();
+  let sessionId = "";
+  let requestId = 1;
+  const request = async (body, includeSession = false) => {
+    const headers = {
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json"
+    };
+    if (includeSession && sessionId) {
+      headers["Mcp-Session-Id"] = sessionId;
+      headers["MCP-Protocol-Version"] = "2025-03-26";
+    }
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      redirect: "error",
+      signal: controller.signal
+    });
+    const returnedSession = response.headers.get("mcp-session-id");
+    if (returnedSession) sessionId = returnedSession;
+    return readBoundedResponse(response, maxResponseBytes);
+  };
+  try {
+    const initialized = await request({
+      jsonrpc: "2.0",
+      id: requestId++,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "web-search-plus", version: "3.2.0" }
+      }
+    });
+    if (initialized.error || !initialized.result) throw new Error("hound_mcp_initialize_failed");
+    await request({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }, true);
+    const called = await request({
+      jsonrpc: "2.0",
+      id: requestId,
+      method: "tools/call",
+      params: { name: tool, arguments: argumentsValue }
+    }, true);
+    if (called.error || !called.result || typeof called.result !== "object") throw new Error("hound_mcp_call_failed");
+    return toolPayload(called.result);
+  } catch (error2) {
+    if (error2 instanceof HoundTransportError) throw error2;
+    throw new HoundTransportError();
+  } finally {
+    clearTimeout(timer);
+    if (sessionId) {
+      try {
+        await fetch(endpoint, {
+          method: "DELETE",
+          headers: {
+            "Mcp-Session-Id": sessionId,
+            "MCP-Protocol-Version": "2025-03-26"
+          },
+          redirect: "error"
+        });
+      } catch {
+      }
+    }
+  }
+}
+
+// hound-provider.ts
+function boundedInt(value, fallback, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, Math.floor(value ?? fallback)));
+}
+function cleanStrings(value, limit = 20) {
+  return Array.isArray(value) ? value.slice(0, limit).filter((item) => typeof item === "string" && !!item) : [];
+}
+function textContent(value) {
+  if (typeof value === "string") return value;
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string").join("\n") : "";
+}
+function domainMatches(hostname, domain) {
+  const normalized = String(domain || "").trim().toLowerCase().replace(/^\*\./, "").replace(/\.$/, "");
+  return !!normalized && (hostname === normalized || hostname.endsWith(`.${normalized}`));
+}
+function urlAllowed(url, includeDomains, excludeDomains) {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+    if (!["http:", "https:"].includes(parsed.protocol) || !hostname) return false;
+    if (excludeDomains.some((domain) => domainMatches(hostname, domain))) return false;
+    return !includeDomains.length || includeDomains.some((domain) => domainMatches(hostname, domain));
+  } catch {
+    return false;
+  }
+}
+async function searchHound(query, endpoint, maxResults, freshness, includeDomains = [], excludeDomains = [], locale, options = {}) {
+  const houndOptions = {
+    max_results: boundedInt(maxResults, 6, 1, 50),
+    cache_ttl: 0
+  };
+  if (["day", "week", "month", "year"].includes(String(freshness || ""))) houndOptions.freshness = freshness;
+  if (includeDomains.length === 1) houndOptions.site = includeDomains[0];
+  if (excludeDomains.length) houndOptions.exclude_sites = includeDomains.length ? excludeDomains : excludeDomains;
+  if (locale?.language) houndOptions.language = locale.language;
+  if (locale?.country) houndOptions.region = locale.language ? `${locale.country}-${locale.language}` : locale.country;
+  const payload = await callHoundTool(endpoint, "mcp_smart_search", {
+    query,
+    options: houndOptions
+  }, options);
+  if (!Array.isArray(payload.results)) throw new Error("hound_search_contract_failed");
+  if (payload.error && !payload.results.length) throw new Error("hound_search_failed");
+  const results = payload.results.filter((item) => item && typeof item.url === "string" && urlAllowed(item.url, includeDomains, excludeDomains)).slice(0, maxResults).map((item, index) => ({
+    title: String(item.title || ""),
+    url: item.url,
+    snippet: String(item.snippet || ""),
+    score: Number.isFinite(Number(item.relevance_score)) ? Number(item.relevance_score) : Number((1 - index * 0.05).toFixed(3)),
+    position: Number.isFinite(Number(item.position)) ? Number(item.position) : void 0,
+    source: String(item.source || ""),
+    fetch_relevance: String(item.fetch_relevance || ""),
+    engines_consensus: String(item.engines_consensus || "")
+  }));
+  return {
+    provider: "hound",
+    query,
+    results,
+    images: [],
+    answer: results[0]?.snippet || "",
+    metadata: {
+      engines_used: cleanStrings(payload.engines_used),
+      engine_blocked: cleanStrings(payload.engine_blocked),
+      rerank_mode: String(payload.rerank_mode || ""),
+      duration_ms: Number.isFinite(Number(payload.duration_ms)) ? Number(payload.duration_ms) : 0,
+      local_sidecar: true
+    }
+  };
+}
+function fetchArguments(url, outputFormat, includeImages, renderJs, maxContentChars) {
+  return {
+    urls: [url],
+    extraction_type: outputFormat,
+    cache_ttl: 0,
+    max_content_chars: maxContentChars,
+    options: { include_media: includeImages },
+    ...renderJs ? { force_fetcher: "stealthy" } : {}
+  };
+}
+function singleFetchItem(payload) {
+  return Array.isArray(payload.results) && payload.results.length === 1 && payload.results[0] && typeof payload.results[0] === "object" ? payload.results[0] : {};
+}
+function projectFetchItem(item, requestedUrl) {
+  const url = typeof item.url === "string" ? item.url : requestedUrl;
+  const status = Number.isFinite(Number(item.status)) ? Number(item.status) : 0;
+  const content = textContent(item.content);
+  if (item.error || item.content_ok !== true || status >= 400 || !content.trim()) {
+    return {
+      url,
+      title: "",
+      content: "",
+      raw_content: "",
+      provider: "hound",
+      error: "hound_fetch_failed",
+      metadata: { status }
+    };
+  }
+  const metadata = item.metadata && typeof item.metadata === "object" ? item.metadata : {};
+  return {
+    url,
+    title: String(metadata.title || ""),
+    content,
+    raw_content: content,
+    provider: "hound",
+    images: cleanStrings(item.media).map((imageUrl) => ({ url: imageUrl })),
+    metadata: {
+      status,
+      fetcher: String(item.fetcher_used || ""),
+      page_type: String(item.page_type || ""),
+      source_type: String(item.source_type || ""),
+      is_official: item.is_official === true,
+      fetched_at: String(item.fetched_at || ""),
+      duration_ms: Number.isFinite(Number(item.duration_ms)) ? Number(item.duration_ms) : 0
+    }
+  };
+}
+async function extractHound(urls, endpoint, outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, options = {}) {
+  const maxContentChars = boundedInt(options.maxContentChars, 4e4, 500, 2e5);
+  const results = [];
+  for (const requestedUrl of urls) {
+    try {
+      const payload = await callHoundTool(
+        endpoint,
+        "mcp_smart_fetch",
+        fetchArguments(requestedUrl, outputFormat, includeImages, renderJs, maxContentChars),
+        options
+      );
+      const result = projectFetchItem(singleFetchItem(payload), requestedUrl);
+      if (includeRawHtml && !result.error) {
+        if (outputFormat === "html") {
+          result.raw_html = result.content;
+        } else {
+          try {
+            const rawPayload = await callHoundTool(
+              endpoint,
+              "mcp_smart_fetch",
+              fetchArguments(requestedUrl, "html", false, renderJs, maxContentChars),
+              options
+            );
+            const rawItem = singleFetchItem(rawPayload);
+            const rawStatus = Number.isFinite(Number(rawItem.status)) ? Number(rawItem.status) : 0;
+            const rawContent = textContent(rawItem.content);
+            if (rawItem.error || rawItem.content_ok !== true || rawStatus >= 400 || !rawContent.trim()) {
+              result.raw_error = "hound_raw_html_failed";
+            } else {
+              result.raw_html = rawContent;
+            }
+          } catch {
+            result.raw_error = "hound_raw_html_failed";
+          }
+        }
+      }
+      results.push(result);
+    } catch {
+      results.push({
+        url: requestedUrl,
+        title: "",
+        content: "",
+        raw_content: "",
+        provider: "hound",
+        error: "hound_fetch_failed"
+      });
+    }
+  }
+  return { provider: "hound", results };
+}
+
 // extract.ts
 var EXTRACT_PROVIDER_PRIORITY = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 var EXTRACT_PARAMETERS_SCHEMA = {
@@ -505,7 +797,7 @@ var EXTRACT_PARAMETERS_SCHEMA = {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract" },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
       description: "Force a provider, or use auto fallback routing (default: auto)"
     },
     format: {
@@ -607,7 +899,8 @@ function getExtractApiKey(provider, runtimeConfig) {
     you: runtimeConfig.youApiKey,
     parallel: runtimeConfig.parallelApiKey,
     keenable: runtimeConfig.keenableApiKey,
-    serper: runtimeConfig.serperApiKey
+    serper: runtimeConfig.serperApiKey,
+    hound: runtimeConfig.houndMcpUrl
   };
   return keyMap[provider];
 }
@@ -1087,6 +1380,20 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         result = await extractKeenable(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
       } else if (currentProvider === "serper") {
         result = await extractSerper(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+      } else if (currentProvider === "hound") {
+        result = await extractHound(
+          cleanedUrls,
+          providerCredential,
+          outputFormat,
+          includeImages,
+          includeRawHtml,
+          renderJs,
+          {
+            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
+            maxResponseBytes: runtimeConfig.houndMaxResponseBytes,
+            maxContentChars: runtimeConfig.houndMaxContentChars
+          }
+        );
       } else {
         result = await extractYou(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }
@@ -1949,7 +2256,7 @@ var TRANSIENT_HTTP_CODES = /* @__PURE__ */ new Set([408, 425, 429, 500, 502, 503
 var FAILURE_DECAY_SECONDS = 1800;
 var RATE_LIMIT_MAX_ATTEMPTS = 2;
 var MAX_RETRY_AFTER_WAIT_SECONDS = 30;
-var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "auto"];
+var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound", "auto"];
 var PARAMETERS_SCHEMA = {
   type: "object",
   required: ["query"],
@@ -2031,7 +2338,7 @@ var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     profile: { type: "string", enum: ["standard", "self_hosted"] }
   }
 };
-var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable"];
+var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound"];
 var ProviderConfigError = class extends Error {
 };
 var ProviderRequestError = class extends Error {
@@ -2273,7 +2580,8 @@ function getApiKey(provider, runtimeConfig) {
     searxng: runtimeConfig.searxngInstanceUrl,
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
-    keenable: runtimeConfig.keenableApiKey
+    keenable: runtimeConfig.keenableApiKey,
+    hound: runtimeConfig.houndMcpUrl
   };
   return keyMap[provider];
 }
@@ -2289,6 +2597,7 @@ function validateApiKey(provider, runtimeConfig) {
       if (runtimeConfig.keenableAllowPublic === true) return "";
       throw new ProviderConfigError("Keenable requires an API key (pluginConfig.keenableApiKey) or the opt-in public tier (pluginConfig.keenableAllowPublic=true)");
     }
+    if (provider === "hound") throw new ProviderConfigError("Missing Hound MCP endpoint (pluginConfig.houndMcpUrl)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -2313,7 +2622,8 @@ var PROVIDER_FRESHNESS_FORMATS = {
   // searchYou: freshness query param (native values match the unified ones)
   you: { day: "day", week: "week", month: "month", year: "year" },
   // searchSearxng: time_range query param
-  searxng: { day: "day", week: "week", month: "month", year: "year" }
+  searxng: { day: "day", week: "week", month: "month", year: "year" },
+  hound: { day: "day", week: "week", month: "month", year: "year" }
 };
 function normalizeFreshness(value) {
   if (value == null) return null;
@@ -3419,6 +3729,22 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
       if (p === "you") return searchYou(query, key, count, timeRange, locale);
       if (p === "keenable") return searchKeenable(query, key || void 0, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
+      if (p === "hound") {
+        if (searchType !== "search") throw new ProviderConfigError("Hound supports search_type=search only");
+        return searchHound(
+          query,
+          key,
+          count,
+          timeRange,
+          includeDomains,
+          excludeDomains,
+          void 0,
+          {
+            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
+            maxResponseBytes: runtimeConfig.houndMaxResponseBytes
+          }
+        );
+      }
       return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
     };
     if (params.mode === "research") {
@@ -3703,7 +4029,7 @@ function register(api) {
   api.registerTool(
     {
       name: "web_search_plus",
-      description: "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, and Keenable. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
+      description: "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and the local Hound MCP sidecar. Auto-selects the best provider, reranks canonical sources, caches results, retries transient failures, and falls back across providers. mode=research queries multiple providers concurrently and extracts top sources for grounding.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id, params) {
         try {
