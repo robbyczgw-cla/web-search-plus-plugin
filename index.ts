@@ -4,7 +4,7 @@ import net from "net";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
 import { applyRoutingProfile, DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
-import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential, readCachedExtractContent } from "./extract.ts";
+import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential, isExtractProviderAvailable, readCachedExtractContent } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
 import { scoreDiversity } from "./diversity.ts";
@@ -13,6 +13,7 @@ import { __resetProviderStatsForTests, getProviderHealthSnapshot, performanceAdj
 import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
 import { preflightResearchFanout } from "./budget-preflight.ts";
 import { getShadowQualitySnapshot, recordShadowQualityObservation } from "./shadow-quality.ts";
+import { saveExtractBenchmark } from "./extract-benchmark.ts";
 
 export { deduplicateResultsAcrossProviders } from "./research.ts";
 export { CANONICAL_DOMAIN_RULES, buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
@@ -1792,6 +1793,36 @@ export function register(api: any) {
       parameters: { type: "object", properties: {} },
       async execute() {
         return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot() }) }] };
+      },
+    },
+    { optional: true },
+  );
+
+  api.registerTool(
+    {
+      name: "web_extract_benchmark_plus",
+      description: "Explicit opt-in extraction benchmark. Never runs automatically; makes at most max_provider_calls (1-3) direct provider calls, bypasses the response cache, and returns a process-local priority recommendation. Hound remains excluded unless auto_allow.hound=true.",
+      parameters: { type: "object", required: ["urls"], properties: { urls: { type: "array", minItems: 1, maxItems: 3, items: { type: "string" } }, max_provider_calls: { type: "integer", minimum: 1, maximum: 3 } } },
+      async execute(_id: string, params: any) {
+        try {
+          const pluginConfig = (api.pluginConfig ?? {}) as Record<string, any>;
+          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const routing = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
+          const maxCalls = Math.max(1, Math.min(3, Math.floor(Number(params?.max_provider_calls ?? 3))));
+          const candidates = routing.extract_provider_priority.filter((provider) => !routing.disabled_providers.includes(provider) && routing.auto_allow[provider] !== false && isExtractProviderAvailable(provider, runtimeConfig)).slice(0, maxCalls);
+          const attempts: Json[] = [];
+          for (const provider of candidates) {
+            const startedAt = Date.now();
+            const response = await extractPlus(params.urls, provider, "markdown", false, false, false, runtimeConfig, routing.disabled_providers, routing.extract_provider_priority, { autoAllow: routing.auto_allow, strictProvider: true, cacheBypass: true });
+            attempts.push({ provider, latency_ms: Date.now() - startedAt, status: response.error ? "failed" : "success", result_count: response.results.length, error: response.error });
+          }
+          const priority_recommendation = attempts.filter((attempt) => attempt.status === "success" && attempt.result_count > 0).sort((left, right) => left.latency_ms - right.latency_ms).map((attempt) => attempt.provider);
+          const result = { scope: "process_local", explicit_opt_in: true, max_provider_calls: maxCalls, provider_calls_made: attempts.length, hound_auto_allow: routing.auto_allow.hound === true, attempts, priority_recommendation };
+          saveExtractBenchmark(result);
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
+        } catch (error: any) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };
+        }
       },
     },
     { optional: true },

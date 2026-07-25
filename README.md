@@ -92,6 +92,8 @@ The same tool includes passive shadow-quality aggregates from completed successf
 
 Use `routing_override_provider` on `web_search_plus` or `web_extract_plus` to force a configured provider for one call and disable automatic selection. The response's `routing.override_provider` makes that override explicit.
 
+`web_extract_benchmark_plus` is the only way to benchmark extraction providers. It is never automatic, has a hard limit of one to three provider calls, bypasses the cache, and returns a process-local recommended priority. Hound is excluded unless its existing `auto_allow` gate is enabled.
+
 Use explicit OpenClaw plugin config fields. The runtime uses only plugin config fields for credentials.
 
 ### Search provider fields

@@ -293,6 +293,10 @@ export function hasAnyExtractProviderCredential(runtimeConfig: RuntimeConfig): b
   return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig));
 }
 
+export function isExtractProviderAvailable(provider: ExtractProviderName, runtimeConfig: RuntimeConfig): boolean {
+  return Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig);
+}
+
 // --- Private/internal extraction target guard (SSRF) -----------------------
 // Rejects target URLs that point at loopback, RFC1918, CGNAT/shared-address,
 // link-local, ULA, mapped-private, multicast, unspecified, or cloud-metadata
@@ -641,6 +645,8 @@ export type ExtractContextOptions = {
   spansQuery?: string;
   autoAllow?: Partial<Record<ExtractProviderName, boolean>>;
   deadlineSeconds?: number;
+  strictProvider?: boolean;
+  cacheBypass?: boolean;
 };
 
 function normalizedCodepoints(content: string): string[] {
@@ -892,7 +898,9 @@ export async function extractPlus(
     ...providerPriority.filter((item) => EXTRACT_PROVIDER_PRIORITY.includes(item)),
     ...EXTRACT_PROVIDER_PRIORITY.filter((item) => !providerPriority.includes(item)),
   ];
-  const baseProviders = requestedProvider === "auto"
+  const baseProviders = contextOptions.strictProvider && requestedProvider !== "auto"
+    ? [requestedProvider] as ExtractProviderName[]
+    : requestedProvider === "auto"
     ? configuredPriority
     : [requestedProvider, ...configuredPriority.filter((item) => item !== requestedProvider)] as ExtractProviderName[];
   // Routing preferences' disabled_providers also apply to extraction fallback;
@@ -933,7 +941,7 @@ export async function extractPlus(
     url_policy: { extract_allow_private_urls: runtimeConfig.extractAllowPrivateUrls === true },
     storage_policy: "process_memory_only",
   });
-  const cached = extractCacheGet(cacheKey);
+  const cached = contextOptions.cacheBypass ? null : extractCacheGet(cacheKey);
   if (cached) return cached;
 
   const errors: Json[] = [];
@@ -1099,7 +1107,7 @@ export async function extractPlus(
       };
       // Only successful/degraded provider output is cacheable. Failed calls
       // carry transient diagnostics and must be retried on a later request.
-      extractCachePut(cacheKey, response, fullText, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
+      if (!contextOptions.cacheBypass) extractCachePut(cacheKey, response, fullText, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
       return response;
     } catch (error: any) {
       errors.push({ provider: currentProvider, error: String(error?.message || error) });

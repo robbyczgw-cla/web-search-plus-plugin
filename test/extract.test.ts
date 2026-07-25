@@ -346,6 +346,7 @@ test("register exposes web_extract_plus tool", () => {
   register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: {} });
   assert.ok(registered.has("web_search_plus"));
   assert.ok(registered.has("web_extract_plus"));
+  assert.ok(registered.has("web_extract_benchmark_plus"));
   const schema = registered.get("web_extract_plus").parameters;
   // URLs and a full-content reference are alternate inputs to the same tool.
   assert.equal(schema.required, undefined);
@@ -354,6 +355,21 @@ test("register exposes web_extract_plus tool", () => {
   assert.ok(schema.properties.provider.enum.includes("linkup"));
   assert.ok(schema.properties.provider.enum.includes("exa"));
   assert.ok(schema.properties.provider.enum.includes("you"));
+});
+
+test("extract benchmark is explicit, capped, and keeps Hound behind auto_allow", async () => {
+  const registered = new Map<string, any>();
+  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { tavilyApiKey: "tvly-test", houndMcpUrl: "http://127.0.0.1:3000/mcp" } });
+  await withMockedFetch(
+    () => mockJsonResponse({ results: [{ url: "https://example.com/bench", raw_content: "benchmark content" }] }),
+    async (calls) => {
+      const payload = JSON.parse((await registered.get("web_extract_benchmark_plus").execute("bench", { urls: ["https://example.com/bench"], max_provider_calls: 1 })).content[0].text);
+      assert.equal(payload.explicit_opt_in, true);
+      assert.equal(payload.provider_calls_made, 1);
+      assert.equal(payload.hound_auto_allow, false);
+      assert.equal(calls.length, 1);
+    },
+  );
 });
 
 test("web_extract_plus checkFn requires extract-capable provider", () => {

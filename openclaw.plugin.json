@@ -8,7 +8,8 @@
       "web_search_plus",
       "web_extract_plus",
       "web_routing_config_plus",
-      "web_search_health_plus"
+      "web_search_health_plus",
+      "web_extract_benchmark_plus"
     ]
   },
   "toolMetadata": {
@@ -22,6 +23,9 @@
       "optional": true
     },
     "web_search_health_plus": {
+      "optional": true
+    },
+    "web_extract_benchmark_plus": {
       "optional": true
     }
   },

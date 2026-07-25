@@ -994,6 +994,9 @@ function keylessPublicAllowed(provider, runtimeConfig) {
 function hasAnyExtractProviderCredential(runtimeConfig) {
   return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig));
 }
+function isExtractProviderAvailable(provider, runtimeConfig) {
+  return Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig);
+}
 var BLOCKED_EXTRACT_HOSTS = /* @__PURE__ */ new Set(["localhost", "metadata.google.internal", "metadata.internal"]);
 function isPrivateOrInternalIp(value) {
   const family = net.isIP(value);
@@ -1432,7 +1435,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
     ...providerPriority.filter((item) => EXTRACT_PROVIDER_PRIORITY.includes(item)),
     ...EXTRACT_PROVIDER_PRIORITY.filter((item) => !providerPriority.includes(item))
   ];
-  const baseProviders = requestedProvider === "auto" ? configuredPriority : [requestedProvider, ...configuredPriority.filter((item) => item !== requestedProvider)];
+  const baseProviders = contextOptions.strictProvider && requestedProvider !== "auto" ? [requestedProvider] : requestedProvider === "auto" ? configuredPriority : [requestedProvider, ...configuredPriority.filter((item) => item !== requestedProvider)];
   const providers = baseProviders.filter(
     (item) => (item === requestedProvider || !disabledProviders.includes(item)) && (requestedProvider !== "auto" || contextOptions.autoAllow?.[item] !== false)
   );
@@ -1467,7 +1470,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
     url_policy: { extract_allow_private_urls: runtimeConfig.extractAllowPrivateUrls === true },
     storage_policy: "process_memory_only"
   });
-  const cached = extractCacheGet(cacheKey);
+  const cached = contextOptions.cacheBypass ? null : extractCacheGet(cacheKey);
   if (cached) return cached;
   const errors = [];
   for (const currentProvider of providers) {
@@ -1615,7 +1618,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           fallback_errors: errors
         }
       };
-      extractCachePut(cacheKey, response, fullText, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
+      if (!contextOptions.cacheBypass) extractCachePut(cacheKey, response, fullText, runtimeConfig.extractCacheMaxEntries ?? DEFAULT_EXTRACT_CACHE_MAX_ENTRIES);
       return response;
     } catch (error2) {
       errors.push({ provider: currentProvider, error: String(error2?.message || error2) });
@@ -2430,6 +2433,12 @@ function getShadowQualitySnapshot() {
     },
     note: "Passive observations only; they do not alter routing or results."
   };
+}
+
+// extract-benchmark.ts
+var latest = null;
+function saveExtractBenchmark(result) {
+  latest = structuredClone(result);
 }
 
 // index.ts
@@ -4242,6 +4251,35 @@ function register(api) {
       parameters: { type: "object", properties: {} },
       async execute() {
         return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot() }) }] };
+      }
+    },
+    { optional: true }
+  );
+  api.registerTool(
+    {
+      name: "web_extract_benchmark_plus",
+      description: "Explicit opt-in extraction benchmark. Never runs automatically; makes at most max_provider_calls (1-3) direct provider calls, bypasses the response cache, and returns a process-local priority recommendation. Hound remains excluded unless auto_allow.hound=true.",
+      parameters: { type: "object", required: ["urls"], properties: { urls: { type: "array", minItems: 1, maxItems: 3, items: { type: "string" } }, max_provider_calls: { type: "integer", minimum: 1, maximum: 3 } } },
+      async execute(_id, params) {
+        try {
+          const pluginConfig = api.pluginConfig ?? {};
+          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const routing = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
+          const maxCalls = Math.max(1, Math.min(3, Math.floor(Number(params?.max_provider_calls ?? 3))));
+          const candidates2 = routing.extract_provider_priority.filter((provider) => !routing.disabled_providers.includes(provider) && routing.auto_allow[provider] !== false && isExtractProviderAvailable(provider, runtimeConfig)).slice(0, maxCalls);
+          const attempts = [];
+          for (const provider of candidates2) {
+            const startedAt2 = Date.now();
+            const response = await extractPlus(params.urls, provider, "markdown", false, false, false, runtimeConfig, routing.disabled_providers, routing.extract_provider_priority, { autoAllow: routing.auto_allow, strictProvider: true, cacheBypass: true });
+            attempts.push({ provider, latency_ms: Date.now() - startedAt2, status: response.error ? "failed" : "success", result_count: response.results.length, error: response.error });
+          }
+          const priority_recommendation = attempts.filter((attempt) => attempt.status === "success" && attempt.result_count > 0).sort((left, right) => left.latency_ms - right.latency_ms).map((attempt) => attempt.provider);
+          const result = { scope: "process_local", explicit_opt_in: true, max_provider_calls: maxCalls, provider_calls_made: attempts.length, hound_auto_allow: routing.auto_allow.hound === true, attempts, priority_recommendation };
+          saveExtractBenchmark(result);
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
+        } catch (error2) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error2?.message || error2) })) }] };
+        }
       }
     },
     { optional: true }

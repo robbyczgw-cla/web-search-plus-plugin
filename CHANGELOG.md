@@ -8,6 +8,7 @@
 - Added `web_search_health_plus`, a read-only in-process provider-health tool with explicit process start/scope metadata; no console server or cross-restart buckets are created. (Hermes v3.2 round 2)
 - Added passive process-local shadow-quality aggregates to the health tool. They observe completed requests only and never influence provider routing or result content. (Hermes v3.2 round 2)
 - Added explicit per-request `routing_override_provider` for deterministic Search and Extract routing, with visible routing-report provenance and no environment-variable switch. (Hermes v3.2 round 2)
+- Added `web_extract_benchmark_plus`: an explicit-only, cache-bypassing Extract benchmark with a hard 1–3 provider-call cap, process-local priority recommendation, and Hound `auto_allow` enforcement. (Hermes v3.2 round 2)
 
 ### Breaking Changes
 - Removed the Perplexity and Kilo Perplexity Chat Completions adapters from the public provider schema and runtime. They do not expose a verified source-only mode and must not be projected as search evidence. (Hermes v3.0.0)
