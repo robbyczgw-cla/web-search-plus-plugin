@@ -248,6 +248,10 @@ npm run build
 npm pack --dry-run
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the upstream-first porting model, OpenClaw runtime boundaries, provider requirements, security/privacy rules, package synchronization, and pull-request expectations.
+
 ## Acknowledgments
 
 This OpenClaw plugin tracks the useful feature direction from the Hermes and MCP sister projects, adapted for OpenClaw/ClawHub instead of copied blindly.

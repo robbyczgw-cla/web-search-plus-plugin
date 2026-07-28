@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Documentation
+- Add a repository-specific contribution guide covering upstream-first ports, OpenClaw and ClawHub runtime constraints, provider/tool changes, security/privacy requirements, package synchronization, and pull-request evidence.
+- Add Node.js 22 GitHub Actions gates for locked install, tests, bundle build, and package-content verification, plus regression coverage that keeps the guide and CI commands synchronized.
+
 ## [3.3.0] - 2026-07-25
 
 - Added a bounded process-local, versioned LRU cache for extraction responses. Its secret-free identity covers exact URL order, controls, effective budgets, provider policy, configured endpoint address, and URL/storage policy; cache hits preserve the full returned response including `content`, `raw_content`, and provider attribution. (Hermes v3.2 round 2)
