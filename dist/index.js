@@ -3762,12 +3762,11 @@ function stripTrackingParams(rawUrl) {
   }
 }
 async function searchSerpBase(query, apiKey, maxResults, timeRange) {
-  const url = new URL("https://api.serpbase.com/search");
-  url.searchParams.set("api_key", apiKey);
-  url.searchParams.set("q", query);
-  url.searchParams.set("num", String(maxResults));
-  if (timeRange) url.searchParams.set("time_range", timeRange);
-  const data = await httpJson(url.toString(), { method: "GET", headers: { Accept: "application/json" } });
+  const data = await httpJson("https://api.serpbase.dev/google/search", {
+    method: "POST",
+    headers: { "X-API-Key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ q: query, page: 1 })
+  });
   if (data?.status != null && Number(data.status) !== 0) {
     throw new ProviderRequestError(String(data?.error || data?.message || `SerpBase request failed with status=${data.status}`));
   }
