@@ -478,16 +478,16 @@ test("extract benchmark ranks by content yield, not by latency alone", async () 
   );
 });
 
-test("extract benchmark is explicit, capped, and keeps Hound behind auto_allow", async () => {
+test("extract benchmark is explicit, capped, and keeps DonSeTch behind auto_allow", async () => {
   const registered = new Map<string, any>();
-  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { tavilyApiKey: "tvly-test", houndMcpUrl: "http://127.0.0.1:3000/mcp" } });
+  register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { tavilyApiKey: "tvly-test", donsetchBin: "/opt/donsetch" } });
   await withMockedFetch(
     () => mockJsonResponse({ results: [{ url: "https://example.com/bench", raw_content: "benchmark content" }] }),
     async (calls) => {
       const payload = JSON.parse((await registered.get("web_extract_benchmark_plus").execute("bench", { urls: ["https://example.com/bench"], max_provider_calls: 1 })).content[0].text);
       assert.equal(payload.explicit_opt_in, true);
       assert.equal(payload.provider_calls_made, 1);
-      assert.equal(payload.hound_auto_allow, false);
+      assert.equal(payload.donsetch_auto_allow, false);
       assert.equal(calls.length, 1);
     },
   );

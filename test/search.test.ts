@@ -149,7 +149,8 @@ test("searchBrave parses Brave web results and request params", async () => {
       });
 
       assert.equal(result.provider, "brave");
-      assert.equal(result.answer, "Brave infobox answer");
+      assert.equal("answer" in result, false);
+      assert.equal(JSON.stringify(result).includes("Brave infobox answer"), false);
       assert.equal(result.results[0].snippet, "Primary snippet ... Extra one ... Extra two");
       assert.equal(result.results[0].age, "2 days ago");
       assert.match(calls[0].url, /country=AT/);

@@ -1,19 +1,25 @@
 import crypto from "crypto";
 import dns from "dns/promises";
 import net from "net";
-import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import pluginManifest from "./openclaw.plugin.json" with { type: "json" };
 import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
-import { applyRoutingProfile, DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
+import { ALL_PROVIDER_NAMES, applyRoutingProfile, DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential, isExtractProviderAvailable, readCachedExtractContent } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
 import { scoreDiversity } from "./diversity.ts";
-import { searchHound } from "./hound-provider.ts";
 import { __resetProviderStatsForTests, getProviderHealthSnapshot, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
 import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
 import { preflightResearchFanout } from "./budget-preflight.ts";
 import { getShadowQualitySnapshot, recordShadowQualityObservation } from "./shadow-quality.ts";
 import { saveExtractBenchmark } from "./extract-benchmark.ts";
+import { ProviderConfigError, ProviderRequestError } from "./provider-http.ts";
+import { searchOcten } from "./octen-provider.ts";
+import { searchTinyFish } from "./tinyfish-provider.ts";
+import { searchDonsetch } from "./donsetch-provider.ts";
+import { inspectDonsetchReadiness } from "./donsetch-transport.ts";
+import { validateSourceOnlyAdapterResult, validateSourceOnlyOutboundRequest } from "./source-only-gate.ts";
 
 export { deduplicateResultsAcrossProviders } from "./research.ts";
 export { CANONICAL_DOMAIN_RULES, buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
@@ -36,10 +42,11 @@ export const RATE_LIMIT_MAX_ATTEMPTS = 2;
 // the cooldown ladder instead of blocking the current request.
 export const MAX_RETRY_AFTER_WAIT_SECONDS = 30;
 
-const SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound", "auto"];
+const SEARCH_PROVIDER_ENUM = [...ALL_PROVIDER_NAMES, "auto"];
 
 const PARAMETERS_SCHEMA = {
   type: "object",
+  additionalProperties: false,
   required: ["query"],
   properties: {
     query: { type: "string", description: "Search query" },
@@ -53,12 +60,7 @@ const PARAMETERS_SCHEMA = {
       enum: SEARCH_PROVIDER_ENUM.filter((provider) => provider !== "auto"),
       description: "Disable automatic search routing and force this provider for this request. Reported visibly in routing.override_provider.",
     },
-    count: { type: "number", description: "Number of results (default: 5)" },
-    depth: {
-      type: "string",
-      enum: ["normal", "deep", "deep-reasoning"],
-      description: "Exa depth when using Exa or when auto-routing chooses Exa.",
-    },
+    count: { type: "integer", minimum: 1, maximum: 10, default: 5, description: "Number of source results (default: 5)" },
     time_range: {
       type: "string",
       enum: ["hour", "day", "week", "month", "year"],
@@ -92,6 +94,7 @@ const PARAMETERS_SCHEMA = {
     },
     research_providers: {
       type: "array",
+      maxItems: 3,
       items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") },
       description: "Explicit provider list for mode=research. Defaults to an auto-selected compact set.",
     },
@@ -117,6 +120,7 @@ const ROUTING_CONFIG_ACTIONS = [
 
 const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
   type: "object",
+  additionalProperties: false,
   required: ["action"],
   properties: {
     action: { type: "string", enum: ROUTING_CONFIG_ACTIONS },
@@ -129,13 +133,12 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
 };
 
 type Json = Record<string, any>;
-const ALL_PROVIDERS: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound"];
+const ALL_PROVIDERS: ProviderName[] = [...ALL_PROVIDER_NAMES];
 type ToolParams = {
   query: string;
   provider?: ProviderName | "auto";
   routing_override_provider?: ProviderName;
   count?: number;
-  depth?: "normal" | "deep" | "deep-reasoning";
   time_range?: "hour" | "day" | "week" | "month" | "year";
   freshness?: "day" | "week" | "month" | "year";
   search_type?: "search" | "news";
@@ -161,7 +164,6 @@ type SearchResponse = {
   query: string;
   results: SearchResult[];
   images?: string[];
-  answer?: string;
   metadata?: Json;
   [key: string]: any;
 };
@@ -170,20 +172,6 @@ type SearchExecutionResult = {
   ok: boolean;
   payload: SearchResponse | Json;
 };
-
-class ProviderConfigError extends Error {}
-class ProviderRequestError extends Error {
-  statusCode?: number;
-  transient: boolean;
-  retryAfter?: number;
-  constructor(message: string, statusCode?: number, transient = false, retryAfter?: number) {
-    super(message);
-    this.name = "ProviderRequestError";
-    this.statusCode = statusCode;
-    this.transient = transient;
-    this.retryAfter = retryAfter;
-  }
-}
 
 // Parse a Retry-After response header (delta-seconds or HTTP-date) into seconds.
 export function parseRetryAfter(value: string | null): number | undefined {
@@ -379,20 +367,11 @@ function selectAutoProvider(query: string, availableProviders: ProviderName[], r
   const autoProviders = availableProviders.filter((provider) => routingConfig.auto_allow?.[provider] !== false);
   const orderedProviders = orderProvidersByPreference(autoProviders.length ? autoProviders : availableProviders, routingConfig);
   const analyzer = new QueryAnalyzer();
-  const adaptiveAdjustments = performanceAdjustments(orderedProviders);
+  const baseAnalysis = analyzer.analyze(query);
+  const hasQuerySignals = Math.max(...orderedProviders.map((provider) => Number(baseAnalysis.provider_scores[provider] || 0)), 0) > 0;
+  const adaptiveAdjustments = hasQuerySignals ? performanceAdjustments(orderedProviders) : {};
   const analysis = analyzer.route(query, orderedProviders, adaptiveAdjustments);
-  let provider = analysis.provider;
-  let reason = analysis.reason;
-
-  if (analysis.confidence < routingConfig.confidence_threshold) {
-    const lowConfidenceProvider = pickStrictDefaultProvider(availableProviders, routingConfig) || orderedProviders[0];
-    if (lowConfidenceProvider && lowConfidenceProvider !== provider) {
-      provider = lowConfidenceProvider;
-      reason = pickStrictDefaultProvider(availableProviders, routingConfig)
-        ? "below_confidence_threshold_default_provider"
-        : "below_confidence_threshold_priority_provider";
-    }
-  }
+  const provider = analysis.provider;
 
   return {
     provider,
@@ -401,7 +380,7 @@ function selectAutoProvider(query: string, availableProviders: ProviderName[], r
       auto_routed: true,
       provider,
       confidence_level: analysis.confidence >= routingConfig.confidence_threshold ? analysis.confidence_level : "low",
-      reason,
+      reason: analysis.reason,
       confidence_threshold: routingConfig.confidence_threshold,
       exa_depth: analysis.exa_depth,
       routing_policy: analysis.routing_policy,
@@ -409,6 +388,7 @@ function selectAutoProvider(query: string, availableProviders: ProviderName[], r
       routing_class: analysis.analysis_summary?.routing_class,
       scores: analysis.scores,
       adaptive_adjustments: analysis.adaptive_adjustments,
+      below_threshold: analysis.confidence < routingConfig.confidence_threshold,
       auto_allow_excluded: autoExcluded,
     },
   };
@@ -445,7 +425,9 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
     keenable: runtimeConfig.keenableApiKey,
-    hound: runtimeConfig.houndMcpUrl,
+    donsetch: runtimeConfig.donsetchBin,
+    octen: runtimeConfig.monidApiKey,
+    tinyfish: runtimeConfig.tinyfishApiKey,
   };
   return keyMap[provider];
 }
@@ -465,7 +447,9 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
       if (runtimeConfig.keenableAllowPublic === true) return "";
       throw new ProviderConfigError("Keenable requires an API key (pluginConfig.keenableApiKey) or the opt-in public tier (pluginConfig.keenableAllowPublic=true)");
     }
-    if (provider === "hound") throw new ProviderConfigError("Missing Hound MCP endpoint (pluginConfig.houndMcpUrl)");
+    if (provider === "donsetch") throw new ProviderConfigError("Missing DonSeTch executable path (pluginConfig.donsetchBin)");
+    if (provider === "octen") throw new ProviderConfigError("Missing Monid API key for Octen (pluginConfig.monidApiKey)");
+    if (provider === "tinyfish") throw new ProviderConfigError("Missing TinyFish API key (pluginConfig.tinyfishApiKey)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -480,11 +464,20 @@ function toTimeRange(value?: string): string | undefined {
 // =============================================================================
 
 export const FRESHNESS_VALUES = ["day", "week", "month", "year"] as const;
+const EXA_FRESHNESS_DAYS: Record<string, number> = { day: 1, week: 7, month: 30, year: 365 };
+
+export function exaDateBounds(freshness?: string | null, now: Date = new Date()): { startPublishedDate?: string; endPublishedDate?: string } {
+  if (!freshness || EXA_FRESHNESS_DAYS[freshness] == null) return {};
+  const end = new Date(now.getTime());
+  const start = new Date(end.getTime() - EXA_FRESHNESS_DAYS[freshness] * 24 * 60 * 60 * 1000);
+  const secondPrecision = (value: Date) => value.toISOString().replace(/\.\d{3}Z$/, "Z");
+  return { startPublishedDate: secondPrecision(start), endPublishedDate: secondPrecision(end) };
+}
 
 // Native recency formats per provider, derived from the request bodies the
 // provider functions in this module already send. Providers absent from this
-// table (tavily, exa, linkup, parallel) have no relative-recency parameter in
-// their current API calls, so no native value is invented for them.
+// table (for example Tavily, Linkup, and Parallel) have no native recency
+// parameter in their current API calls, so no value is invented for them.
 export const PROVIDER_FRESHNESS_FORMATS: Record<string, Record<string, string>> = {
   // searchSerper: body.tbs
   serper: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
@@ -496,13 +489,15 @@ export const PROVIDER_FRESHNESS_FORMATS: Record<string, Record<string, string>> 
   firecrawl: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
   // searchKeenable: body.published_after
   keenable: { day: "1d", week: "7d", month: "1mo", year: "1y" },
-  // searchSerpBase: time_range query param (plugin-specific endpoint support)
-  serpbase: { day: "day", week: "week", month: "month", year: "year" },
+  // Exa receives absolute UTC start/end publication bounds.
+  exa: { day: "day", week: "week", month: "month", year: "year" },
+  // Octen and TinyFish expose native recency controls in their source APIs.
+  octen: { day: "day", week: "week", month: "month", year: "year" },
+  tinyfish: { day: "day", week: "week", month: "month", year: "year" },
   // searchYou: freshness query param (native values match the unified ones)
   you: { day: "day", week: "week", month: "month", year: "year" },
   // searchSearxng: time_range query param
   searxng: { day: "day", week: "week", month: "month", year: "year" },
-  hound: { day: "day", week: "week", month: "month", year: "year" },
 };
 
 export function normalizeFreshness(value?: string | null): string | null {
@@ -516,8 +511,12 @@ export function normalizeFreshness(value?: string | null): string | null {
 }
 
 // Describe whether a provider applied the requested freshness filter.
-export function freshnessMetadata(provider: string, requested: string): Json {
+export function freshnessMetadata(provider: string, requested: string, exaBounds?: { startPublishedDate?: string; endPublishedDate?: string }): Json {
   const native = PROVIDER_FRESHNESS_FORMATS[provider]?.[requested];
+  if (provider === "exa" && native != null) {
+    const bounds = exaBounds || exaDateBounds(requested);
+    return { requested, applied: true, provider, native_value: bounds };
+  }
   if (native != null) return { requested, applied: true, provider, native_value: native };
   return { requested, applied: false, provider, reason: `provider ${provider} does not support freshness` };
 }
@@ -534,6 +533,8 @@ export const SEARCH_TYPE_VALUES = ["search", "news"] as const;
 export const PROVIDER_SEARCH_TYPES: Record<string, Record<string, string>> = {
   // searchSerper: endpoint path https://google.serper.dev/<type>
   serper: { search: "search", news: "news" },
+  // TinyFish: domain_type query parameter.
+  tinyfish: { search: "web", news: "news" },
 };
 
 export function normalizeSearchType(value?: string | null): string | null {
@@ -606,13 +607,13 @@ async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Prom
     if (!res.ok) {
       const detail = data?.error || data?.message || text || res.statusText;
       const retryAfter = res.status === 429 ? parseRetryAfter(res.headers.get("retry-after")) : undefined;
-      throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, res.status, TRANSIENT_HTTP_CODES.has(res.status), retryAfter);
+      throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, { statusCode: res.status, transient: TRANSIENT_HTTP_CODES.has(res.status), retryAfter });
     }
     return data ?? {};
   } catch (error: any) {
-    if (error?.name === "AbortError") throw new ProviderRequestError(`Request timed out after ${timeoutMs}ms`, undefined, true);
+    if (error?.name === "AbortError") throw new ProviderRequestError(`Request timed out after ${timeoutMs}ms`, { transient: true });
     if (error instanceof ProviderRequestError) throw error;
-    throw new ProviderRequestError(`Network error: ${String(error?.message || error)}`, undefined, true);
+    throw new ProviderRequestError(`Network error: ${String(error?.message || error)}`, { transient: true });
   } finally {
     clearTimeout(timer);
   }
@@ -830,7 +831,7 @@ export class QueryAnalyzer {
     else if (routingClass === "official/regulatory") boost("linkup", 7, "official/regulatory grounding");
     else if (routingClass === "finance/IR") { boost("linkup", 5, "finance IR grounding"); boost("tavily", 4, "finance research"); }
     else if (routingClass === "weather/factual") boost("you", 10, "snippet-first factual intent");
-    else if (routingClass === "oss-discovery") boost("exa", 6, "similar-page discovery");
+    else if (routingClass === "oss-discovery") boost("exa", 6, "semantic source discovery");
     else if (routingClass === "answer/synthesis") { boost("exa", 3, "synthesis intent without answer tool"); boost("tavily", 3, "synthesis research"); }
     else if (routingClass === "local/shopping") boost("serper", 12, "local/shopping intent");
     else if (routingClass === "multilingual/current") { boost("querit", 5, "multilingual/current intent"); boost("brave", 4, "current web intent"); }
@@ -932,34 +933,24 @@ export class QueryAnalyzer {
     let winners = providers.filter((p) => available[p] === maxScore);
     // Keenable never displaces another configured provider on a score tie.
     if (winners.length > 1 && winners.includes("keenable")) winners = winners.filter((p) => p !== "keenable");
-    const priority: ProviderName[] = [...DEFAULT_PROVIDER_PRIORITY];
-    const braveSerperCandidates = (["brave", "serper"] as ProviderName[]).filter((p) => providers.includes(p) && maxScore - (available[p] || 0) <= 0.5);
-    const winner = braveSerperCandidates.length > 0 && maxScore <= 6.5
-      ? chooseTieWinner(query, braveSerperCandidates, ["brave", "serper"])
-      : chooseTieWinner(query, winners, priority);
+    const winner = chooseTieWinner(query, winners, availableProviders);
     const secondBest = [...providers.map((p) => available[p])].sort((a, b) => b - a)[1] || 0;
     const margin = maxScore > 0 ? (maxScore - secondBest) / maxScore : 0;
     const normalizedScore = Math.min(maxScore / 15, 1);
     const confidence = maxScore === 0 ? 0 : Number((normalizedScore * 0.6 + margin * 0.4).toFixed(3));
-    let exaDepth: "normal" | "deep" | "deep-reasoning" = "normal";
-    if (winner === "exa") {
-      if ((analysis.exa_deep_reasoning_score || 0) >= 4) exaDepth = "deep-reasoning";
-      else if ((analysis.exa_deep_score || 0) >= 4) exaDepth = "deep";
-    }
     return {
       provider: winner,
       confidence,
       confidence_level: confidence >= 0.7 ? "high" : confidence >= 0.4 ? "medium" : "low",
       reason: maxScore === 0 ? "no_signals_matched" : confidence >= 0.7 ? "high_confidence_match" : confidence >= 0.4 ? "moderate_confidence_match" : "low_confidence_match",
       adaptive_adjustments: adaptiveAdjustments,
-      exa_depth: exaDepth,
+      exa_depth: "normal",
       scores: Object.fromEntries(providers.map((p) => [p, Number((available[p] || 0).toFixed(2))])),
       top_signals: (analysis.provider_matches[winner] || []).sort((a: any, b: any) => b.weight - a.weight).slice(0, 5).map((s: any) => ({ matched: s.matched, weight: s.weight })),
       routing_policy: "routing-v2",
       analysis_summary: {
         language_hint: analysis.language_hint,
         routing_class: analysis.routing_class,
-        answer_mode_recommended: analysis.routing_class === "answer/synthesis",
         query_length: query.trim().split(/\s+/).filter(Boolean).length,
         is_complex: analysis.complexity.is_complex,
         has_url: !!analysis.detected_url,
@@ -987,8 +978,7 @@ async function searchSerper(query: string, apiKey: string, maxResults: number, t
     }
     return result;
   });
-  const answer = data?.answerBox?.answer || data?.answerBox?.snippet || data?.knowledgeGraph?.description || results[0]?.snippet || "";
-  return { provider: "serper", query, results, images: [], answer, knowledge_graph: data.knowledgeGraph, related_searches: (data.relatedSearches || []).map((r: any) => r.query) };
+  return { provider: "serper", query, results, images: [], knowledge_graph: data.knowledgeGraph, related_searches: (data.relatedSearches || []).map((r: any) => r.query) };
 }
 
 export async function searchBrave(query: string, apiKey: string, maxResults: number, options?: { country?: string; search_lang?: string; safesearch?: string; time_range?: string }): Promise<SearchResponse> {
@@ -1024,23 +1014,24 @@ export async function searchBrave(query: string, apiKey: string, maxResults: num
     };
   });
 
-  const answer = data?.summary || data?.infobox?.description || results[0]?.snippet || "";
-  return { provider: "brave", query, results, images: [], answer, mixed: data?.mixed };
+  return { provider: "brave", query, results, images: [], mixed: data?.mixed };
 }
 
 async function searchTavily(query: string, apiKey: string, maxResults: number, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
-  const body: Json = { api_key: apiKey, query, max_results: maxResults, search_depth: "basic", topic: "general", include_images: false, include_answer: true, include_raw_content: false };
+  const body: Json = { api_key: apiKey, query, max_results: maxResults, search_depth: "basic", topic: "general", include_images: false, include_answer: false, include_raw_content: false };
   if (includeDomains?.length) body.include_domains = includeDomains;
   if (excludeDomains?.length) body.exclude_domains = excludeDomains;
+  validateSourceOnlyOutboundRequest("tavily", body);
   const data = await httpJson("https://api.tavily.com/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const results = (data.results || []).slice(0, maxResults).map((item: any) => ({ title: item.title || "", url: item.url || "", snippet: item.content || "", score: Number((item.score || 0).toFixed(3)) }));
-  return { provider: "tavily", query, results, images: data.images || [], answer: data.answer || "" };
+  return { provider: "tavily", query, results, images: data.images || [] };
 }
 
 async function searchLinkup(query: string, apiKey: string, maxResults: number, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
   const body: Json = { q: query, depth: "standard", outputType: "searchResults" };
   if (includeDomains?.length) body.includeDomains = includeDomains.slice(0, 50);
   if (excludeDomains?.length) body.excludeDomains = excludeDomains.slice(0, 50);
+  validateSourceOnlyOutboundRequest("linkup", body);
   const data = await httpJson("https://api.linkup.so/v1/search", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (data.error) throw new ProviderRequestError(String(data.error));
   const raw = data.results || data.sources || [];
@@ -1056,7 +1047,7 @@ async function searchLinkup(query: string, apiKey: string, maxResults: number, i
     if (item.favicon != null) result.favicon = item.favicon;
     return result;
   });
-  return { provider: "linkup", query, results, images: data.images || [], answer: data.answer || "", metadata: { depth: body.depth, output_type: body.outputType } };
+  return { provider: "linkup", query, results, images: data.images || [], metadata: { depth: body.depth, output_type: body.outputType } };
 }
 
 async function searchQuerit(query: string, apiKey: string, maxResults: number, timeRange?: string, includeDomains?: string[], excludeDomains?: string[], locale?: ResolvedLocale): Promise<SearchResponse> {
@@ -1073,36 +1064,21 @@ async function searchQuerit(query: string, apiKey: string, maxResults: number, t
   if (data.error_msg || (data.error_code != null && ![0, 200].includes(data.error_code))) throw new ProviderRequestError(data.error_msg || `Querit request failed with error_code=${data.error_code}`);
   const raw = data?.results?.result || [];
   const results = raw.slice(0, maxResults).map((item: any, i: number) => ({ title: item.title || titleFromUrl(item.url || ""), url: item.url || "", snippet: item.snippet || item.page_age || "", score: Number((1 - i * 0.05).toFixed(3)), page_time: item.page_time, date: item.page_age, language: item.language }));
-  return { provider: "querit", query, results, images: [], answer: results[0]?.snippet || "", metadata: { search_id: data.search_id, time_range: timeRange && timeMap[timeRange] } };
+  return { provider: "querit", query, results, images: [], metadata: { search_id: data.search_id, time_range: timeRange && timeMap[timeRange] } };
 }
 
-async function searchExa(query: string, apiKey: string, maxResults: number, exaDepth: "normal" | "deep" | "deep-reasoning", includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
-  const isDeep = exaDepth === "deep" || exaDepth === "deep-reasoning";
-  const body: Json = isDeep
-    ? { query, numResults: maxResults, type: exaDepth, contents: { text: { maxCharacters: 5000, verbosity: "full" } } }
-    : { query, numResults: maxResults, type: "neural", contents: { text: { maxCharacters: 2000, verbosity: "standard" }, highlights: { numSentences: 3, highlightsPerUrl: 2 } } };
+async function searchExa(query: string, apiKey: string, maxResults: number, includeDomains?: string[], excludeDomains?: string[], freshness?: string | null, suppliedDateBounds?: { startPublishedDate?: string; endPublishedDate?: string }): Promise<SearchResponse> {
+  const body: Json = { query, numResults: maxResults, type: "neural", contents: { text: { maxCharacters: 2000, verbosity: "standard" }, highlights: { numSentences: 3, highlightsPerUrl: 2 } } };
   if (includeDomains?.length) body.includeDomains = includeDomains;
   if (excludeDomains?.length) body.excludeDomains = excludeDomains;
-  const data = await httpJson("https://api.exa.ai/search", { method: "POST", headers: { "x-api-key": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) }, isDeep ? 55000 : 30000);
-
-  if (isDeep) {
-    const deepOutput = data.output || {};
-    const synthesis = typeof deepOutput.content === "string" ? deepOutput.content : deepOutput.content ? JSON.stringify(deepOutput.content) : "";
-    const grounding: any[] = [];
-    for (const field of deepOutput.grounding || []) {
-      for (const cite of field.citations || []) grounding.push({ url: cite.url || "", title: cite.title || "", confidence: field.confidence, field: field.field });
-    }
-    const results: SearchResult[] = [];
-    if (synthesis) results.push({ title: `Exa ${exaDepth.replace(/-/g, " ")} synthesis`, url: "", snippet: synthesis, full_synthesis: synthesis, score: 1, grounding: grounding.slice(0, 10), type: "synthesis" });
-    for (const item of (data.results || []).slice(0, maxResults)) {
-      const snippet = item.text ? String(item.text).slice(0, 800) : (item.highlights || [])[0] || "";
-      results.push({ title: item.title || "", url: item.url || "", snippet, score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author, type: "source" });
-    }
-    return { provider: "exa", query, exa_depth: exaDepth, results, images: [], answer: synthesis || results[1]?.snippet || "", grounding, metadata: { synthesis_length: synthesis.length, source_count: (data.results || []).length } };
-  }
+  const dateBounds = suppliedDateBounds || exaDateBounds(freshness);
+  if (dateBounds.startPublishedDate) body.startPublishedDate = dateBounds.startPublishedDate;
+  if (dateBounds.endPublishedDate) body.endPublishedDate = dateBounds.endPublishedDate;
+  validateSourceOnlyOutboundRequest("exa", body);
+  const data = await httpJson("https://api.exa.ai/search", { method: "POST", headers: { "x-api-key": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
   const results = (data.results || []).slice(0, maxResults).map((item: any) => ({ title: item.title || "", url: item.url || "", snippet: item.text ? String(item.text).slice(0, 800) : Array.isArray(item.highlights) ? item.highlights.slice(0, 2).join(" ... ") : "", score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author }));
-  return { provider: "exa", query, results, images: [], answer: results[0]?.snippet || "" };
+  return { provider: "exa", query, results, images: [], metadata: freshness ? { freshness: { requested: freshness, ...dateBounds } } : {} };
 }
 
 function mapFirecrawlTimeRange(timeRange?: string): string | undefined {
@@ -1141,7 +1117,7 @@ async function searchFirecrawl(query: string, apiKey: string, maxResults: number
     return result;
   });
   const images = (responseData.images || []).map((image: any) => image.imageUrl).filter(Boolean);
-  return { provider: "firecrawl", query, results, images, answer: results[0]?.snippet || "", warning: data.warning, credits_used: data.creditsUsed, metadata: { id: data.id, sources: body.sources, tbs } };
+  return { provider: "firecrawl", query, results, images, warning: data.warning, credits_used: data.creditsUsed, metadata: { id: data.id, sources: body.sources, tbs } };
 }
 
 function stripTrackingParams(rawUrl: string): string {
@@ -1156,40 +1132,43 @@ function stripTrackingParams(rawUrl: string): string {
   }
 }
 
-async function searchSerpBase(query: string, apiKey: string, maxResults: number, timeRange?: string): Promise<SearchResponse> {
-  const url = new URL("https://api.serpbase.com/search");
-  url.searchParams.set("api_key", apiKey);
-  url.searchParams.set("q", query);
-  url.searchParams.set("num", String(maxResults));
-  if (timeRange) url.searchParams.set("time_range", timeRange);
-  const data = await httpJson(url.toString(), { method: "GET", headers: { Accept: "application/json" } });
+async function searchSerpBase(query: string, apiKey: string, maxResults: number, locale?: ResolvedLocale): Promise<SearchResponse> {
+  const body = { q: query, hl: locale?.language || "en", gl: locale?.country || "us", page: 1 };
+  const data = await httpJson("https://api.serpbase.dev/google/search", {
+    method: "POST",
+    headers: { "X-API-Key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
   if (data?.status != null && Number(data.status) !== 0) {
-    throw new ProviderRequestError(String(data?.error || data?.message || `SerpBase request failed with status=${data.status}`));
+    const status = Number(data.status);
+    throw new ProviderRequestError(`SerpBase error ${status}`, { transient: [1029, 1502, 1503, 1504].includes(status) });
   }
-  const organic = data.organic_results || data.organic || data.results || [];
+  const organic = data.organic || [];
   const results = organic.slice(0, maxResults).map((item: any, i: number) => ({
     title: item.title || "",
     url: stripTrackingParams(item.link || item.url || ""),
     snippet: item.snippet || item.description || "",
-    score: Number((1 - i * 0.05).toFixed(3)),
-    position: item.position,
+    score: Number((1 - i * 0.1).toFixed(2)),
+    rank: item.rank || item.position || i + 1,
+    display_link: item.display_link || item.displayed_link,
   }));
-  return { provider: "serpbase", query, results, images: [], answer: data?.answer_box?.answer || data?.knowledge_graph?.description || results[0]?.snippet || "", knowledge_graph: data?.knowledge_graph, related_searches: (data.related_searches || []).map((r: any) => typeof r === "string" ? r : r.query).filter(Boolean), metadata: { session_id: data.session_id } };
+  return { provider: "serpbase", query, results, images: [], knowledge_graph: data?.knowledge_graph, related_searches: (data.related_searches || []).map((r: any) => typeof r === "string" ? r : r?.query || r?.title).filter(Boolean), session_id: data.session_id, metadata: { session_id: data.session_id } };
 }
 
-async function searchParallel(query: string, apiKey: string, maxResults: number, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
+async function searchParallel(query: string, apiKey: string, maxResults: number, includeDomains?: string[], excludeDomains?: string[], mode: RuntimeConfig["parallelMode"] = "fast"): Promise<SearchResponse> {
   const searchQuery = [query, ...(includeDomains || []).map((domain) => `site:${domain}`), ...(excludeDomains || []).map((domain) => `-site:${domain}`)].join(" ").trim();
-  const data = await httpJson("https://api.parallel.ai/v1beta/search", {
+  const data = await httpJson("https://api.parallel.ai/v1/search", {
     method: "POST",
     headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ objective: query, search_queries: [searchQuery] }),
-  }, 30000);
-  const raw = data.results || data.search_results || data.data || [];
+    body: JSON.stringify({ objective: query, search_queries: [searchQuery], mode: mode || "fast" }),
+  }, 45000);
+  const raw = data.results || [];
   const results = raw.slice(0, maxResults).map((item: any, i: number) => {
-    const excerpts = Array.isArray(item.excerpts) ? item.excerpts : Array.isArray(item.snippets) ? item.snippets : [];
-    return { title: item.title || titleFromUrl(item.url || ""), url: item.url || item.link || "", snippet: excerpts.length ? excerpts.join(" ... ") : item.snippet || item.description || "", score: Number((1 - i * 0.05).toFixed(3)) };
+    const excerpts = Array.isArray(item.excerpts) ? item.excerpts : [];
+    const snippet = excerpts.map((excerpt: any) => typeof excerpt === "string" ? excerpt : excerpt?.text || excerpt?.content || "").filter(Boolean).join("\n\n").trim();
+    return { title: item.title || titleFromUrl(item.url || ""), url: item.url || "", snippet, score: Number((1 - i * 0.05).toFixed(3)), publish_date: item.publish_date, excerpts };
   });
-  return { provider: "parallel", query, results, images: [], answer: results[0]?.snippet || "", metadata: { search_id: data.search_id, session_id: data.session_id } };
+  return { provider: "parallel", query, results, images: [], metadata: { search_id: data.search_id, session_id: data.session_id, result_count_raw: raw.length, mode: mode || "fast" } };
 }
 
 async function searchYou(query: string, apiKey: string, maxResults: number, timeRange?: string, locale?: ResolvedLocale): Promise<SearchResponse> {
@@ -1204,8 +1183,7 @@ async function searchYou(query: string, apiKey: string, maxResults: number, time
   const web = data?.results?.web || [];
   const news = data?.results?.news || [];
   const results = web.slice(0, maxResults).map((item: any, i: number) => ({ title: item.title || "", url: item.url || "", snippet: item?.snippets?.[0] || item.description || "", score: Number((1 - i * 0.05).toFixed(3)), date: item.page_age, source: "web", additional_snippets: Array.isArray(item.snippets) ? item.snippets.slice(1, 3) : undefined, thumbnail: item.thumbnail_url, favicon: item.favicon_url }));
-  const answer = results.slice(0, 3).map((r) => r.snippet).filter(Boolean).join(" ").slice(0, 1000);
-  return { provider: "you", query, results, news: news.slice(0, 5), images: [], answer, metadata: { search_uuid: data?.metadata?.search_uuid, latency: data?.metadata?.latency } };
+  return { provider: "you", query, results, news: news.slice(0, 5), images: [], metadata: { search_uuid: data?.metadata?.search_uuid, latency: data?.metadata?.latency } };
 }
 
 const KEENABLE_TIME_RANGE: Record<string, string> = { hour: "1h", day: "1d", week: "7d", month: "1mo", year: "1y" };
@@ -1245,7 +1223,7 @@ async function searchKeenable(query: string, apiKey: string | undefined, maxResu
       metadata.public_endpoint_warning = "Keenable keyless public endpoint in use: queries are sent to an unauthenticated shared service (https://keenable.ai) with no SLA. Set pluginConfig.keenableApiKey for the authenticated endpoint.";
     }
   }
-  return { provider: "keenable", query, results, images: [], answer: results[0]?.snippet || "", metadata };
+  return { provider: "keenable", query, results, images: [], metadata };
 }
 
 async function searchSearxng(query: string, instanceUrl: string, maxResults: number, timeRange: string | undefined, runtimeConfig: RuntimeConfig, locale?: ResolvedLocale): Promise<SearchResponse> {
@@ -1262,8 +1240,7 @@ async function searchSearxng(query: string, instanceUrl: string, maxResults: num
     enginesUsed.add(item.engine || "unknown");
     return { title: item.title || "", url: item.url || "", snippet: item.content || "", score: Number((item.score ?? (1 - i * 0.05)).toFixed(3)), engine: item.engine || "unknown", category: item.category || "general", date: item.publishedDate };
   });
-  const answer = Array.isArray(data.answers) && data.answers[0] ? String(data.answers[0]) : Array.isArray(data.infoboxes) && data.infoboxes[0] ? String(data.infoboxes[0].content || data.infoboxes[0].infobox || "") : results[0]?.snippet || "";
-  return { provider: "searxng", query, results, images: [], answer, suggestions: data.suggestions || [], corrections: data.corrections || [], metadata: { number_of_results: data.number_of_results, engines_used: [...enginesUsed], instance_url: base } };
+  return { provider: "searxng", query, results, images: [], suggestions: data.suggestions || [], corrections: data.corrections || [], metadata: { number_of_results: data.number_of_results, engines_used: [...enginesUsed], instance_url: base } };
 }
 
 // Bounded random jitter keeps concurrent or repeated retries against a recovering
@@ -1346,6 +1323,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     } catch (error: any) {
       return { ok: false, payload: { error: `Search failed: ${String(error?.message || error)}` } };
     }
+    const exaFreshnessBounds = exaDateBounds(freshness);
     // The unified freshness value doubles as the shared time-range hint: provider
     // functions with a native recency parameter map it themselves, providers
     // without one ignore it and metadata reports freshness.applied=false.
@@ -1364,7 +1342,6 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     let routingInfo: Json = { requested_provider: requestedProvider };
     let provider: ProviderName;
     let strictProviderMode = false;
-    let exaDepthHint: "normal" | "deep" | "deep-reasoning" = "normal";
 
     if (requestedProvider === "auto") {
       if (!configuredProviders.length) {
@@ -1393,10 +1370,9 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         strictProviderMode = true;
         routingInfo = { requested_provider: "auto", auto_routed: false, provider, fixed_provider_mode: true, reason: "auto_routing_disabled" };
       } else {
-        const selection = selectAutoProvider(query, autoEnabledProviders, routingConfig);
+        const selection = selectAutoProvider(query, enabledProviders, routingConfig);
         provider = selection.provider;
         routingInfo = selection.routing;
-        exaDepthHint = (selection.routing.exa_depth || "normal") as "normal" | "deep" | "deep-reasoning";
       }
     } else {
       provider = requestedProvider;
@@ -1417,8 +1393,6 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         : {}),
     };
 
-    if (provider === "exa" && params.depth) exaDepthHint = params.depth;
-
     const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, autoEnabledProviders, routingConfig);
     const eligibleProviders: ProviderName[] = [];
     const cooldownSkips: Json[] = [];
@@ -1436,43 +1410,49 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const runProvider = async (p: ProviderName): Promise<SearchResponse> => {
       const key = validateApiKey(p, runtimeConfig);
       const locale = providerSupportsLocale(p) ? resolveLocale(p, runtimeConfig, query) : undefined;
-      if (p === "serper") return searchSerper(query, key, count, timeRange, locale, PROVIDER_SEARCH_TYPES.serper[searchType || "search"] || "search");
-      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
-      if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
-      if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
-      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains, locale);
-      if (p === "exa") {
-        const exaDepth = (params.depth || exaDepthHint || "normal") as "normal" | "deep" | "deep-reasoning";
-        return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
-      }
-      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
-      if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
-      if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
-      if (p === "you") return searchYou(query, key, count, timeRange, locale);
-      if (p === "keenable") return searchKeenable(query, key || undefined, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
-      if (p === "hound") {
-        if (searchType && searchType !== "search") throw new ProviderConfigError("Hound supports search_type=search only");
-        return searchHound(
-          query,
-          key,
-          count,
-          timeRange,
-          includeDomains,
-          excludeDomains,
-          undefined,
-          {
-            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
-            maxResponseBytes: runtimeConfig.houndMaxResponseBytes,
-          },
-        ) as Promise<SearchResponse>;
-      }
-      return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
+      const executeProvider = async (): Promise<SearchResponse> => {
+        if (p === "serper") return searchSerper(query, key, count, timeRange, locale, PROVIDER_SEARCH_TYPES.serper[searchType || "search"] || "search");
+        if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
+        if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
+        if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
+        if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains, locale);
+        if (p === "exa") {
+          return searchExa(query, key, count, includeDomains, excludeDomains, freshness, exaFreshnessBounds);
+        }
+        if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
+        if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains, runtimeConfig.parallelMode);
+        if (p === "serpbase") return searchSerpBase(query, key, count, locale);
+        if (p === "you") return searchYou(query, key, count, timeRange, locale);
+        if (p === "keenable") return searchKeenable(query, key || undefined, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
+        if (p === "octen") return searchOcten(query, key, count, { freshness: freshness || undefined, timeRange, searchType: searchType === "news" ? "news" : "search", includeDomains, excludeDomains, timeoutSeconds: runtimeConfig.octenTimeoutSeconds });
+        if (p === "tinyfish") return searchTinyFish(query, key, count, { freshness: freshness || undefined, timeRange, searchType: searchType || "search", includeDomains, excludeDomains, country: locale?.country, language: locale?.language, timeoutSeconds: runtimeConfig.tinyfishTimeoutSeconds }) as Promise<SearchResponse>;
+        if (p === "donsetch") {
+          if (!runtimeConfig.runCommandWithTimeout) throw new ProviderConfigError("donsetch_openclaw_runner_unavailable");
+          return searchDonsetch(runtimeConfig.runCommandWithTimeout, {
+            binary: key,
+            query,
+            maxResults: count,
+            searchType: searchType || "search",
+            freshness: timeRange,
+            includeDomains,
+            excludeDomains,
+            timeoutSeconds: runtimeConfig.donsetchTimeoutSeconds,
+          }) as Promise<SearchResponse>;
+        }
+        return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
+      };
+
+      const response = await executeProvider();
+      validateSourceOnlyAdapterResult(p, response);
+      return response;
     };
 
     if (params.mode === "research") {
-      const providerEligibleForResearch = (p: ProviderName) =>
-        !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && providerIsConfigured(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
-      const availableResearchProviders = new Set<ProviderName>(configuredProviders.filter(providerEligibleForResearch));
+      const providerEligibleForExplicitResearch = (p: ProviderName) =>
+        !routingConfig.disabled_providers.includes(p) && providerIsConfigured(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
+      const providerEligibleForAutomaticResearch = (p: ProviderName) =>
+        providerEligibleForExplicitResearch(p) && routingConfig.auto_allow?.[p] !== false;
+      const availableResearchProviders = new Set<ProviderName>(configuredProviders.filter(providerEligibleForAutomaticResearch));
       if (providerIsConfigured(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
         availableResearchProviders.add(provider);
       }
@@ -1480,7 +1460,9 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (routingOverride) {
         researchProviders = [provider];
       } else if (Array.isArray(params.research_providers) && params.research_providers.length) {
-        researchProviders = [...new Set(params.research_providers.map((value) => normalizeProviderName(value)))].filter(providerEligibleForResearch);
+        // An explicit list is an operator decision: bypass auto_allow while
+        // still respecting disabled, unconfigured, and cooldown gates.
+        researchProviders = [...new Set(params.research_providers.map((value) => normalizeProviderName(value)))].filter(providerEligibleForExplicitResearch);
       } else {
         researchProviders = selectResearchProviders(
           provider,
@@ -1537,7 +1519,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       if (freshness) {
         result.metadata = {
           ...(result.metadata || {}),
-          freshness: { requested: freshness, per_provider: researchProviders.map((p) => freshnessMetadata(p, freshness!)) },
+          freshness: { requested: freshness, per_provider: researchProviders.map((p) => freshnessMetadata(p, freshness!, exaFreshnessBounds)) },
         };
       }
       if (searchType && searchType !== "search") {
@@ -1560,7 +1542,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       locale: providerSupportsLocale(provider) ? (({ country, language }) => ({ country, language }))(resolveLocale(provider, runtimeConfig, query)) : null,
       include_domains: includeDomains ? [...includeDomains].sort() : null,
       exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
-      exa_depth: params.depth || exaDepthHint || "normal",
+      exa_depth: "normal",
+      parallel_mode: runtimeConfig.parallelMode || "fast",
       brave_safesearch: normalizeBraveSafesearch(braveOptions.safesearch),
       routing_preferences: routingConfig,
     };
@@ -1655,7 +1638,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     }
 
     if (freshness) {
-      result.metadata = { ...(result.metadata || {}), freshness: freshnessMetadata(successfulProvider, freshness) };
+      result.metadata = { ...(result.metadata || {}), freshness: freshnessMetadata(successfulProvider, freshness, exaFreshnessBounds) };
     }
     if (searchType && searchType !== "search") {
       result.metadata = { ...(result.metadata || {}), search_type: searchTypeMetadata(successfulProvider, searchType) };
@@ -1791,13 +1774,19 @@ function executeRoutingConfigAction(pluginConfig: Record<string, any>, params: R
 }
 
 export function register(api: any) {
+  const commandRunner = api.runtime?.system?.runCommandWithTimeout;
+
   api.registerTool(
     {
       name: "web_search_health_plus",
-      description: "Read-only process-local provider health from adaptive routing samples. Reports only what this host process has observed since it started; no HTTP endpoint or persisted history is used.",
+      description: "Read-only process-local provider health from adaptive routing samples. Reports only what this host process has observed since it started; when DonSeTch is configured it also runs the local executable's --version readiness check. No HTTP endpoint or persisted history is used.",
       parameters: { type: "object", properties: {} },
       async execute() {
-        return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot() }) }] };
+        const runtimeConfig = getRuntimeConfig((api.pluginConfig ?? {}) as Record<string, any>, commandRunner);
+        const readiness = commandRunner
+          ? await inspectDonsetchReadiness(commandRunner, runtimeConfig.donsetchBin, { timeoutSeconds: 5 })
+          : { state: runtimeConfig.donsetchBin ? "unavailable" : "missing", version: null, testedVersion: "3.2.1", compatibility: "unknown", binaryConfigured: Boolean(runtimeConfig.donsetchBin), diagnostic: runtimeConfig.donsetchBin ? "openclaw_command_runner_unavailable" : undefined };
+        return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot(), donsetch: readiness }) }] };
       },
     },
     { optional: true },
@@ -1818,12 +1807,12 @@ export function register(api: any) {
   api.registerTool(
     {
       name: "web_extract_benchmark_plus",
-      description: "Explicit opt-in extraction benchmark. Never runs automatically; makes at most max_provider_calls (1-3) direct provider calls, bypasses the response cache, and returns a process-local priority recommendation. Hound remains excluded unless auto_allow.hound=true.",
+      description: "Explicit opt-in extraction benchmark. Never runs automatically; makes at most max_provider_calls (1-3) direct provider calls, bypasses the response cache, and returns a process-local priority recommendation. DonSeTch remains excluded unless auto_allow.donsetch=true.",
       parameters: { type: "object", required: ["urls"], properties: { urls: { type: "array", minItems: 1, maxItems: 3, items: { type: "string" } }, max_provider_calls: { type: "integer", minimum: 1, maximum: 3 } } },
       async execute(_id: string, params: any) {
         try {
           const pluginConfig = (api.pluginConfig ?? {}) as Record<string, any>;
-          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig, commandRunner);
           const routing = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
           const maxCalls = Math.max(1, Math.min(3, Math.floor(Number(params?.max_provider_calls ?? 3))));
           const candidates = routing.extract_provider_priority.filter((provider) => !routing.disabled_providers.includes(provider) && routing.auto_allow[provider] !== false && isExtractProviderAvailable(provider, runtimeConfig)).slice(0, maxCalls);
@@ -1836,7 +1825,7 @@ export function register(api: any) {
             attempts.push({ provider, latency_ms: Date.now() - startedAt, status: response.error ? "failed" : "success", result_count: response.results.length, returned_chars: returnedChars, success_rate: Number((successCount / Math.max(1, params.urls.length)).toFixed(3)), score: benchmarkScore(successCount / Math.max(1, params.urls.length), Date.now() - startedAt, returnedChars, params.urls.length), error: response.error });
           }
           const priority_recommendation = attempts.filter((attempt) => attempt.status === "success" && attempt.result_count > 0).sort((left, right) => right.score - left.score || left.latency_ms - right.latency_ms).map((attempt) => attempt.provider);
-          const result = { scope: "process_local", explicit_opt_in: true, score_weights: BENCHMARK_SCORE_WEIGHTS, max_provider_calls: maxCalls, provider_calls_made: attempts.length, hound_auto_allow: routing.auto_allow.hound === true, attempts, priority_recommendation };
+          const result = { scope: "process_local", explicit_opt_in: true, score_weights: BENCHMARK_SCORE_WEIGHTS, max_provider_calls: maxCalls, provider_calls_made: attempts.length, donsetch_auto_allow: routing.auto_allow.donsetch === true, attempts, priority_recommendation };
           saveExtractBenchmark(result);
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
         } catch (error: any) {
@@ -1851,12 +1840,12 @@ export function register(api: any) {
     {
       name: "web_search_plus",
       description:
-        "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and the local Hound MCP sidecar. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and extract top sources for grounding.",
+        "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, explicit-only Octen/TinyFish, and optional separately installed DonSeTch. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and stop after a conservative source-quality quorum.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id: string, params: ToolParams) {
         try {
           const pluginConfig: Record<string, any> = (api.pluginConfig ?? {}) as Record<string, any>;
-          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig, commandRunner);
           const result = await executeSearch(runtimeConfig, params, pluginConfig);
           if (!result.ok) {
             const failure = result.payload as Json;
@@ -1894,11 +1883,11 @@ export function register(api: any) {
     {
       name: "web_extract_plus",
       description:
-        "Extract URL content across configured providers, including optional local Hound MCP, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
+        "Extract URL content across configured providers, including optional separately installed DonSeTch over a host-managed stdio process, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
-        return hasAnyExtractProviderCredential(getRuntimeConfig(pluginConfig));
+        return hasAnyExtractProviderCredential(getRuntimeConfig(pluginConfig, commandRunner));
       },
       async execute(_id: string, params: any) {
         try {
@@ -1913,7 +1902,7 @@ export function register(api: any) {
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(content)) }] };
           }
           const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;
-          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig, commandRunner);
           const routingPreferences = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
           const routingOverride = typeof params?.routing_override_provider === "string" ? params.routing_override_provider : null;
           if (routingOverride && params?.provider && params.provider !== "auto" && params.provider !== routingOverride) throw new Error("provider and routing_override_provider disagree");
@@ -1952,5 +1941,6 @@ export default definePluginEntry({
   id: "web-search-plus-plugin-v2",
   name: "Web Search Plus",
   description: "One clean set of web tools for multi-provider search and extraction.",
+  configSchema: buildJsonPluginConfigSchema(pluginManifest.configSchema, { uiHints: pluginManifest.uiHints }),
   register,
 });

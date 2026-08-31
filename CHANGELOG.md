@@ -2,7 +2,39 @@
 
 ## [Unreleased]
 
+## [4.0.3] - 2026-08-30
+
+Feature sync with Hermes Web Search Plus 3.3.0–4.0.3, adapted to OpenClaw's in-process plugin and host-runner boundaries.
+
+### Removed
+
+- Removed the Hound provider, loopback MCP transport, provider/config schema entries, automatic-routing gate, package files, and active setup guidance. Existing explicit calls must change from `provider="hound"` to `provider="donsetch"`; old Hound settings have no effect in 4.x.
+- Removed generated-answer and synthesis output from Search adapters. Tavily requests source results with `include_answer=false`; Exa exposes source-only neural search without deep/deep-reasoning synthesis.
+
+### Added
+
+- Added separately installed DonSeTch 3.2.1 as an explicit-only local Search/Markdown-Extract provider. The plugin passes `[donsetchBin, "mcp"]` to OpenClaw's trusted `api.runtime.system.runCommandWithTimeout` host runner rather than bundling DonSeTch or importing its own process implementation. One initialized stdio MCP session is reused across a multi-URL extraction request; response/content bounds, timeouts, environment isolation, sanitized diagnostics, readiness/version reporting, and stable provider errors are enforced at the adapter boundary. DonSeTch remains an independent AGPL-3.0-only component whose browser behavior depends on the target host.
+- Added Octen via Monid as a BYOK, source-only Search provider with native freshness and domain filters. It is explicit-only by default, disables billable full-content retrieval, and keeps Monid lifecycle failures separate from Octen provider errors.
+- Added TinyFish as a BYOK, source-only web/news Search provider with native freshness, locale, and domain filters. It is explicit-only by default, rejects redirects, bounds request/response data, and accepts result/filter hosts only as ASCII/Punycode. Documentation warns that TinyFish's standard Terms permit Customer Data to be used for model training and fine-tuning; explicit-only routing is not a privacy control.
+- Added Hermes 3.3 completion-order Research harvesting with a default conservative quality quorum. Providers that are still pending after the candidate/provider/domain thresholds are met remain visible as `preempted_after_quorum`, while public results, attempts, and errors remain deterministic in submission order.
+- Added provenance-safe Research URL clusters. Duplicate-provider evidence retains deterministic observation ids and attributed snippet fragments; result `source_type` and explainable `fetch_priority` fields are additive hints rather than truth claims.
+- Added heading-aware extraction spans: a query-matching ATX heading can retain its body and deeper subheadings through the next same-or-shallower heading, with at most two heading candidates and a 1,200-codepoint cap per section.
+
+### Changed
+
+- Parallel Search now uses the stable `/v1/search` endpoint, accepts `parallelMode` values `turbo`, `fast`, `basic`, and `advanced`, defaults to `fast`, and participates in the normal automatic pool when configured. `auto_allow.parallel=false` remains an operator opt-out.
+- Exa applies unified `day`, `week`, `month`, and `year` freshness by sending absolute UTC `startPublishedDate`/`endPublishedDate` bounds to `/search`; response metadata reports the effective range.
+- Default provider priority and automatic-routing guards now match Hermes 4.0.3: Brave and Parallel are auto-allowed; SerpBase, Querit, DonSeTch, Octen, and TinyFish remain guarded.
+- All five OpenClaw tools remain intentionally registered with `optional: true`. Additive onboarding uses `tools.alsoAllow` with exact desired tool names; `tools.allow` is documented only as a deliberately restrictive absolute alternative. A configured `plugins.allow` remains a separate plugin-load gate and must include the plugin id.
+
+### Security and privacy
+
+- Hosted Octen/TinyFish requests use fixed HTTPS origins, refuse redirects, cap response bodies, validate returned source URLs, and keep credentials out of diagnostics. Octen drops credentialed result URLs, and Monid FAILED envelopes are not retried as transient HTTP 500s.
+- DonSeTch command execution is delegated to the OpenClaw host runner with an exact argv, no shell command, a bounded/sanitized result surface, and an environment that removes unrelated provider secrets. donsetchBin rejects non-absolute paths and `.`/`..` segments before the host runner is invoked.
+- Source-only enforcement rejects answer- or synthesis-shaped adapter fields and provider modes, including Exa/Tavily synthesis controls, before results enter routing, caching, or Research aggregation.
+
 ### Documentation
+
 - Add a repository-specific contribution guide covering upstream-first ports, OpenClaw and ClawHub runtime constraints, provider/tool changes, security/privacy requirements, package synchronization, and pull-request evidence.
 - Add Node.js 22 GitHub Actions gates for locked install, tests, bundle build, and package-content verification, plus regression coverage that keeps the guide and CI commands synchronized.
 

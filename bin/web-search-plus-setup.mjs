@@ -9,16 +9,28 @@ const PROVIDERS = [
   { name: "serper", field: "serperApiKey", capability: "Google-style local, shopping, community, and current search", starter: true, guarded: false },
   { name: "linkup", field: "linkupApiKey", capability: "source-grounded official, regulatory, finance, and citation-heavy search/extraction", starter: true, guarded: false },
   { name: "tavily", field: "tavilyApiKey", capability: "reliable research search and Tavily-first extraction", starter: false, guarded: false },
-  { name: "exa", field: "exaApiKey", capability: "docs/API, arXiv, OSS discovery, deep/deep-reasoning search, and extraction", starter: false, guarded: false },
+  { name: "exa", field: "exaApiKey", capability: "source-only docs/API, arXiv, OSS and semantic discovery, plus URL extraction; answer and synthesis modes are not exposed", starter: false, guarded: false },
   { name: "firecrawl", field: "firecrawlApiKey", capability: "robust scraper safety net, vendor/CVE pages, and extraction fallback", starter: false, guarded: false },
   { name: "brave", field: "braveApiKey", capability: "independent-index current web and multilingual search in the default auto pool", starter: false, guarded: false },
   { name: "querit", field: "queritApiKey", capability: "multilingual/current AI search; guarded in auto routing", starter: false, guarded: true },
-  { name: "parallel", field: "parallelApiKey", capability: "Parallel search and extraction; guarded in auto routing", starter: false, guarded: true },
+  { name: "parallel", field: "parallelApiKey", capability: "source search and extraction in the default auto pool; parallelMode defaults to fast, while turbo, basic, and advanced can change latency and cost", starter: false, guarded: false },
   { name: "serpbase", field: "serpbaseApiKey", capability: "Google-style alternate search; guarded in auto routing", starter: false, guarded: true },
   { name: "searxng", field: "searxngInstanceUrl", capability: "self-hosted privacy metasearch", starter: false, guarded: false },
   { name: "keenable", field: "keenableApiKey", capability: "independent web index search and extraction; keyless public tier via keenableAllowPublic=true", starter: false, guarded: false },
-  { name: "hound", field: "houndMcpUrl", capability: "local MCP metasearch and browser-backed extraction; explicit-only by default", starter: false, guarded: true },
+  { name: "octen", field: "monidApiKey", capability: "source-only Octen search through Monid with freshness and domain filters; explicit-only by default", starter: false, guarded: true },
+  { name: "tinyfish", field: "tinyfishApiKey", capability: "source-only TinyFish web/news search with freshness, locale, and domain filters; explicit-only BYOK with a privacy warning", starter: false, guarded: true },
+  { name: "donsetch", field: "donsetchBin", capability: "separately installed local stdio MCP source search and Markdown extraction; explicit-only by default", starter: false, guarded: true },
 ];
+
+const TOOLS = [
+  "web_search_plus",
+  "web_extract_plus",
+  "web_routing_config_plus",
+  "web_search_health_plus",
+  "web_extract_benchmark_plus",
+];
+
+const SENSITIVE_CONFIG_KEY = /(?:api[_-]?key|token|secret|password|authorization|credential)/i;
 
 const PRESETS = {
   starter: ["you", "serper", "linkup"],
@@ -57,7 +69,36 @@ function readConfig(configPath) {
 
 function writeConfig(configPath, config) {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const flags = fs.constants.O_WRONLY
+    | fs.constants.O_CREAT
+    | (process.platform === "win32" ? 0 : fs.constants.O_NOFOLLOW);
+  const fd = fs.openSync(configPath, flags, 0o600);
+  try {
+    // open(2)'s mode does not change an existing file. Tighten it before
+    // truncating or writing so a previous permissive mode cannot expose keys.
+    fs.fchmodSync(fd, 0o600);
+    fs.ftruncateSync(fd, 0);
+    fs.writeFileSync(fd, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function redactConfig(value, key = "") {
+  if (SENSITIVE_CONFIG_KEY.test(key)) return "[REDACTED]";
+  if (Array.isArray(value)) return value.map((item) => redactConfig(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [childKey, redactConfig(childValue, childKey)]));
+  }
+  return value;
+}
+
+function parseSetValue(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 }
 
 function configuredProviders(config) {
@@ -96,7 +137,7 @@ async function main() {
       configured_providers: configured.map((p) => p.name),
       missing_starter_providers: PRESETS.starter.filter((name) => !configured.some((p) => p.name === name)),
       capabilities: configured.map((p) => ({ provider: p.name, capability: p.capability, guarded: p.guarded })),
-      tools: ["web_search_plus", "web_extract_plus", "web_routing_config_plus"],
+      tools: TOOLS,
       answer_tool_removed: true,
       self_hosted_ready: Boolean(config.searxngInstanceUrl || config.keenableApiKey || config.keenableAllowPublic === true),
     }, opts.json);
@@ -128,11 +169,11 @@ async function main() {
     const config = readConfig(opts.config);
     for (const item of opts.set) {
       const eq = item.indexOf("=");
-      if (eq <= 0) throw new Error(`Invalid --set ${item}; expected key=value`);
-      config[item.slice(0, eq)] = item.slice(eq + 1);
+      if (eq <= 0) throw new Error("Invalid --set; expected key=value");
+      config[item.slice(0, eq)] = parseSetValue(item.slice(eq + 1));
     }
     if (opts.set.length) writeConfig(opts.config, config);
-    print({ config_path: opts.config, config }, opts.json);
+    print({ config_path: opts.config, config: redactConfig(config) }, opts.json);
     return;
   }
 

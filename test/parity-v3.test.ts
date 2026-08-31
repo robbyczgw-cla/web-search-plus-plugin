@@ -40,14 +40,17 @@ test("routing v2 golden classes prefer benchmarked provider families", () => {
     const routing = new QueryAnalyzer().route(query, providers);
     assert.equal(routing.analysis_summary.routing_class, routingClass, query);
     assert.ok(allowedProviders.includes(routing.provider as any), `${query}: ${routing.provider}`);
-    if (routingClass === "answer/synthesis") assert.equal(routing.analysis_summary.answer_mode_recommended, true);
+    assert.equal("answer_mode_recommended" in routing.analysis_summary, false);
   }
 });
 
 test("guarded providers default to auto_allow false but explicit validation accepts them", () => {
   assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.brave, true);
-  assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.parallel, false);
+  assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.parallel, true);
   assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.serpbase, false);
+  assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.donsetch, false);
+  assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.octen, false);
+  assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.tinyfish, false);
   const config = validateRoutingPreferences({ provider_priority: ["parallel", "serpbase"], auto_allow: { parallel: true } });
   assert.equal(config.auto_allow.parallel, true);
   assert.equal(config.auto_allow.serpbase, false);
@@ -61,11 +64,13 @@ test("registered search exposes quality_report and excludes answer tool", () => 
   assert.equal(registered.has("web_answer_plus"), false);
 });
 
-test("Parallel search provider is explicit and normalized", async () => {
+test("Parallel search provider uses stable v1 and default fast mode", async () => {
   await withMockedFetch(async () => {
-    globalThis.fetch = (async (_url: any, init: any) => {
+    globalThis.fetch = (async (url: any, init: any) => {
+      assert.equal(String(url), "https://api.parallel.ai/v1/search");
       const body = JSON.parse(String(init.body));
       assert.equal(body.objective, "parallel ai docs");
+      assert.equal(body.mode, "fast");
       return new Response(JSON.stringify({ search_id: "s1", results: [{ title: "Parallel", url: "https://parallel.ai", excerpts: ["fast search"] }] }), { status: 200, headers: { "content-type": "application/json" } });
     }) as any;
     const registered = new Map<string, any>();
@@ -75,14 +80,19 @@ test("Parallel search provider is explicit and normalized", async () => {
     assert.equal(payload.provider, "parallel");
     assert.equal(payload.results[0].snippet, "fast search");
     assert.equal(payload.metadata.search_id, "s1");
+    assert.equal(payload.metadata.mode, "fast");
   });
 });
 
 test("SerpBase search provider is explicit and normalized", async () => {
   await withMockedFetch(async () => {
-    globalThis.fetch = (async (url: any) => {
-      assert.match(String(url), /api\.serpbase\.com/);
-      return new Response(JSON.stringify({ status: 0, organic_results: [{ title: "Result", link: "https://example.com/?utm_source=x", snippet: "clean" }], related_searches: [{ query: "more" }] }), { status: 200, headers: { "content-type": "application/json" } });
+    globalThis.fetch = (async (url: any, init: any) => {
+      assert.equal(String(url), "https://api.serpbase.dev/google/search");
+      assert.equal(init.method, "POST");
+      assert.equal(init.headers["X-API-Key"], "sb-test");
+      assert.equal(new URL(String(url)).searchParams.has("api_key"), false);
+      assert.deepEqual(JSON.parse(String(init.body)), { q: "test", hl: "en", gl: "us", page: 1 });
+      return new Response(JSON.stringify({ status: 0, organic: [{ title: "Result", link: "https://example.com/?utm_source=x", snippet: "clean" }], related_searches: [{ query: "more" }] }), { status: 200, headers: { "content-type": "application/json" } });
     }) as any;
     const registered = new Map<string, any>();
     register({ registerTool(tool: any) { registered.set(tool.name, tool); }, pluginConfig: { serpbaseApiKey: "sb-test" } });
@@ -94,8 +104,8 @@ test("SerpBase search provider is explicit and normalized", async () => {
   });
 });
 
-test("extraction priority appends guarded Hound after the existing fallbacks", () => {
-  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY, ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "hound"]);
+test("extraction priority appends explicit-only DonSeTch after hosted fallbacks", () => {
+  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY, ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch"]);
 });
 
 test("Parallel extraction provider is normalized", async () => {
@@ -103,7 +113,7 @@ test("Parallel extraction provider is normalized", async () => {
     globalThis.fetch = (async (_url: any, init: any) => {
       const body = JSON.parse(String(init.body));
       assert.deepEqual(body.urls, ["https://example.com"]);
-      return new Response(JSON.stringify({ results: [{ url: "https://example.com", title: "Example", excerpts: ["content"] }] }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ results: [{ url: "https://example.com", title: "Example", full_content: "content", excerpts: ["short"] }] }), { status: 200, headers: { "content-type": "application/json" } });
     }) as any;
     const payload = await extractPlus(["https://example.com"], "parallel" as any, "markdown", false, false, false, { parallelApiKey: "par-test" } as any);
     assert.equal(payload.provider, "parallel");

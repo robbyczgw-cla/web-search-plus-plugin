@@ -23,9 +23,8 @@ export const FALLBACK_LANGUAGE = "en";
 // localeLanguage value that enables query language inference.
 export const AUTO_LANGUAGE = "auto";
 
-// Providers whose request carries country and/or language parameters. The
-// plugin's SerpBase endpoint takes no locale parameters, so it is absent here.
-export const LOCALE_PROVIDERS = new Set(["serper", "brave", "querit", "firecrawl", "you", "searxng"]);
+// Providers whose request carries country and/or language parameters.
+export const LOCALE_PROVIDERS = new Set(["serper", "serpbase", "brave", "querit", "firecrawl", "you", "searxng", "tinyfish"]);
 
 // Small curated table of unambiguous location hints. Only well-known city and
 // country names are listed; generic example queries such as

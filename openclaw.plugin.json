@@ -1,8 +1,8 @@
 {
   "id": "web-search-plus-plugin-v2",
   "name": "Web Search Plus",
-  "version": "3.3.0",
-  "description": "One clean set of source-only web tools for Routing v2 multi-provider search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, and Tavily-first extraction. Supports Serper/Google, Brave, Tavily, Exa, Querit, Linkup, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and a local Hound MCP sidecar.",
+  "version": "4.0.3",
+  "description": "OpenClaw-native source-only web search and extraction with Routing v2, research quorum, result provenance, unified freshness/news/locale controls, hosted providers, and an optional separately installed DonSeTch stdio provider.",
   "contracts": {
     "tools": [
       "web_search_plus",
@@ -32,6 +32,9 @@
   "activation": {
     "onStartup": false
   },
+  "skills": [
+    "./SKILL.md"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -46,6 +49,7 @@
       },
       "braveSafesearch": {
         "type": "string",
+        "enum": ["strict", "moderate", "off"],
         "description": "Optional Brave safesearch default: `strict`, `moderate`, or `off`."
       },
       "tavilyApiKey": {
@@ -62,7 +66,7 @@
       },
       "exaApiKey": {
         "type": "string",
-        "description": "Exa API key for neural, deep, and deep-reasoning search. Optional individually, but at least one provider setting in this plugin must be configured."
+        "description": "Exa API key for source-result neural search and extraction. Answer-producing deep modes are intentionally not exposed."
       },
       "firecrawlApiKey": {
         "type": "string",
@@ -70,7 +74,7 @@
       },
       "youApiKey": {
         "type": "string",
-        "description": "You.com API key for general web and answer-oriented search. Optional individually, but at least one provider setting in this plugin must be configured."
+        "description": "You.com API key for source-result general web search and extraction."
       },
       "searxngInstanceUrl": {
         "type": "string",
@@ -90,7 +94,13 @@
       },
       "parallelApiKey": {
         "type": "string",
-        "description": "Parallel API key for guarded search and extraction. Optional individually, but at least one provider setting in this plugin must be configured."
+        "description": "Parallel API key for source search and extraction. Parallel participates in automatic routing by default in 4.0.2+."
+      },
+      "parallelMode": {
+        "type": "string",
+        "enum": ["turbo", "fast", "basic", "advanced"],
+        "default": "fast",
+        "description": "Parallel Search mode. Defaults to fast; other modes can change latency and provider cost."
       },
       "serpbaseApiKey": {
         "type": "string",
@@ -104,36 +114,66 @@
         "type": "boolean",
         "description": "Opt-in: allow Keenable's keyless public tier. Queries and fetched URLs are sent to an unauthenticated shared service (~1000 req/hour, no SLA). Off by default."
       },
-      "houndMcpUrl": {
+      "monidApiKey": {
         "type": "string",
-        "description": "Loopback-only Hound Streamable HTTP MCP endpoint, exactly http://127.0.0.1:<port>/mcp or http://[::1]:<port>/mcp."
+        "description": "Monid API key for the explicit-only Octen source-search adapter. Billing uses the operator's Monid wallet."
       },
-      "houndTimeoutSeconds": {
-        "type": "number",
-        "description": "Hound MCP call deadline in seconds (default 120, range 5-180)."
+      "octenTimeoutSeconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120,
+        "description": "Octen via Monid request timeout in seconds (default 30)."
       },
-      "houndMaxResponseBytes": {
-        "type": "number",
-        "description": "Maximum bytes accepted from one Hound MCP response (default 2097152, hard maximum 16777216)."
+      "tinyfishApiKey": {
+        "type": "string",
+        "description": "TinyFish BYOK key for explicit-only source search. Review TinyFish terms before sending sensitive queries; its published terms grant broad training/model-improvement rights."
       },
-      "houndMaxContentChars": {
-        "type": "number",
-        "description": "Maximum content characters requested from Hound smart_fetch per URL (default 40000, range 500-200000)."
+      "tinyfishTimeoutSeconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120,
+        "description": "TinyFish request timeout in seconds (default 30)."
+      },
+      "donsetchBin": {
+        "type": "string",
+        "description": "Absolute path to a separately installed DonSeTch executable. The plugin does not bundle DonSeTch or invoke a shell."
+      },
+      "donsetchTimeoutSeconds": {
+        "type": "integer",
+        "minimum": 5,
+        "maximum": 600,
+        "description": "DonSeTch stdio MCP session deadline in seconds (default 180)."
+      },
+      "donsetchMaxContentChars": {
+        "type": "integer",
+        "minimum": 500,
+        "maximum": 200000,
+        "description": "Maximum content characters requested from DonSeTch web_fetch per URL (default 15000)."
+      },
+      "donsetchTier": {
+        "enum": ["auto", 1, 2],
+        "default": "auto",
+        "description": "DonSeTch fetch tier: auto, 1, or 2. render_js forces tier 2."
       },
       "extractAllowPrivateUrls": {
         "type": "boolean",
         "description": "Opt-in danger flag. When true, web_extract_plus may target private/internal URLs (trusted intranet extraction). Off by default."
       },
       "extractCharLimit": {
-        "type": "number",
+        "type": "integer",
+        "minimum": 1000,
         "description": "Per-result inline character budget applied after aggregate prefix allocation and before head/tail truncation (default 15000, minimum 1000)."
       },
       "extractMaxUrls": {
-        "type": "number",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
         "description": "Operator ceiling for URLs processed by one extraction call (default 10, hard maximum 50)."
       },
       "extractMaxContextChars": {
-        "type": "number",
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 200000,
         "description": "Operator ceiling for aggregate inline extraction prefixes in Unicode codepoints, applied before per-result head/tail truncation (default 60000, range 1000-200000)."
       },
       "extractCacheMaxEntries": {
@@ -149,12 +189,14 @@
         "description": "Maximum Unicode codepoints retained by the process-local extraction full-text LRU (default 4000000, range 1-20000000). Entries are discarded when the host restarts."
       },
       "extractDeadlineSeconds": {
-        "type": "number",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 180,
         "description": "Operator ceiling for request-scoped extraction deadline in seconds (default 30, range 1-180). This is not a daily quota."
       },
       "localeCountry": {
         "type": "string",
-        "description": "Default search country (ISO 3166-1 alpha-2, e.g. \"at\") for locale-capable providers (Serper, Brave, Querit, Firecrawl, You.com). Explicit location hints in the query still win. Without this the providers keep their us defaults."
+        "description": "Default search country (ISO 3166-1 alpha-2, e.g. \"at\") for locale-capable providers including Serper, SerpBase, Brave, Querit, Firecrawl, You.com, SearXNG, and TinyFish."
       },
       "localeLanguage": {
         "type": "string",
@@ -256,6 +298,12 @@
       "placeholder": "par-...",
       "sensitive": true
     },
+    "parallelMode": {
+      "label": "Parallel Search mode",
+      "placeholder": "fast",
+      "description": "Default fast. Turbo/basic/advanced may change latency and cost.",
+      "sensitive": false
+    },
     "serpbaseApiKey": {
       "label": "SerpBase API Key",
       "placeholder": "sb-...",
@@ -271,24 +319,46 @@
       "description": "Sends queries and fetched URLs to Keenable's unauthenticated shared service. Off by default.",
       "sensitive": false
     },
-    "houndMcpUrl": {
-      "label": "Hound MCP URL",
-      "placeholder": "http://127.0.0.1:8765/mcp",
+    "monidApiKey": {
+      "label": "Monid API Key (Octen)",
+      "placeholder": "...",
+      "sensitive": true
+    },
+    "octenTimeoutSeconds": {
+      "label": "Octen timeout seconds",
+      "placeholder": "30",
       "sensitive": false
     },
-    "houndTimeoutSeconds": {
-      "label": "Hound timeout seconds",
-      "placeholder": "120",
+    "tinyfishApiKey": {
+      "label": "TinyFish API Key",
+      "placeholder": "...",
+      "description": "Explicit-only BYOK provider. Review TinyFish terms before sending sensitive queries.",
+      "sensitive": true
+    },
+    "tinyfishTimeoutSeconds": {
+      "label": "TinyFish timeout seconds",
+      "placeholder": "30",
       "sensitive": false
     },
-    "houndMaxResponseBytes": {
-      "label": "Hound response byte limit",
-      "placeholder": "2097152",
+    "donsetchBin": {
+      "label": "DonSeTch executable",
+      "placeholder": "/absolute/path/to/donsetch",
+      "description": "Separately installed executable; no shell is used.",
       "sensitive": false
     },
-    "houndMaxContentChars": {
-      "label": "Hound extract character request",
-      "placeholder": "40000",
+    "donsetchTimeoutSeconds": {
+      "label": "DonSeTch timeout seconds",
+      "placeholder": "180",
+      "sensitive": false
+    },
+    "donsetchMaxContentChars": {
+      "label": "DonSeTch extract chars",
+      "placeholder": "15000",
+      "sensitive": false
+    },
+    "donsetchTier": {
+      "label": "DonSeTch fetch tier",
+      "placeholder": "auto",
       "sensitive": false
     },
     "extractAllowPrivateUrls": {
@@ -319,6 +389,11 @@
     "extractCacheMaxChars": {
       "label": "Extract cache character limit",
       "placeholder": "4000000",
+      "sensitive": false
+    },
+    "extractDeadlineSeconds": {
+      "label": "Extract deadline seconds",
+      "placeholder": "30",
       "sensitive": false
     },
     "localeCountry": {
