@@ -57,6 +57,21 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function safeHttpUrl(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const parsed = new URL(value);
+    if (
+      !["http:", "https:"].includes(parsed.protocol)
+      || parsed.username
+      || parsed.password
+    ) return "";
+    return value;
+  } catch {
+    return "";
+  }
+}
+
 function providerFailure(code: unknown): ProviderRequestError {
   const statusCode = Number.isInteger(code) ? Number(code) : undefined;
   const suffix = statusCode == null ? "unknown" : String(statusCode);
@@ -161,7 +176,7 @@ export async function searchOcten(
     throw new ProviderRequestError("octen_monid_invalid_envelope", { transient: true });
   }
   if (envelope.status === "FAILED") {
-    throw new ProviderRequestError("octen_monid_failed", { statusCode: 500, transient: true });
+    throw new ProviderRequestError("octen_monid_failed", { statusCode: 500, transient: false });
   }
   if (envelope.status !== "COMPLETED") {
     throw new ProviderRequestError("octen_monid_not_completed", { transient: true });
@@ -193,8 +208,8 @@ export async function searchOcten(
   const results: OctenSearchResponse["results"] = [];
   for (const item of output.data.results.slice(0, count)) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const url = stringValue(item.url).trim();
-    if (!url.startsWith("https://") && !url.startsWith("http://")) continue;
+    const url = safeHttpUrl(item.url);
+    if (!url) continue;
     const projected: Json = {
       url,
       title: stringValue(item.title),

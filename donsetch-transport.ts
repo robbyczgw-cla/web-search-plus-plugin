@@ -1,3 +1,5 @@
+import path from "node:path";
+
 type JsonObject = Record<string, unknown>;
 
 export const DONSETCH_TESTED_VERSION = "3.2.1";
@@ -114,7 +116,12 @@ export function sanitizeDonsetchDiagnostic(value: unknown, limit = STDERR_EXCERP
 
 function normalizeBinary(binary: unknown): string {
   const candidate = typeof binary === "string" ? binary.trim() : "";
-  if (!candidate || /[\u0000\r\n]/.test(candidate)) {
+  if (
+    !candidate
+    || /[\u0000\r\n]/.test(candidate)
+    || !path.isAbsolute(candidate)
+    || candidate.split(/[\\/]/).some((segment) => segment === "." || segment === "..")
+  ) {
     throw new DonsetchTransportError("donsetch_binary_not_configured");
   }
   return candidate;

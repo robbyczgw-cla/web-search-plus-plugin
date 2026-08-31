@@ -64,6 +64,15 @@ test("search and extraction provider enums reflect the 4.0.3 surface", () => {
   assert.equal(extractProviders.includes("hound"), false);
 });
 
+test("changelog keeps Unreleased empty and records 4.0.3 review fixes", () => {
+  const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
+  const [beforeCurrent] = changelog.split("## [4.0.3]");
+  assert.match(beforeCurrent, /^# Changelog\n\n## \[Unreleased\]\n\n$/);
+  assert.match(changelog, /## \[4.0.3\].*contribution guide/s);
+  assert.match(changelog, /donsetchBin rejects non-absolute/);
+  assert.match(changelog, /Monid FAILED envelopes are not retried/);
+});
+
 test("publishable files exist and the OpenClaw SDK remains a host dependency", () => {
   for (const relativePath of packageJson.files) {
     assert.ok(fs.existsSync(path.join(root, relativePath)), `missing package file: ${relativePath}`);

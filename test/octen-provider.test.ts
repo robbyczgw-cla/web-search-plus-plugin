@@ -143,7 +143,7 @@ test("searchOcten rejects confused, async, and failed provider envelopes", async
   const cases: Array<[Record<string, any>, string, number | undefined, boolean]> = [
     [completedEnvelope({ provider: "other" }), "octen_monid_invalid_envelope", undefined, true],
     [completedEnvelope({ status: "RUNNING" }), "octen_monid_not_completed", undefined, true],
-    [completedEnvelope({ status: "FAILED" }), "octen_monid_failed", 500, true],
+    [completedEnvelope({ status: "FAILED" }), "octen_monid_failed", 500, false],
     [completedEnvelope({ providerResponse: { httpStatus: 401 } }), "octen_provider_http_401", 401, false],
     [completedEnvelope({ providerResponse: { httpStatus: 503 } }), "octen_provider_http_503", 503, true],
     [completedEnvelope({ output: { code: 429 } }), "octen_api_429", 429, true],
@@ -182,5 +182,24 @@ test("searchOcten enforces credentials, count, timeout, JSON, and body bounds", 
     headers: { "content-length": String(8 * 1024 * 1024 + 1) },
   })) as typeof fetch, async () => {
     await assert.rejects(searchOcten("query", "key", 3), /octen_response_too_large/);
+  });
+});
+
+test("searchOcten drops credentialed and non-http result URLs", async () => {
+  await withFetch((async () => Response.json(completedEnvelope({
+    output: {
+      code: 0,
+      data: {
+        results: [
+          { title: "Creds", url: "https://user:pass@docs.python.org/3/", highlight: "drop" },
+          { title: "Safe", url: "https://docs.python.org/3/library/", highlight: "keep" },
+          { title: "File", url: "file:///etc/passwd", highlight: "drop" },
+        ],
+      },
+      meta: {},
+    },
+  }))) as typeof fetch, async () => {
+    const result = await searchOcten("query", "key", 5);
+    assert.deepEqual(result.results.map((item) => item.url), ["https://docs.python.org/3/library/"]);
   });
 });

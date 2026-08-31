@@ -655,40 +655,40 @@ function validateRoutingPreferences(raw) {
   return config;
 }
 function loadRoutingPreferences(pluginConfig = {}) {
-  const path = resolveRoutingConfigPath(pluginConfig);
-  const existing = memoryRoutingPreferences.get(path);
-  if (existing) return { config: cloneConfig(existing), path, source: "memory" };
+  const path2 = resolveRoutingConfigPath(pluginConfig);
+  const existing = memoryRoutingPreferences.get(path2);
+  if (existing) return { config: cloneConfig(existing), path: path2, source: "memory" };
   const configuredPreferences = pluginConfig?.routingPreferences;
   if (configuredPreferences != null) {
     try {
       const validated = validateRoutingPreferences(configuredPreferences);
-      memoryRoutingPreferences.set(path, cloneConfig(validated));
-      return { config: cloneConfig(validated), path, source: "plugin_config" };
+      memoryRoutingPreferences.set(path2, cloneConfig(validated));
+      return { config: cloneConfig(validated), path: path2, source: "plugin_config" };
     } catch (error) {
       return {
         config: cloneDefaults(),
-        path,
+        path: path2,
         source: "default",
         warning: `Routing config reset to defaults after validation failure: ${String(error?.message || error)}`
       };
     }
   }
-  return { config: cloneDefaults(), path, source: "default" };
+  return { config: cloneDefaults(), path: path2, source: "default" };
 }
 function saveRoutingPreferences(pluginConfig = {}, config) {
-  const path = resolveRoutingConfigPath(pluginConfig);
+  const path2 = resolveRoutingConfigPath(pluginConfig);
   const validated = validateRoutingPreferences(config);
-  memoryRoutingPreferences.set(path, cloneConfig(validated));
-  return { config: cloneConfig(validated), path, source: "memory" };
+  memoryRoutingPreferences.set(path2, cloneConfig(validated));
+  return { config: cloneConfig(validated), path: path2, source: "memory" };
 }
 function resetRoutingPreferences(pluginConfig = {}) {
-  const path = resolveRoutingConfigPath(pluginConfig);
-  memoryRoutingPreferences.delete(path);
+  const path2 = resolveRoutingConfigPath(pluginConfig);
+  memoryRoutingPreferences.delete(path2);
   const configuredPreferences = pluginConfig?.routingPreferences;
   if (configuredPreferences != null) {
     return loadRoutingPreferences(pluginConfig);
   }
-  return { config: cloneDefaults(), path, source: "default" };
+  return { config: cloneDefaults(), path: path2, source: "default" };
 }
 
 // extract.ts
@@ -905,6 +905,7 @@ function selectSpans(text, query, options = {}) {
 }
 
 // donsetch-transport.ts
+import path from "node:path";
 var DONSETCH_TESTED_VERSION = "3.2.1";
 var DONSETCH_MCP_PROTOCOL_VERSION = "2025-11-25";
 var DEFAULT_TIMEOUT_SECONDS = 180;
@@ -950,7 +951,7 @@ function sanitizeDonsetchDiagnostic(value, limit = STDERR_EXCERPT_CHARS) {
 }
 function normalizeBinary(binary) {
   const candidate = typeof binary === "string" ? binary.trim() : "";
-  if (!candidate || /[\u0000\r\n]/.test(candidate)) {
+  if (!candidate || /[\u0000\r\n]/.test(candidate) || !path.isAbsolute(candidate) || candidate.split(/[\\/]/).some((segment) => segment === "." || segment === "..")) {
     throw new DonsetchTransportError("donsetch_binary_not_configured");
   }
   return candidate;
@@ -2544,20 +2545,20 @@ function compareObservations(left, right) {
 }
 function sourceType(url, rawHint) {
   let host = "";
-  let path = "";
+  let path2 = "";
   try {
     const parsed = new URL(url);
     host = parsed.hostname.toLowerCase();
-    path = parsed.pathname.toLowerCase();
+    path2 = parsed.pathname.toLowerCase();
   } catch {
   }
   if (["github.com", "gitlab.com", "bitbucket.org"].includes(host)) {
     return { value: "repo", method: "url_heuristic", method_version: "1", confidence: "high" };
   }
-  if (["arxiv.org", "doi.org", "semanticscholar.org", "pubmed.ncbi.nlm.nih.gov"].includes(host) || path.endsWith(".pdf")) {
+  if (["arxiv.org", "doi.org", "semanticscholar.org", "pubmed.ncbi.nlm.nih.gov"].includes(host) || path2.endsWith(".pdf")) {
     return { value: "paper", method: "url_heuristic", method_version: "1", confidence: "high" };
   }
-  if (host.startsWith("docs.") || path.includes("/docs") || path.includes("/documentation")) {
+  if (host.startsWith("docs.") || path2.includes("/docs") || path2.includes("/documentation")) {
     return { value: "docs", method: "url_heuristic", method_version: "1", confidence: "high" };
   }
   if (["wikipedia.org", "en.wikipedia.org", "developer.mozilla.org"].includes(host)) {
@@ -2566,10 +2567,10 @@ function sourceType(url, rawHint) {
   if (["reddit.", "stackoverflow.", "discourse.", "forum.", "community."].some((token) => host.includes(token))) {
     return { value: "forum", method: "url_heuristic", method_version: "1", confidence: "high" };
   }
-  if (host.startsWith("news.") || path.includes("/news")) {
+  if (host.startsWith("news.") || path2.includes("/news")) {
     return { value: "news", method: "url_heuristic", method_version: "1", confidence: "medium" };
   }
-  if (host.startsWith("blog.") || path.includes("/blog")) {
+  if (host.startsWith("blog.") || path2.includes("/blog")) {
     return { value: "blog", method: "url_heuristic", method_version: "1", confidence: "medium" };
   }
   const hintValue = rawHint && typeof rawHint === "object" && "value" in rawHint ? rawHint.value : rawHint;
@@ -3617,6 +3618,16 @@ function finiteCount(value) {
 function stringValue(value) {
   return typeof value === "string" ? value : "";
 }
+function safeHttpUrl2(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const parsed = new URL(value);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return "";
+    return value;
+  } catch {
+    return "";
+  }
+}
 function providerFailure(code) {
   const statusCode = Number.isInteger(code) ? Number(code) : void 0;
   const suffix = statusCode == null ? "unknown" : String(statusCode);
@@ -3701,7 +3712,7 @@ async function searchOcten(query, apiKey, maxResults, options = {}) {
     throw new ProviderRequestError("octen_monid_invalid_envelope", { transient: true });
   }
   if (envelope.status === "FAILED") {
-    throw new ProviderRequestError("octen_monid_failed", { statusCode: 500, transient: true });
+    throw new ProviderRequestError("octen_monid_failed", { statusCode: 500, transient: false });
   }
   if (envelope.status !== "COMPLETED") {
     throw new ProviderRequestError("octen_monid_not_completed", { transient: true });
@@ -3728,8 +3739,8 @@ async function searchOcten(query, apiKey, maxResults, options = {}) {
   const results = [];
   for (const item of output.data.results.slice(0, count)) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const url = stringValue(item.url).trim();
-    if (!url.startsWith("https://") && !url.startsWith("http://")) continue;
+    const url = safeHttpUrl2(item.url);
+    if (!url) continue;
     const projected = {
       url,
       title: stringValue(item.title),
@@ -4033,11 +4044,11 @@ var BANNED_INSTRUCTION_FRAGMENTS = [
 var SourceOnlyGateError = class extends Error {
   code;
   path;
-  constructor(code, path, detail = code) {
-    super(path ? `${detail} at ${path}` : detail);
+  constructor(code, path2, detail = code) {
+    super(path2 ? `${detail} at ${path2}` : detail);
     this.name = "SourceOnlyGateError";
     this.code = code;
-    this.path = path;
+    this.path = path2;
   }
 };
 function normalizedProvider(provider) {
@@ -4053,12 +4064,12 @@ function isInstructionLikeKey(key) {
   const keyName = normalizedKey(key);
   return keyName.includes("instruction") || keyName.includes("prompt") || keyName === "system" || keyName.startsWith("system");
 }
-function walkRecursively(value, visitor, path = "$", key = void 0, ancestors = /* @__PURE__ */ new Set(), parentInstructionContext = false) {
+function walkRecursively(value, visitor, path2 = "$", key = void 0, ancestors = /* @__PURE__ */ new Set(), parentInstructionContext = false) {
   const instructionContext = parentInstructionContext || key != null && isInstructionLikeKey(key);
-  visitor(value, path, key, instructionContext);
+  visitor(value, path2, key, instructionContext);
   if (value == null || typeof value !== "object") return;
   if (ancestors.has(value)) {
-    throw new SourceOnlyGateError("source_only_non_json_cycle", path);
+    throw new SourceOnlyGateError("source_only_non_json_cycle", path2);
   }
   ancestors.add(value);
   try {
@@ -4067,7 +4078,7 @@ function walkRecursively(value, visitor, path = "$", key = void 0, ancestors = /
         walkRecursively(
           child,
           visitor,
-          `${path}[${index}]`,
+          `${path2}[${index}]`,
           void 0,
           ancestors,
           instructionContext
@@ -4079,7 +4090,7 @@ function walkRecursively(value, visitor, path = "$", key = void 0, ancestors = /
       walkRecursively(
         child,
         visitor,
-        childPath(path, key2),
+        childPath(path2, key2),
         key2,
         ancestors,
         instructionContext
@@ -4108,18 +4119,18 @@ function assertSourceOnlyProvider(provider) {
 function validateSourceOnlyOutboundRequest(provider, body) {
   const normalized = assertSourceOnlyProvider(provider);
   requireObject(body, "source_only_request_body_invalid");
-  walkRecursively(body, (value, path, key, instructionContext) => {
+  walkRecursively(body, (value, path2, key, instructionContext) => {
     if (key != null) {
       const keyName = normalizedKey(key);
       if (BANNED_REQUEST_KEYS.has(keyName)) {
         if (keyName === "includeanswer" && value === false) return;
-        throw new SourceOnlyGateError("source_only_request_field", path);
+        throw new SourceOnlyGateError("source_only_request_field", path2);
       }
     }
     if (instructionContext && typeof value === "string") {
       const instruction = value.toLowerCase().replace(/\s+/g, " ");
       if (BANNED_INSTRUCTION_FRAGMENTS.some((fragment) => instruction.includes(fragment))) {
-        throw new SourceOnlyGateError("source_only_request_instruction", path);
+        throw new SourceOnlyGateError("source_only_request_instruction", path2);
       }
     }
   });
@@ -4138,14 +4149,14 @@ function validateSourceOnlyOutboundRequest(provider, body) {
     );
   }
   if (normalized === "exa") {
-    walkRecursively(body, (value, path, key) => {
+    walkRecursively(body, (value, path2, key) => {
       if (key == null || typeof value !== "string") return;
       if (!["type", "depth", "searchdepth"].includes(normalizedKey(key))) return;
       const mode = value.trim().toLowerCase();
       if (mode === "deep" || mode === "deep-reasoning") {
         throw new SourceOnlyGateError(
           "source_only_exa_deep_mode",
-          path,
+          path2,
           "exa deep modes are not source-only"
         );
       }
@@ -4155,14 +4166,14 @@ function validateSourceOnlyOutboundRequest(provider, body) {
 function validateSourceOnlyAdapterResult(provider, result) {
   assertSourceOnlyProvider(provider);
   requireObject(result, "source_only_adapter_result_invalid");
-  walkRecursively(result, (value, path, key) => {
+  walkRecursively(result, (value, path2, key) => {
     if (key != null && BANNED_RESULT_KEYS.has(normalizedKey(key))) {
-      throw new SourceOnlyGateError("source_only_adapter_result_field", path);
+      throw new SourceOnlyGateError("source_only_adapter_result_field", path2);
     }
     if (key != null && normalizedKey(key) === "type" && typeof value === "string") {
       const resultType = value.trim().toLowerCase();
       if (resultType === "answer" || resultType === "synthesis") {
-        throw new SourceOnlyGateError("source_only_adapter_result_type", path);
+        throw new SourceOnlyGateError("source_only_adapter_result_type", path2);
       }
     }
   });

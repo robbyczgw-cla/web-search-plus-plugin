@@ -187,6 +187,24 @@ test("inspectDonsetchReadiness reports tested, compatible, incompatible, and tim
   assert.equal(donsetchVersionCompatibility(null), "unknown");
 });
 
+test("DonSeTch host commands reject non-absolute binaries before launch", async () => {
+  let launched = 0;
+  const runner: DonsetchCommandRunner = async () => {
+    launched += 1;
+    throw new Error("must not launch");
+  };
+  for (const binary of ["donsetch", "./donsetch", "opt/donsetch", "/opt/../tmp/donsetch", "/opt/./donsetch"]) {
+    await assert.rejects(
+      runDonsetchSession(runner, binary, [{ tool: "web_search", arguments: { query: "test" } }]),
+      (error: unknown) => error instanceof DonsetchTransportError && error.code === "donsetch_binary_not_configured",
+    );
+    const report = await inspectDonsetchReadiness(runner, binary);
+    assert.equal(report.binaryConfigured, false);
+    assert.equal(report.state, "missing");
+  }
+  assert.equal(launched, 0);
+});
+
 test("sanitizeDonsetchDiagnostic bounds and redacts common secret forms", () => {
   const safe = sanitizeDonsetchDiagnostic(
     "authorization: abc token=def https://user:pass@example.com /Users/alice/private " + "x".repeat(100),

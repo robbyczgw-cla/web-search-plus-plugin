@@ -2,10 +2,6 @@
 
 ## [Unreleased]
 
-### Documentation
-- Add a repository-specific contribution guide covering upstream-first ports, OpenClaw and ClawHub runtime constraints, provider/tool changes, security/privacy requirements, package synchronization, and pull-request evidence.
-- Add Node.js 22 GitHub Actions gates for locked install, tests, bundle build, and package-content verification, plus regression coverage that keeps the guide and CI commands synchronized.
-
 ## [4.0.3] - 2026-08-30
 
 Feature sync with Hermes Web Search Plus 3.3.0–4.0.3, adapted to OpenClaw's in-process plugin and host-runner boundaries.
@@ -33,9 +29,14 @@ Feature sync with Hermes Web Search Plus 3.3.0–4.0.3, adapted to OpenClaw's in
 
 ### Security and privacy
 
-- Hosted Octen/TinyFish requests use fixed HTTPS origins, refuse redirects, cap response bodies, validate returned source URLs, and keep credentials out of diagnostics.
-- DonSeTch command execution is delegated to the OpenClaw host runner with an exact argv, no shell command, a bounded/sanitized result surface, and an environment that removes unrelated provider secrets.
+- Hosted Octen/TinyFish requests use fixed HTTPS origins, refuse redirects, cap response bodies, validate returned source URLs, and keep credentials out of diagnostics. Octen drops credentialed result URLs, and Monid FAILED envelopes are not retried as transient HTTP 500s.
+- DonSeTch command execution is delegated to the OpenClaw host runner with an exact argv, no shell command, a bounded/sanitized result surface, and an environment that removes unrelated provider secrets. donsetchBin rejects non-absolute paths and `.`/`..` segments before the host runner is invoked.
 - Source-only enforcement rejects answer- or synthesis-shaped adapter fields and provider modes, including Exa/Tavily synthesis controls, before results enter routing, caching, or Research aggregation.
+
+### Documentation
+
+- Add a repository-specific contribution guide covering upstream-first ports, OpenClaw and ClawHub runtime constraints, provider/tool changes, security/privacy requirements, package synchronization, and pull-request evidence.
+- Add Node.js 22 GitHub Actions gates for locked install, tests, bundle build, and package-content verification, plus regression coverage that keeps the guide and CI commands synchronized.
 
 ## [3.3.0] - 2026-07-25
 
