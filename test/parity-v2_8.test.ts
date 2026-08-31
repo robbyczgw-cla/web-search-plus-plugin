@@ -43,7 +43,18 @@ test("freshnessMetadata reports native mapping or non-application", () => {
   assert.equal(unsupported.applied, false);
   assert.match(unsupported.reason, /does not support freshness/);
   assert.ok(!("tavily" in PROVIDER_FRESHNESS_FORMATS));
-  assert.ok(!("exa" in PROVIDER_FRESHNESS_FORMATS));
+  assert.deepEqual(freshnessMetadata("exa", "week", {
+    startPublishedDate: "2026-08-23T00:00:00Z",
+    endPublishedDate: "2026-08-30T00:00:00Z",
+  }), {
+    requested: "week",
+    applied: true,
+    provider: "exa",
+    native_value: {
+      startPublishedDate: "2026-08-23T00:00:00Z",
+      endPublishedDate: "2026-08-30T00:00:00Z",
+    },
+  });
 });
 
 test("freshness maps natively for serper and lands in metadata", async (t) => {

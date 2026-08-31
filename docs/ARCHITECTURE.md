@@ -2,50 +2,40 @@
 
 ## Overview
 
-`web-search-plus-plugin` is a pure TypeScript implementation with a small local module split. The plugin registers `web_search_plus` directly in OpenClaw and performs provider routing, HTTP requests, retries, caching, cooldown tracking, deduplication, and SearXNG SSRF checks in-process.
+`web-search-plus-plugin` is a source-only TypeScript implementation with a small local module split. It registers five optional tools directly in OpenClaw and performs routing, hosted-provider HTTP, retries, caching, cooldown tracking, Research aggregation, provenance, extraction, and SearXNG SSRF checks in-process. DonSeTch is the sole external-process boundary: the plugin delegates an exact argv to OpenClaw's trusted host runner and never imports `node:child_process` itself.
 
+```mermaid
+flowchart TD
+    A[OpenClaw agent] --> B[Five optional Web Search Plus tools]
+    B --> C[Routing, Research, and extraction]
+    C --> D[Hosted HTTP providers]
+    C --> E[DonSeTch through OpenClaw host runner]
+    B --> F[Config, health, and benchmark views]
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                       OpenClaw Gateway                      │
-│                                                              │
-│  Agent calls web_search_plus(query, provider, ...)          │
-│                           ↓                                  │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │              index.ts + local helper modules          │  │
-│  │                                                        │  │
-│  │  Types → Config → HTTP Helper → Cache → Health        │  │
-│  │        → SSRF → QueryAnalyzer → Providers             │  │
-│  │        → Retry/Fallback → Dedup → Plugin Entry        │  │
-│  └───────────────────────────┬────────────────────────────┘  │
-│                              ↓                               │
-│      ┌───────┬───────┬────────┬────────┬──────┬────────┬──────────┐
-│      │Serper │ Brave │ Tavily │ Linkup │ Exa  │ Querit │Firecrawl│
-│      ├───────┼───────┼────────┼────────┼──────┼────────┼──────────┤
-│      │Parallel│SerpBase│ You.com│SearXNG│Keenable│ source-only    │
-│      └───────┴───────┴────────┴────────┴──────┴────────┴──────────┘
-└──────────────────────────────────────────────────────────────┘
-```
+
+Because all five tools are registered with `optional: true`, normal onboarding adds the exact desired names—`web_search_plus`, `web_extract_plus`, `web_routing_config_plus`, `web_search_health_plus`, and/or `web_extract_benchmark_plus`—through `tools.alsoAllow`, preserving the host's profile-derived tools. `tools.allow` is an intentionally restrictive absolute alternative. Plugin loading through `plugins.allow` and sandbox tool policy are separate gates.
 
 ## Core Design
 
 ### Runtime module layout
 
-The runtime entry lives in `index.ts`, with local helper modules for configuration mapping and scanner-safe routing preferences.
+The runtime entry lives in `index.ts`, with local helper modules for configuration mapping, scanner-safe routing preferences, Research/provenance, bounded provider HTTP, extraction spans, and DonSeTch's host-runner transport.
 
 Together they cover:
 - Type definitions for tool input/output and internal state
 - Environment/config loading
-- Shared HTTP request helper built on native `fetch()`
+- Shared bounded HTTP request helper built on native `fetch()`
 - In-memory cache helpers
 - Provider health and cooldown state management
 - SearXNG SSRF validation using `dns/promises` and `net`
 - Query analysis and auto-routing heuristics
-- Provider-specific request/response adapters
+- Provider-specific request/response adapters, including static Octen and TinyFish modules
+- DonSeTch stdio MCP framing over the injected OpenClaw command runner
 - Retry + fallback logic
 - Cross-provider deduplication
 - OpenClaw plugin entry + tool registration
 
-One plugin runtime, a few local helper modules, zero external runtime dependencies.
+One plugin runtime, local TypeScript modules, and zero bundled runtime dependencies. DonSeTch is optional, separately installed, and independently licensed.
 
 ## Runtime Layers
 
@@ -66,9 +56,9 @@ The bundled runtime reads provider values from explicit OpenClaw plugin config f
 
 This keeps credential access explicit and avoids mixing plugin runtime behavior with host-wide environment state.
 
-### 3. HTTP Helper
+### 3. Provider I/O
 
-All provider calls use native `fetch()` from Node.js.
+Hosted provider calls use native `fetch()` from Node.js. Octen and TinyFish additionally use a fixed-origin, redirect-refusing, response-bounded helper so credentials cannot follow redirects and untrusted bodies cannot grow without limit.
 
 Shared request behavior includes:
 - JSON request/response handling
@@ -78,7 +68,7 @@ Shared request behavior includes:
 - per-request timeout via `AbortController`
 - transient error classification for retries (`408`, `425`, `429`, `500`, `502`, `503`, `504`)
 
-No `child_process`, no external interpreters.
+The optional DonSeTch adapter does not use `fetch()` or import `child_process`. It sends `[donsetchBin, "mcp"]`, bounded stdin, an isolated environment, and timeout/output limits to the host-owned `api.runtime.system.runCommandWithTimeout` function. One initialized stdio MCP session serves one Web Search Plus request, including multi-URL extraction.
 
 ### 4. Cache
 
@@ -112,7 +102,7 @@ Checks include:
 - DNS resolution using `dns/promises`
 - IP classification using Node.js `net`
 - blocking private, loopback, link-local, and metadata-style targets by default
-- optional private-instance override through environment configuration
+- optional private-instance override through explicit plugin configuration
 
 Implemented entirely in TypeScript with Node.js builtins.
 
@@ -125,15 +115,14 @@ Signals include:
 - research / explanation intent
 - multilingual or geo-rich search intent
 - semantic discovery intent
-- direct-answer intent
 - query complexity heuristics
 - provider availability
 
-The router returns an internal provider choice, confidence estimate, and Exa depth hint when relevant. The default tool UX keeps those details trimmed down and applies runtime routing preferences on top.
+The router returns an internal provider choice and confidence estimate, with transparent class/language signals. Exa depth is not a public routing or tool parameter: the source-only adapter uses neural Search and rejects synthesis modes before network dispatch.
 
 ### 8. Providers
 
-Each provider has a dedicated adapter function in `index.ts`.
+Core hosted providers have dedicated adapter functions in `index.ts`; bounded or process-backed providers use focused modules.
 
 Current providers:
 - Serper
@@ -148,13 +137,18 @@ Current providers:
 - You.com
 - SearXNG
 - Keenable
+- Octen via Monid
+- TinyFish
+- DonSeTch
 
 Each adapter is responsible for:
 - auth handling
 - provider-specific request shape
-- optional feature mapping (`time_range`, domain filters, Exa depth)
+- optional feature mapping (`time_range`/freshness, news, locale, and domain filters)
 - response parsing
 - normalization into a shared output schema
+
+Exa provides source-only neural `/search` and translates unified freshness into absolute UTC publication bounds. Parallel uses stable `/v1/search`, defaults to mode `fast`, and is auto-allowed when configured. Octen and TinyFish are source-only Search providers guarded by default. DonSeTch is a separately installed Search/Markdown-Extract provider guarded by default; its adapter owns MCP framing and normalization while OpenClaw owns process execution.
 
 ### 9. Retry / Fallback
 
@@ -169,9 +163,7 @@ If a provider still fails:
 
 ### 10. Dedup
 
-When fallback or merged responses produce overlapping links, the plugin deduplicates results across providers before returning them (shared helper in `research.ts`).
-
-This keeps output compact and avoids repeated URLs in the final tool result.
+When fallback or merged responses produce overlapping links, `research.ts` clusters canonical URLs. The public result head remains compact, but cross-provider evidence is not discarded: clusters keep deterministic observation ids and attributed snippet fragments, plus provider-neutral `source_type` and explainable `fetch_priority` hints.
 
 ### 10b. Quality: rerank + authority signals (`quality.ts`)
 
@@ -179,13 +171,13 @@ For authority-sensitive routing classes (`official/vendor-release`, `docs/api`, 
 
 ### 10c. Research mode (`research.ts`)
 
-`mode="research"` orchestrates a compact multi-provider sweep: up to 3 configured, auto-allowed providers are queried **concurrently** (deterministic ordering by submission order), results are deduplicated, and the top URLs are extracted via the `extract.ts` auto fallback chain into `source_summaries`. An optional wall-clock time budget gates provider launches and extraction. Failures are collected as diagnostics (`routing.provider_errors`, `routing.extraction_error`) rather than failing the call, and a quality report is always attached. Research responses are not cached.
+`mode="research"` orchestrates a compact multi-provider sweep. Up to three providers run concurrently and completions are harvested as they arrive, preventing a blocked earlier submission from hiding later evidence. Results, attempts, and diagnostics are restored to submission order before public projection. The default quality quorum can preempt only still-pending work after two providers meet the unique-result target (`min(count, 5)`) and unique-domain target (`min(result_target, 3)`); omissions remain visible as `preempted_after_quorum`. The top URLs are extracted through `extract.ts` into `source_summaries`. A wall-clock budget gates provider launches, completion waits, and extraction. Research responses are not cached.
 
 ### 11. Plugin Entry
 
 The OpenClaw plugin entry:
-- registers the `web_search_plus` tool
-- exposes a JSON-schema tool contract
+- registers five optional tools: Search, Extract, routing config, provider health, and extraction benchmark
+- exposes JSON-schema tool contracts declared as owned in the manifest
 - validates and normalizes tool parameters
 - performs routing, execution, caching, retries, fallback, and final result shaping
 - returns structured JSON back to OpenClaw
@@ -197,9 +189,8 @@ The registered tool currently supports:
 | Parameter | Type | Notes |
 |-----------|------|-------|
 | `query` | string | Required search query |
-| `provider` | string | `serper`, `brave`, `tavily`, `linkup`, `querit`, `exa`, `firecrawl`, `parallel`, `serpbase`, `you`, `searxng`, `keenable`, or `auto` |
+| `provider` | string | `serper`, `brave`, `tavily`, `linkup`, `querit`, `exa`, `firecrawl`, `parallel`, `serpbase`, `you`, `searxng`, `keenable`, `octen`, `tinyfish`, `donsetch`, or `auto` |
 | `count` | number | Result count, clamped to safe limits |
-| `depth` | string | Exa depth: `normal`, `deep`, `deep-reasoning` |
 | `time_range` | string | `day`, `week`, `month`, `year` where supported |
 | `include_domains` | string[] | Provider-specific domain allowlist |
 | `exclude_domains` | string[] | Provider-specific domain denylist |
@@ -216,7 +207,7 @@ The registered tool currently supports:
 2. Plugin normalizes params and loads runtime config
 3. Cache lookup runs using query/provider/parameter context
 4. On cache miss, QueryAnalyzer scores available providers
-5. Selected provider is called directly with fetch()
+5. A hosted provider is called with bounded `fetch()`, or DonSeTch is invoked through the OpenClaw host runner
 6. If request fails transiently, retry logic applies
 7. If provider still fails, fallback chain tries the next healthy provider
 8. Provider response is normalized to shared result schema
@@ -230,7 +221,13 @@ The registered tool currently supports:
 web-search-plus-plugin/
 ├── index.ts                 # Runtime core: tool registration + search engine
 ├── extract.ts               # Extraction providers + auto fallback chain
-├── research.ts              # Research-mode orchestration + cross-provider dedup
+├── research.ts              # Completion-order Research + quorum/provenance
+├── span-extraction.ts       # Deterministic sentence/heading evidence spans
+├── provider-http.ts         # Fixed-origin bounded hosted-provider HTTP
+├── octen-provider.ts        # Octen via Monid source Search
+├── tinyfish-provider.ts     # TinyFish source Search + privacy metadata
+├── donsetch-provider.ts     # DonSeTch source Search/Markdown Extract adapter
+├── donsetch-transport.ts    # Stdio MCP over OpenClaw host command runner
 ├── quality.ts               # Canonical-source rerank + authority signals
 ├── routing-config.ts        # Routing preferences (in-memory, schema v2)
 ├── runtime-config.ts        # Plugin config → runtime config mapping
@@ -248,8 +245,8 @@ web-search-plus-plugin/
 
 ## Security Model
 
-- **No `child_process` or `spawn`** — no external interpreter execution
-- **No Python runtime** — fewer moving parts and no subprocess boundary
+- **No direct `child_process` or shell execution** — optional DonSeTch runs only through OpenClaw's injected, timeout-bounded host runner with an exact argv
+- **No Python runtime requirement** — the plugin and its host-runner adapter are TypeScript; DonSeTch is an optional independent executable
 - **Native `fetch()` with `AbortController` timeout** — requests cannot hang indefinitely
 - **API keys stay explicit** in OpenClaw plugin config
 - **Input validation** on all tool parameters
@@ -264,4 +261,4 @@ Removed in v2.0.0:
 - `scripts/search.py`
 - `scripts/setup.py`
 
-The Python subprocess architecture has been replaced entirely by the in-process TypeScript implementation.
+The legacy Python subprocess architecture remains replaced by the in-process TypeScript implementation. The optional DonSeTch 3.2.1 boundary is narrower: a separately installed executable is invoked only through OpenClaw's host-owned runner and stdio MCP contract.

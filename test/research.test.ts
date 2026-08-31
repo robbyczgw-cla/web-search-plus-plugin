@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { register, __resetRuntimeStateForTests } from "../index.ts";
-import { runResearchMode, selectResearchProviders } from "../research.ts";
+import {
+  deduplicateResultsAcrossProviders,
+  mergeResearchResultsAcrossProviders,
+  researchQuorumSnapshot,
+  runResearchMode,
+  selectResearchProviders,
+} from "../research.ts";
 import { __resetRoutingPreferencesForTests } from "../routing-config.ts";
 
 function mockJsonResponse(body: any, status = 200) {
@@ -69,6 +75,305 @@ test("runResearchMode preserves submission order despite out-of-order completion
   assert.equal(result.provider, "research");
   assert.equal(result.status, "success");
   assert.deepEqual(result.routing.provider_attempts.map((attempt: any) => attempt.outcome), ["success", "success"]);
+});
+
+test("runResearchMode harvests completion order and preempts only pending work after quality quorum", async () => {
+  let releaseSlow!: () => void;
+  const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+  let releaseFastA!: () => void;
+  const fastAGate = new Promise<void>((resolve) => { releaseFastA = resolve; });
+  let slowSignal: AbortSignal | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const run = runResearchMode({
+      query: "completion-order quorum",
+      researchProviders: ["slow", "fast-a", "fast-b"],
+      executeSearch: async (provider, signal) => {
+        if (provider === "slow") {
+          slowSignal = signal;
+          await slowGate;
+          return { results: [{ title: "Slow", url: "https://slow.example/a", snippet: "slow" }] };
+        }
+        if (provider === "fast-a") {
+          await fastAGate;
+          return { results: [
+            { title: "One", url: "https://one.example/a", snippet: "one" },
+            { title: "Two", url: "https://two.example/a", snippet: "two" },
+          ] };
+        }
+        releaseFastA();
+        return { results: [
+          { title: "Three", url: "https://three.example/b", snippet: "three" },
+          { title: "Four", url: "https://four.example/b", snippet: "four" },
+        ] };
+      },
+      extractUrls: async () => ({ provider: null, results: [] }),
+      maxResults: 3,
+      maxExtractUrls: 0,
+      timeBudgetSeconds: 2,
+    });
+    const guard = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error("research quorum did not return early")), 500);
+    });
+    const result = await Promise.race([run, guard]);
+
+    assert.deepEqual(result.routing.providers_queried, ["fast-a", "fast-b"]);
+    assert.deepEqual(result.results.map((item: any) => item.url), [
+      "https://one.example/a",
+      "https://two.example/a",
+      "https://three.example/b",
+    ]);
+    assert.deepEqual(result.routing.provider_errors, [{ provider: "slow", error: "preempted_after_quorum" }]);
+    assert.deepEqual(result.routing.provider_attempts.map((attempt: any) => attempt.outcome), ["cancelled", "success", "success"]);
+    assert.equal(result.metadata.research_quorum.triggered, true);
+    assert.deepEqual(result.metadata.research_quorum.contributing_providers, ["fast-a", "fast-b"]);
+    assert.equal(result.status, "success");
+    assert.equal(slowSignal?.aborted, true);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    releaseSlow();
+  }
+});
+
+test("research quorum evidence scans all completed results beyond the public page cap", () => {
+  const firstResults = Array.from({ length: 5 }, (_, index) => ({
+    title: `First ${index}`,
+    url: `https://first-${index}.example/a`,
+    snippet: "first",
+  }));
+  const snapshot = researchQuorumSnapshot([
+    ["first", { results: firstResults }],
+    ["second", { results: [{ title: "Second", url: "https://second.example/a", snippet: "second" }] }],
+  ]);
+
+  assert.deepEqual(snapshot, {
+    deduplicatedResultCount: 6,
+    uniqueDomainCount: 6,
+    contributingProviders: ["first", "second"],
+  });
+});
+
+test("runResearchMode does not let one prolific provider form a quorum", async () => {
+  let secondCompleted = false;
+  const result = await runResearchMode({
+    query: "one provider is not consensus",
+    researchProviders: ["prolific", "second"],
+    executeSearch: async (provider) => {
+      if (provider === "second") {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        secondCompleted = true;
+        return { results: [{ title: "Second", url: "https://second.example/a", snippet: "second" }] };
+      }
+      return { results: Array.from({ length: 5 }, (_, index) => ({
+        title: `Prolific ${index}`,
+        url: `https://prolific-${index}.example/a`,
+        snippet: "prolific",
+      })) };
+    },
+    extractUrls: async () => ({ provider: null, results: [] }),
+    maxResults: 5,
+    maxExtractUrls: 0,
+  });
+
+  assert.equal(secondCompleted, true);
+  assert.equal(result.metadata.research_quorum.triggered, false);
+  assert.deepEqual(result.metadata.research_quorum.contributing_providers, ["prolific", "second"]);
+  assert.deepEqual(result.routing.provider_errors, []);
+});
+
+test("runResearchMode preserves recall when completed evidence lacks domain diversity", async () => {
+  let slowCompleted = false;
+  const result = await runResearchMode({
+    query: "domain diversity",
+    researchProviders: ["fast-a", "fast-b", "slow"],
+    executeSearch: async (provider) => {
+      if (provider === "slow") {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        slowCompleted = true;
+        return { results: [{ title: "Slow", url: "https://other.example/a", snippet: "slow" }] };
+      }
+      return { results: [
+        { title: `${provider} one`, url: `https://same.example/${provider}/one`, snippet: "one" },
+        { title: `${provider} two`, url: `https://same.example/${provider}/two`, snippet: "two" },
+      ] };
+    },
+    extractUrls: async () => ({ provider: null, results: [] }),
+    maxResults: 3,
+    maxExtractUrls: 0,
+  });
+
+  assert.equal(slowCompleted, true);
+  assert.equal(result.metadata.research_quorum.triggered, false);
+  assert.deepEqual(result.metadata.providers_merged, ["fast-a", "fast-b", "slow"]);
+  assert.deepEqual(result.routing.provider_errors, []);
+});
+
+test("runResearchMode keeps reverse-completion failures in submission order", async () => {
+  const result = await runResearchMode({
+    query: "stable diagnostics",
+    researchProviders: ["first", "second"],
+    executeSearch: async (provider) => {
+      await new Promise((resolve) => setTimeout(resolve, provider === "first" ? 25 : 1));
+      throw new Error(`${provider} failed`);
+    },
+    extractUrls: async () => ({ provider: null, results: [] }),
+    maxResults: 3,
+    maxExtractUrls: 0,
+  });
+
+  assert.deepEqual(result.routing.provider_errors, [
+    { provider: "first", error: "first failed" },
+    { provider: "second", error: "second failed" },
+  ]);
+  assert.deepEqual(result.routing.provider_attempts.map((attempt: any) => attempt.provider), ["first", "second"]);
+});
+
+test("runResearchMode drains already-finishing promise chains before quorum preemption", async () => {
+  let thirdWorkFinished = false;
+  const result = await runResearchMode({
+    query: "same-turn completion drain",
+    researchProviders: ["fast-a", "fast-b", "finishing"],
+    executeSearch: async (provider) => {
+      if (provider === "finishing") {
+        for (let step = 0; step < 8; step += 1) await Promise.resolve();
+        thirdWorkFinished = true;
+        return { results: [{ title: "Finishing", url: "https://finishing.example/a", snippet: "finishing" }] };
+      }
+      return { results: [{ title: provider, url: `https://${provider}.example/a`, snippet: provider }] };
+    },
+    extractUrls: async () => ({ provider: null, results: [] }),
+    maxResults: 2,
+    maxExtractUrls: 0,
+  });
+
+  assert.equal(thirdWorkFinished, true);
+  assert.deepEqual(result.metadata.providers_merged, ["fast-a", "fast-b", "finishing"]);
+  assert.deepEqual(result.routing.provider_errors, []);
+  assert.equal(result.metadata.research_quorum.triggered, false);
+});
+
+test("runResearchMode harvests a provider that settles inside the bounded deadline grace", async () => {
+  const result = await runResearchMode({
+    query: "deadline edge",
+    researchProviders: ["edge"],
+    executeSearch: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { results: [{ title: "Edge", url: "https://edge.example/a", snippet: "edge" }] };
+    },
+    extractUrls: async () => ({ provider: null, results: [] }),
+    maxResults: 1,
+    maxExtractUrls: 0,
+    timeBudgetSeconds: 0.01,
+  });
+
+  assert.deepEqual(result.metadata.providers_merged, ["edge"]);
+  assert.deepEqual(result.routing.provider_errors, []);
+  assert.equal(result.routing.provider_attempts[0].outcome, "success");
+});
+
+test("research dedup aggregates attributed snippets and derives source type and fetch priority", () => {
+  const merged = mergeResearchResultsAcrossProviders([
+    ["alpha", { results: [{ title: "Project", url: "https://github.com/example/project", snippet: "Short statement." }] }],
+    ["beta", { results: [{ title: "Project docs", url: "https://github.com/example/project", snippet: "Short statement. Additional verified detail." }] }],
+    ["gamma", { results: [{ title: "Project notes", url: "https://github.com/example/project", snippet: "Independent operational detail." }] }],
+  ], 3);
+
+  assert.equal(merged.dedupCount, 2);
+  assert.equal(merged.results.length, 1);
+  const result = merged.results[0] as any;
+  assert.equal(result.snippet, "Short statement. Additional verified detail.\n\nIndependent operational detail.");
+  assert.equal(result.observation_ids.length, 3);
+  assert.ok(result.observation_ids.includes(result.representative_observation_id));
+  assert.deepEqual(result.source_observations.map((observation: any) => observation.observation_id), result.observation_ids);
+  assert.equal(result.snippet_origin, "engine");
+  assert.deepEqual(result.snippet_provenance.fragments.map((fragment: any) => ({
+    provider: fragment.provider,
+    observation_id: fragment.observation_id,
+    text: fragment.text,
+  })), [
+    { provider: "beta", observation_id: result.observation_ids[1], text: "Short statement. Additional verified detail." },
+    { provider: "gamma", observation_id: result.observation_ids[2], text: "Independent operational detail." },
+  ]);
+  assert.deepEqual(result.source_type, {
+    value: "repo",
+    method: "url_heuristic",
+    method_version: "1",
+    confidence: "high",
+  });
+  assert.deepEqual(result.fetch_priority, {
+    tier: "high",
+    reason_codes: ["cluster_consensus", "rank_top_3", "source_type_authoritative"],
+  });
+});
+
+test("research snippet aggregation truncates at 600 Unicode code points with named provenance", () => {
+  const merged = mergeResearchResultsAcrossProviders([
+    ["alpha", { results: [{ title: "Long", url: "https://example.com/long", snippet: "😀".repeat(700) }] }],
+    ["beta", { results: [{ title: "Other", url: "https://example.com/long", snippet: "independent" }] }],
+  ], 1);
+  const result = merged.results[0] as any;
+
+  assert.equal(Array.from(result.snippet).length, 600);
+  assert.equal(result.snippet_provenance.fragments.length, 1);
+  assert.deepEqual(result.snippet_provenance.fragments[0].transformations, [
+    "mechanical_segmentation",
+    "deterministic_truncation",
+  ]);
+  assert.equal(result.snippet_provenance.fragments[0].provider, "alpha");
+});
+
+test("research enrichment keeps distinct ports separate and makes observation IDs content-sensitive", () => {
+  const first = mergeResearchResultsAcrossProviders([
+    ["alpha", { results: [
+      { title: "Default", url: "https://host.example/a", snippet: "first version" },
+      { title: "Alternate", url: "https://host.example:8443/a", snippet: "alternate origin" },
+    ] }],
+  ], 5);
+  const changed = mergeResearchResultsAcrossProviders([
+    ["alpha", { results: [{ title: "Default", url: "https://host.example/a", snippet: "changed version" }] }],
+  ], 5);
+
+  assert.equal(first.dedupCount, 0);
+  assert.equal(first.results.length, 2);
+  assert.notEqual(first.results[0].observation_ids[0], changed.results[0].observation_ids[0]);
+});
+
+test("diversity rerank refreshes fetch-priority rank reasons after moving candidates", async () => {
+  const repeated = "same words form a repeated result snippet";
+  const result = await runResearchMode({
+    query: "refresh ranks",
+    researchProviders: ["alpha"],
+    executeSearch: async () => ({ results: [
+      { title: "First", url: "https://one.example/1", snippet: repeated },
+      { title: "Duplicate", url: "https://two.example/2", snippet: repeated },
+      { title: "Third", url: "https://three.example/3", snippet: "unique evidence from the third candidate" },
+      { title: "Fourth", url: "https://four.example/4", snippet: "another independent fourth source" },
+    ] }),
+    extractUrls: async () => ({ provider: null, results: [] }),
+    maxResults: 5,
+    maxExtractUrls: 0,
+    diversityRerank: true,
+  });
+
+  assert.deepEqual(result.results.map((item: any) => item.title), ["First", "Third", "Fourth", "Duplicate"]);
+  assert.deepEqual(result.results.map((item: any) => item.fetch_priority.reason_codes[1]), [
+    "rank_top_3",
+    "rank_top_3",
+    "rank_top_3",
+    "rank_beyond_top_3",
+  ]);
+});
+
+test("classic dedup keeps the representative snippet unchanged", () => {
+  const merged = deduplicateResultsAcrossProviders([
+    ["alpha", { results: [{ title: "A", url: "https://example.com/a", snippet: "alpha text" }] }],
+    ["beta", { results: [{ title: "B", url: "https://example.com/a", snippet: "beta text" }] }],
+  ], 5);
+
+  assert.equal(merged.results[0].snippet, "alpha text");
+  assert.equal(merged.results[0].snippet_provenance, undefined);
+  assert.equal(merged.results[0].source_type, undefined);
 });
 
 test("runResearchMode dedupes across providers and reports provider errors", async () => {

@@ -13,9 +13,19 @@ type Candidate = {
   text: string;
 };
 
+type MarkdownHeading = {
+  start: number;
+  level: number;
+  titleStart: number;
+  titleEnd: number;
+};
+
 const TOKEN_RE = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu;
 const PARAGRAPH_BREAK_RE = /(?:\r?\n[\t \f\v]*){2,}/g;
 const SENTENCE_END_RE = /(?<=[.!?])(?:["'’)\]]*)\s+/gu;
+const MARKDOWN_HEADING_RE = /^[\t ]{0,3}(#{1,6})(?:[\t ]+|$)/gm;
+const MAX_HEADING_SECTION_CANDIDATES = 2;
+const MAX_HEADING_SECTION_CHARS = 1_200;
 
 function codepoints(text: string): string[] {
   return Array.from(text);
@@ -123,6 +133,63 @@ function tokens(text: string): string[] {
   return [...text.matchAll(TOKEN_RE)].map((match) => match[0].toLocaleLowerCase());
 }
 
+function headingSectionCandidates(
+  text: string,
+  query: string,
+  maxSpanChars: number,
+  maxSections: number,
+): Candidate[] {
+  const queryTerms = new Set(tokens(query));
+  if (!queryTerms.size || maxSections <= 0) return [];
+
+  const mapping = codeUnitToCodepointMap(text);
+  const points = codepoints(text);
+  const headings: MarkdownHeading[] = [];
+  MARKDOWN_HEADING_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = MARKDOWN_HEADING_RE.exec(text))) {
+    const titleStartUnits = match.index + match[0].length;
+    const titleEndUnits = text.indexOf("\n", titleStartUnits);
+    headings.push({
+      start: mapping[match.index],
+      level: match[1].length,
+      titleStart: mapping[titleStartUnits],
+      titleEnd: mapping[titleEndUnits < 0 ? text.length : titleEndUnits],
+    });
+  }
+
+  const sectionCharBudget = Math.min(maxSpanChars, MAX_HEADING_SECTION_CHARS);
+  const ranked: Array<{ matchedTerms: number; candidate: Candidate }> = [];
+  for (let index = 0; index < headings.length; index += 1) {
+    const heading = headings[index];
+    const titleTerms = new Set(tokens(points.slice(heading.titleStart, heading.titleEnd).join("")));
+    const matchedTerms = [...queryTerms].filter((term) => titleTerms.has(term)).length;
+    if (!matchedTerms) continue;
+
+    let sectionEnd = points.length;
+    for (const laterHeading of headings.slice(index + 1)) {
+      if (laterHeading.level <= heading.level) {
+        sectionEnd = laterHeading.start;
+        break;
+      }
+    }
+    const candidate = trimCandidate(
+      points,
+      heading.start,
+      Math.min(sectionEnd, heading.start + sectionCharBudget),
+    );
+    if (candidate && candidate.end >= heading.titleEnd) {
+      ranked.push({ matchedTerms, candidate });
+    }
+  }
+
+  ranked.sort((left, right) =>
+    right.matchedTerms - left.matchedTerms
+    || left.candidate.start - right.candidate.start
+    || left.candidate.end - right.candidate.end);
+  return ranked.slice(0, maxSections).map(({ candidate }) => candidate);
+}
+
 function lexicalScore(candidate: Candidate, query: string, total: number): number {
   const candidateTokens = tokens(candidate.text);
   if (!candidateTokens.length) return 0;
@@ -160,7 +227,17 @@ export function selectSpans(
   if (maxSpans <= 0 || maxSpanChars <= 0) return [];
   const normalized = text.normalize("NFC");
   const normalizedQuery = (query || "").normalize("NFC").trim();
-  const ranked = candidates(normalized, maxSpanChars).map((candidate) => {
+  const headingCandidates = headingSectionCandidates(
+    normalized,
+    normalizedQuery,
+    maxSpanChars,
+    Math.min(maxSpans, MAX_HEADING_SECTION_CANDIDATES),
+  );
+  const allCandidates = new Map<string, Candidate>();
+  for (const candidate of [...candidates(normalized, maxSpanChars), ...headingCandidates]) {
+    allCandidates.set(`${candidate.start}:${candidate.end}`, candidate);
+  }
+  const ranked = [...allCandidates.values()].map((candidate) => {
     const score = options.ranker
       ? options.ranker(candidate.text, normalizedQuery)
       : lexicalScore(candidate, normalizedQuery, codepoints(normalized).length);
@@ -170,10 +247,17 @@ export function selectSpans(
   ranked.sort((left, right) => right.score - left.score || left.candidate.start - right.candidate.start || left.candidate.end - right.candidate.end);
 
   const selected: Array<{ candidate: Candidate; score: number }> = [];
+  for (const candidate of headingCandidates) {
+    if (selected.some(({ candidate: existing }) => candidate.start < existing.end && existing.start < candidate.end)) continue;
+    const item = ranked.find(({ candidate: rankedCandidate }) =>
+      rankedCandidate.start === candidate.start && rankedCandidate.end === candidate.end);
+    if (item) selected.push(item);
+    if (selected.length >= maxSpans) break;
+  }
   for (const item of ranked) {
+    if (selected.length >= maxSpans) break;
     if (selected.some(({ candidate }) => item.candidate.start < candidate.end && candidate.start < item.candidate.end)) continue;
     selected.push(item);
-    if (selected.length >= maxSpans) break;
   }
   selected.sort((left, right) => left.candidate.start - right.candidate.start);
   return selected.map(({ candidate, score }) => ({ ...candidate, score }));

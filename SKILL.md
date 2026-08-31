@@ -1,14 +1,16 @@
 ---
 name: web-search-plus-plugin-v2
-version: 3.3.0
-description: OpenClaw plugin for Routing v2 multi-provider web search, research mode, canonical-source reranking, spam/mirror filtering, unified freshness and news vertical, locale defaults, Tavily-first extraction, optional local Hound MCP search/extraction, quality reports, onboarding CLI, runtime routing preferences, process-local health, and explicit extraction benchmarks. Registers five web tools.
+version: 4.0.3
+description: OpenClaw plugin for source-only Routing v2 multi-provider search, completion-order Research with quality quorum and attributed provenance, heading-aware extraction spans, Tavily-first extraction, explicit-only Octen/TinyFish, optional separately installed DonSeTch through the OpenClaw host runner, process-local health, routing preferences, and extraction benchmarks. Registers five optional web tools.
 ---
 
 # Web Search Plus Plugin
 
-Native OpenClaw plugin that gives agents one clean web surface for search, extraction, routing configuration, provider health, and extraction benchmarks. `web_answer_plus` is intentionally removed in v3.0.0; use search plus extraction instead.
+Use this OpenClaw plugin for current web search, multi-provider research, URL extraction, routing configuration, provider health, and bounded extraction benchmarks. `web_answer_plus` is not part of the source-only surface; use Search plus Extract.
 
-## Tools
+## Enable the optional tools
+
+The plugin registers all five tools with `optional: true`:
 
 - `web_search_plus`
 - `web_extract_plus`
@@ -16,82 +18,101 @@ Native OpenClaw plugin that gives agents one clean web surface for search, extra
 - `web_search_health_plus`
 - `web_extract_benchmark_plus`
 
-## Good starter setup
+They must be permitted by OpenClaw's tool policy. Add the exact tools the agent needs without replacing its existing profile:
 
-Recommended starter preset:
-
-- You.com
-- Serper
-- Linkup
-
-Run:
-
-```bash
-web-search-plus-setup setup --preset starter --config ./web-search-plus-plugin.config.json
+```json
+{
+  "tools": {
+    "alsoAllow": [
+      "web_search_plus",
+      "web_extract_plus",
+      "web_routing_config_plus",
+      "web_search_health_plus",
+      "web_extract_benchmark_plus"
+    ]
+  }
+}
 ```
 
-Tavily is the default first extraction provider in auto mode. The fallback chain is Tavily → Exa → Linkup → Parallel → Firecrawl → You.com → Keenable → Serper (webpage scraper) → Hound. Hound is a separately installed local MCP sidecar and remains explicit-only until deliberately auto-allowed. Extraction targets are validated against private/internal destinations by default. Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; request-side `max_urls`/`max_context_chars` can lower those limits and operator settings can impose ceilings. The aggregate budget first selects a deterministic prefix; `extractCharLimit` then turns an oversized prefix into the documented head/tail window with a truncation marker. Inline `raw_content` mirrors the final budgeted `content`; a distinct provider raw text is retained only behind `full_content_ref`. Read that reference with the same tool using `content_start`/`content_end` (maximum 60,000 Unicode codepoints). If distinct provider raw text exists, the reference read reports its length and `raw_content_start`/`raw_content_end` read its separately-addressed range. Both ranges are valid only until the process-local LRU entry expires or the host restarts.
+For least privilege, remove any names the agent does not need. `tools.alsoAllow` is additive. `tools.allow` is the restrictive alternative and must also retain every non-plugin tool the agent needs. A configured `plugins.allow` is separate and must include `web-search-plus-plugin-v2` so the plugin can load.
 
-Use `spans=true` for deterministic query-conditioned passages. `spans_query` supplies the ranking query; offsets are half-open Unicode-codepoint positions into the complete cleaned NFC text, and `within_preview` says whether each passage is present in the inline preview.
+## Good starter setup
 
-## Config fields
+Start with one or more of You.com, Serper, and Linkup. Tavily is first in the default extraction order:
 
-Search providers:
+Tavily → Exa → Linkup → Parallel → Firecrawl → You.com → Keenable → Serper → DonSeTch.
 
-- `serperApiKey`
-- `braveApiKey`
-- `tavilyApiKey`
-- `exaApiKey`
-- `queritApiKey`
-- `linkupApiKey`
-- `firecrawlApiKey`
-- `parallelApiKey`
-- `serpbaseApiKey`
-- `youApiKey`
-- `searxngInstanceUrl`
-- `keenableApiKey`
-- `houndMcpUrl`
+DonSeTch appears last in the stable extraction priority but is skipped by automatic routing until an operator explicitly enables its `auto_allow` gate. Extraction targets reject private/internal destinations by default. Inline content uses deterministic URL/context limits, and full-text continuation references live only in the process-local LRU until eviction or host restart.
 
-Extra settings:
+Use `spans=true` for deterministic, query-conditioned passages. A query-matching ATX Markdown heading retains its body and deeper subheadings through the next same-or-shallower heading. At most two heading sections are added, each capped at 1,200 Unicode codepoints. Offsets are NFC Unicode-codepoint half-open ranges; `within_preview` reports whether a span is present in the inline preview.
 
-- `braveSafesearch`
-- `searxngAllowPrivate`
-- `routingConfigPath` (namespace only; runtime prefs are in-memory)
-- `keenableAllowPublic` (opt-in keyless Keenable public tier)
-- `houndTimeoutSeconds` / `houndMaxResponseBytes` / `houndMaxContentChars` (bounded Hound MCP limits)
-- `extractAllowPrivateUrls` (opt-in private/internal extraction targets)
-- `extractCharLimit` (per-result inline budget after aggregate prefix allocation, default 15000)
-- `extractMaxUrls` (operator URL ceiling, default 10)
-- `extractMaxContextChars` (operator aggregate context ceiling, default 60000)
-- `extractCacheMaxEntries` (process-local extraction LRU capacity, default 64; entries disappear on host restart)
-- `extractCacheMaxChars` (process-local full-text budget in Unicode codepoints, default 4,000,000; oversized responses have no `full_content_ref`)
-- `localeCountry` / `localeLanguage` (default search locale; `"auto"` language enables query inference)
-- `parallelMaxCharsPerResult` / `parallelMaxCharsTotal` (Parallel extract budgets)
-- `qualityBlockedDomains` / `qualityAllowedDomains` (spam/mirror blocklist overrides)
+## Provider configuration
+
+Hosted Search credentials/settings:
+
+- `serperApiKey`, `braveApiKey`, `tavilyApiKey`, `exaApiKey`
+- `queritApiKey`, `linkupApiKey`, `firecrawlApiKey`
+- `parallelApiKey`, `serpbaseApiKey`, `youApiKey`
+- `searxngInstanceUrl`, `keenableApiKey`
+- `monidApiKey` for Octen via Monid
+- `tinyfishApiKey`
+
+Local provider:
+
+- `donsetchBin` — absolute path to a separately installed DonSeTch executable
+
+Important controls:
+
+- `parallelMode`: `turbo`, `fast` (default), `basic`, or `advanced`; Parallel uses its stable v1 Search endpoint and is auto-allowed when configured
+- `octenTimeoutSeconds`, `tinyfishTimeoutSeconds`
+- `donsetchTimeoutSeconds`, `donsetchMaxContentChars`, `donsetchTier`
+- `keenableAllowPublic`, `searxngAllowPrivate`, `extractAllowPrivateUrls`
+- `extractCharLimit`, `extractMaxUrls`, `extractMaxContextChars`, `extractDeadlineSeconds`
+- `extractCacheMaxEntries`, `extractCacheMaxChars`
+- `localeCountry`, `localeLanguage`
+- `parallelMaxCharsPerResult`, `parallelMaxCharsTotal`
+- `qualityBlockedDomains`, `qualityAllowedDomains`, `qualityDiversityRerank`
+
+OpenClaw plugin config is the only credential source; this package does not discover `.env` files.
+
+## Provider boundaries
+
+- Exa exposes source-only neural `/search`. Unified `day|week|month|year` freshness becomes absolute UTC publication-date bounds. Deep, deep-reasoning, answer, and synthesis output are not exposed.
+- Parallel uses stable v1 Search with `fast` as the default mode and participates in normal automatic routing when configured.
+- Octen via Monid and TinyFish are Search-only and explicit-only by default. Both support freshness and domain filters; TinyFish also supports native news and locale.
+- TinyFish's standard [Terms](https://www.tinyfish.ai/terms) permit Customer Data, including queries, to be used for model training and fine-tuning. Explicit-only is not a privacy guarantee. Review its [Privacy Policy](https://www.tinyfish.ai/privacy-policy) and the terms applicable to your account before sending sensitive data.
+
+## DonSeTch
+
+Install the independent AGPL-3.0-only DonSeTch 3.2.1 package separately:
+
+```bash
+npm install -g donsetch@3.2.1
+command -v donsetch
+donsetch --version
+donsetch doctor
+```
+
+Set `donsetchBin` to the absolute executable path. Web Search Plus passes the bounded `[donsetchBin, "mcp"]` invocation to OpenClaw's trusted `api.runtime.system.runCommandWithTimeout` host runner; the plugin does not bundle DonSeTch or own a shell/process implementation. One stdio MCP session serves one Web Search Plus request, including every URL in a multi-URL extraction. Credentials unrelated to DonSeTch are removed from the child environment, outputs and diagnostics are bounded/sanitized, and browser success remains dependent on the host's Chrome/Chromium/display setup.
+
+Use `provider="donsetch"` explicitly first. Only after verifying the target host should an operator call `web_routing_config_plus(action="set_auto_allow", provider="donsetch", enabled=true)`.
 
 ## Routing v2
 
-Auto routing is class-aware and benchmark-backed. Key classes: multilingual/current, local/shopping, docs/api, academic/arxiv, community/reddit, security/cve, official/vendor-release, official/regulatory, finance/IR, weather/factual, oss-discovery, and answer/synthesis.
+Default search priority: You.com → Serper → Exa → Firecrawl → Tavily → Linkup → Brave → Parallel → SerpBase → Querit → SearXNG → Keenable.
 
-Default auto pool: You.com, Serper, Brave, Exa, Firecrawl, Tavily, Linkup.
-Guarded providers require `auto_allow[provider]=true` for auto routing: SerpBase, Querit, Parallel, Hound. Brave is auto-allowed by default for independent-index source diversity and can still be disabled explicitly. Hound setup and security constraints are documented in `docs/HOUND.md`.
+SerpBase, Querit, DonSeTch, Octen, and TinyFish are guarded by `auto_allow=false`; Brave and Parallel are in the normal automatic pool. Search and extraction priorities are independent. The `self_hosted` profile derives SearXNG/Keenable automatic pools while preserving explicit configured-provider calls.
 
-`provider_priority` controls search only. `extract_provider_priority` independently controls `web_extract_plus(provider="auto")`; missing extraction providers are appended in the stable Tavily-first default order.
-
-The `self_hosted` routing profile is selected with `web_routing_config_plus(action="set_profile", profile="self_hosted")`. It derives SearXNG → Keenable search routing and Keenable-first extraction while keeping explicit keyed provider overrides available. Auto calls require a configured SearXNG instance or Keenable credential/public-tier opt-in.
-
-Every search routing object exposes `language_hint`, `routing_class`, and `routing_policy`. Pass `quality_report: true` for provider scores, result quality hints, fallback diagnostics, `authority_signals` (canonical/demoted domain hits and primary-source top-result flag), and a calibrated `diversity` score. `qualityDiversityRerank=true` is an operator opt-in that moves near-duplicate Research results behind the diverse head without dropping them. Recent provider latency/success behavior feeds bounded adaptive score adjustments (`routing.adaptive_adjustments`).
-
-Known SEO mirror/scraper domains are filtered from results and one domain is capped at two head slots (`metadata.result_filter`); `site:`/`include_domains` constraints bypass both. `freshness: day|week|month|year` applies native recency filters where supported (`metadata.freshness`), `search_type: news` uses Serper's native news vertical (`metadata.search_type`), and `localeCountry`/`localeLanguage` steer provider locale (`metadata.locale`).
-
-For canonical-source classes (official/vendor-release, docs/api, official/regulatory, finance/IR, security/cve), auto-routed results are reranked so primary sources outrank mirrors; reorderings are reported in `metadata.intent_rerank`.
+Use `quality_report=true` for routing, authority, diversity, fallback, and result-quality diagnostics. Provider health and shadow-quality state are process-local and disappear on restart.
 
 ## Research mode
 
-`web_search_plus(mode="research")` queries up to 3 providers concurrently, deduplicates across them, and extracts the top `research_extract_count` URLs (default 3) into `source_summaries` for grounding. Use `research_providers` to pick providers explicitly and `research_time_budget` (seconds, default 55) to cap wall-clock cost. `routing.provider_attempts` preserves per-provider outcomes; partial evidence is degraded and total fan-out failure is a failed envelope.
+`web_search_plus(mode="research")` launches up to three providers concurrently and harvests completions as they arrive. Public results, attempts, and errors remain in deterministic submission order.
+
+The default quality quorum can stop waiting once at least two providers contribute `min(count, 5)` unique candidates across `min(result_target, 3)` domains. Pending providers remain visible as `preempted_after_quorum`; `metadata.research_quorum` reports the decision. Explicit `research_providers` are explicit choices rather than automatic-routing candidates, while disabled/unconfigured providers remain ineligible.
+
+Canonical-URL clusters preserve deterministic observation ids and attributed snippet fragments instead of discarding duplicate-provider evidence. Each Research result adds provider-neutral `source_type` and explainable `fetch_priority` hints; these are routing/fetch cues, not truth claims. `research_time_budget` still gates launch, completion waits, and extraction.
 
 ## Usage guidance
 
-Prefer `web_search_plus` for live/current info, prices, weather, sports, schedules, and finding raw sources. Use `mode="research"` for grounding-heavy questions that benefit from multiple providers plus extracted full text. Use `web_extract_plus` once URLs are known.
-
-OpenClaw plugin config remains the source of truth for credentials; runtime code does not rely on direct `.env` reads.
+Prefer `web_search_plus` for current information and finding sources. Use `mode="research"` when a question benefits from cross-provider evidence and extracted source summaries. Use `web_extract_plus` when URLs are already known. Use the routing/health/benchmark tools only when the host has explicitly allowed them and their diagnostics are needed.

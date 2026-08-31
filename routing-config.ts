@@ -1,11 +1,18 @@
-export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "you" | "searxng" | "parallel" | "serpbase" | "keenable" | "hound";
-export type ExtractProviderName = Extract<ProviderName, "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable" | "serper" | "hound">;
+export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "you" | "searxng" | "parallel" | "serpbase" | "keenable" | "donsetch" | "octen" | "tinyfish";
+export type ExtractProviderName = Extract<ProviderName, "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable" | "serper" | "donsetch">;
 
-// Keenable stays last: it never displaces a configured keyed provider.
-export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "searxng", "keenable", "hound"];
-export const DEFAULT_EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "hound"];
+export const ALL_PROVIDER_NAMES: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "you", "searxng", "parallel", "serpbase", "keenable", "donsetch", "octen", "tinyfish"];
 
-export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "parallel", "hound"];
+// Match Hermes 4.0.3's Routing v2 priority. Explicit-only provider modules do
+// not enter this default order; they remain valid when named directly or when
+// an operator deliberately adds them to a custom priority and auto_allow.
+export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["you", "serper", "exa", "firecrawl", "tavily", "linkup", "brave", "parallel", "serpbase", "querit", "searxng", "keenable"];
+export const DEFAULT_EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch"];
+
+// Parallel joined the normal automatic pool in WSP 4.0.2. DonSeTch, Octen,
+// TinyFish, SerpBase, and Querit remain explicit-only unless an operator opts
+// them in deliberately through auto_allow.
+export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "donsetch", "octen", "tinyfish"];
 
 export type RoutingPreferences = {
   version: 2;
@@ -36,10 +43,10 @@ export const DEFAULT_ROUTING_PREFERENCES: RoutingPreferences = {
   default_provider: null,
   provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
   extract_provider_priority: [...DEFAULT_EXTRACT_PROVIDER_PRIORITY],
-  fallback_provider: null,
+  fallback_provider: "serper",
   disabled_providers: [],
-  confidence_threshold: 0.4,
-  auto_allow: Object.fromEntries(DEFAULT_PROVIDER_PRIORITY.map((provider) => [provider, !GUARDED_AUTO_PROVIDERS.includes(provider)])) as Record<ProviderName, boolean>,
+  confidence_threshold: 0.3,
+  auto_allow: Object.fromEntries(ALL_PROVIDER_NAMES.map((provider) => [provider, !GUARDED_AUTO_PROVIDERS.includes(provider)])) as Record<ProviderName, boolean>,
 };
 
 const memoryRoutingPreferences = new Map<string, RoutingPreferences>();
@@ -72,14 +79,14 @@ export function applyRoutingProfile(config: RoutingPreferences): RoutingPreferen
   ];
   effective.fallback_provider = "keenable";
   effective.auto_allow = Object.fromEntries(
-    DEFAULT_PROVIDER_PRIORITY.map((provider) => [provider, provider === "searxng" || provider === "keenable"]),
+    ALL_PROVIDER_NAMES.map((provider) => [provider, provider === "searxng" || provider === "keenable"]),
   ) as Record<ProviderName, boolean>;
   return effective;
 }
 
 export function normalizeProviderName(value: unknown): ProviderName {
   const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
-  if ((DEFAULT_PROVIDER_PRIORITY as string[]).includes(normalized)) return normalized as ProviderName;
+  if ((ALL_PROVIDER_NAMES as string[]).includes(normalized)) return normalized as ProviderName;
   throw new Error(`Unknown provider: ${String(value || "")}`);
 }
 

@@ -2,133 +2,446 @@
 import crypto2 from "crypto";
 import dns2 from "dns/promises";
 import net2 from "net";
+import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
-// node_modules/openclaw/dist/plugin-cache-primitives-BXH3UUqE.js
-var PluginLruCache = class {
-  #defaultMaxEntries;
-  #maxEntries;
-  #entries = /* @__PURE__ */ new Map();
-  constructor(defaultMaxEntries) {
-    this.#defaultMaxEntries = normalizeMaxEntries(defaultMaxEntries, 1);
-    this.#maxEntries = this.#defaultMaxEntries;
-  }
-  get maxEntries() {
-    return this.#maxEntries;
-  }
-  get size() {
-    return this.#entries.size;
-  }
-  setMaxEntriesForTest(value) {
-    this.#maxEntries = typeof value === "number" ? normalizeMaxEntries(value, this.#defaultMaxEntries) : this.#defaultMaxEntries;
-    this.#evictOldestEntries();
-  }
-  clear() {
-    this.#entries.clear();
-  }
-  get(cacheKey) {
-    const cached = this.getResult(cacheKey);
-    return cached.hit ? cached.value : void 0;
-  }
-  getResult(cacheKey) {
-    if (!this.#entries.has(cacheKey)) return { hit: false };
-    const cached = this.#entries.get(cacheKey);
-    this.#entries.delete(cacheKey);
-    this.#entries.set(cacheKey, cached);
-    return {
-      hit: true,
-      value: cached
-    };
-  }
-  set(cacheKey, value) {
-    if (this.#entries.has(cacheKey)) this.#entries.delete(cacheKey);
-    this.#entries.set(cacheKey, value);
-    this.#evictOldestEntries();
-  }
-  #evictOldestEntries() {
-    while (this.#entries.size > this.#maxEntries) {
-      const oldestEntry = this.#entries.keys().next();
-      if (oldestEntry.done) break;
-      this.#entries.delete(oldestEntry.value);
+// openclaw.plugin.json
+var openclaw_plugin_default = {
+  id: "web-search-plus-plugin-v2",
+  name: "Web Search Plus",
+  version: "4.0.3",
+  description: "OpenClaw-native source-only web search and extraction with Routing v2, research quorum, result provenance, unified freshness/news/locale controls, hosted providers, and an optional separately installed DonSeTch stdio provider.",
+  contracts: {
+    tools: [
+      "web_search_plus",
+      "web_extract_plus",
+      "web_routing_config_plus",
+      "web_search_health_plus",
+      "web_extract_benchmark_plus"
+    ]
+  },
+  toolMetadata: {
+    web_search_plus: {
+      optional: true
+    },
+    web_extract_plus: {
+      optional: true
+    },
+    web_routing_config_plus: {
+      optional: true
+    },
+    web_search_health_plus: {
+      optional: true
+    },
+    web_extract_benchmark_plus: {
+      optional: true
+    }
+  },
+  activation: {
+    onStartup: false
+  },
+  skills: [
+    "./SKILL.md"
+  ],
+  configSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      serperApiKey: {
+        type: "string",
+        description: "Serper API key for Google-style web search. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      braveApiKey: {
+        type: "string",
+        description: "Brave Search API key for general web, current, and shopping-style search. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      braveSafesearch: {
+        type: "string",
+        enum: ["strict", "moderate", "off"],
+        description: "Optional Brave safesearch default: `strict`, `moderate`, or `off`."
+      },
+      tavilyApiKey: {
+        type: "string",
+        description: "Tavily API key for research-oriented search. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      linkupApiKey: {
+        type: "string",
+        description: "Linkup API key for source-grounded search with citations, references, and evidence-focused queries. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      queritApiKey: {
+        type: "string",
+        description: "Querit API key for multilingual AI search. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      exaApiKey: {
+        type: "string",
+        description: "Exa API key for source-result neural search and extraction. Answer-producing deep modes are intentionally not exposed."
+      },
+      firecrawlApiKey: {
+        type: "string",
+        description: "Firecrawl API key for web search with optional page extraction metadata and Google-style recency/domain filtering. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      youApiKey: {
+        type: "string",
+        description: "You.com API key for source-result general web search and extraction."
+      },
+      searxngInstanceUrl: {
+        type: "string",
+        description: "Base URL for a SearXNG instance. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      searxngAllowPrivate: {
+        type: "boolean",
+        description: "Optional danger flag. When true, disables SearXNG SSRF/private-network protection and should only be used on fully trusted private networks."
+      },
+      routingConfigPath: {
+        type: "string",
+        description: "Optional namespace for in-memory routing preferences used by web_routing_config_plus. No filesystem reads are performed at runtime."
+      },
+      routingPreferences: {
+        type: "object",
+        description: "Initial routing preferences, including profile=standard or profile=self_hosted. Runtime updates remain in the selected in-memory namespace."
+      },
+      parallelApiKey: {
+        type: "string",
+        description: "Parallel API key for source search and extraction. Parallel participates in automatic routing by default in 4.0.2+."
+      },
+      parallelMode: {
+        type: "string",
+        enum: ["turbo", "fast", "basic", "advanced"],
+        default: "fast",
+        description: "Parallel Search mode. Defaults to fast; other modes can change latency and provider cost."
+      },
+      serpbaseApiKey: {
+        type: "string",
+        description: "SerpBase API key for guarded Google-style alternate search. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      keenableApiKey: {
+        type: "string",
+        description: "Keenable API key for independent-index search and extraction. Optional individually, but at least one provider setting in this plugin must be configured."
+      },
+      keenableAllowPublic: {
+        type: "boolean",
+        description: "Opt-in: allow Keenable's keyless public tier. Queries and fetched URLs are sent to an unauthenticated shared service (~1000 req/hour, no SLA). Off by default."
+      },
+      monidApiKey: {
+        type: "string",
+        description: "Monid API key for the explicit-only Octen source-search adapter. Billing uses the operator's Monid wallet."
+      },
+      octenTimeoutSeconds: {
+        type: "integer",
+        minimum: 1,
+        maximum: 120,
+        description: "Octen via Monid request timeout in seconds (default 30)."
+      },
+      tinyfishApiKey: {
+        type: "string",
+        description: "TinyFish BYOK key for explicit-only source search. Review TinyFish terms before sending sensitive queries; its published terms grant broad training/model-improvement rights."
+      },
+      tinyfishTimeoutSeconds: {
+        type: "integer",
+        minimum: 1,
+        maximum: 120,
+        description: "TinyFish request timeout in seconds (default 30)."
+      },
+      donsetchBin: {
+        type: "string",
+        description: "Absolute path to a separately installed DonSeTch executable. The plugin does not bundle DonSeTch or invoke a shell."
+      },
+      donsetchTimeoutSeconds: {
+        type: "integer",
+        minimum: 5,
+        maximum: 600,
+        description: "DonSeTch stdio MCP session deadline in seconds (default 180)."
+      },
+      donsetchMaxContentChars: {
+        type: "integer",
+        minimum: 500,
+        maximum: 2e5,
+        description: "Maximum content characters requested from DonSeTch web_fetch per URL (default 15000)."
+      },
+      donsetchTier: {
+        enum: ["auto", 1, 2],
+        default: "auto",
+        description: "DonSeTch fetch tier: auto, 1, or 2. render_js forces tier 2."
+      },
+      extractAllowPrivateUrls: {
+        type: "boolean",
+        description: "Opt-in danger flag. When true, web_extract_plus may target private/internal URLs (trusted intranet extraction). Off by default."
+      },
+      extractCharLimit: {
+        type: "integer",
+        minimum: 1e3,
+        description: "Per-result inline character budget applied after aggregate prefix allocation and before head/tail truncation (default 15000, minimum 1000)."
+      },
+      extractMaxUrls: {
+        type: "integer",
+        minimum: 1,
+        maximum: 50,
+        description: "Operator ceiling for URLs processed by one extraction call (default 10, hard maximum 50)."
+      },
+      extractMaxContextChars: {
+        type: "integer",
+        minimum: 1e3,
+        maximum: 2e5,
+        description: "Operator ceiling for aggregate inline extraction prefixes in Unicode codepoints, applied before per-result head/tail truncation (default 60000, range 1000-200000)."
+      },
+      extractCacheMaxEntries: {
+        type: "number",
+        minimum: 1,
+        maximum: 500,
+        description: "Maximum process-local LRU entries for completed extraction requests (default 64, range 1-500). Entries are discarded when the host restarts."
+      },
+      extractCacheMaxChars: {
+        type: "number",
+        minimum: 1,
+        maximum: 2e7,
+        description: "Maximum Unicode codepoints retained by the process-local extraction full-text LRU (default 4000000, range 1-20000000). Entries are discarded when the host restarts."
+      },
+      extractDeadlineSeconds: {
+        type: "integer",
+        minimum: 1,
+        maximum: 180,
+        description: "Operator ceiling for request-scoped extraction deadline in seconds (default 30, range 1-180). This is not a daily quota."
+      },
+      localeCountry: {
+        type: "string",
+        description: 'Default search country (ISO 3166-1 alpha-2, e.g. "at") for locale-capable providers including Serper, SerpBase, Brave, Querit, Firecrawl, You.com, SearXNG, and TinyFish.'
+      },
+      localeLanguage: {
+        type: "string",
+        description: 'Default search language (ISO 639-1, e.g. "de") or "auto" for conservative query language inference. Without this the providers keep their en defaults.'
+      },
+      parallelMaxCharsPerResult: {
+        type: "number",
+        description: "Parallel extraction full_content budget per result in characters (default 60000)."
+      },
+      parallelMaxCharsTotal: {
+        type: "number",
+        description: "Parallel extraction total character budget (default 120000)."
+      },
+      qualityBlockedDomains: {
+        type: "array",
+        items: {
+          type: "string"
+        },
+        description: "Extra domains removed from search results in addition to the built-in spam/mirror blocklist (exact domain or true subdomain matches only)."
+      },
+      qualityAllowedDomains: {
+        type: "array",
+        items: {
+          type: "string"
+        },
+        description: "Domains rescued from the built-in and extra blocklists."
+      },
+      qualityDiversityRerank: {
+        type: "boolean",
+        description: "Opt-in: in research mode, move URL/content near-duplicate candidates behind the diverse result head without dropping them."
+      }
+    }
+  },
+  uiHints: {
+    serperApiKey: {
+      label: "Serper API Key",
+      placeholder: "sk-...",
+      sensitive: true
+    },
+    braveApiKey: {
+      label: "Brave API Key",
+      placeholder: "BSA...",
+      sensitive: true
+    },
+    braveSafesearch: {
+      label: "Brave Safesearch",
+      placeholder: "moderate",
+      sensitive: false
+    },
+    tavilyApiKey: {
+      label: "Tavily API Key",
+      placeholder: "tvly-...",
+      sensitive: true
+    },
+    linkupApiKey: {
+      label: "Linkup API Key",
+      placeholder: "...",
+      sensitive: true
+    },
+    queritApiKey: {
+      label: "Querit API Key",
+      placeholder: "querit-sk-...",
+      sensitive: true
+    },
+    exaApiKey: {
+      label: "Exa API Key",
+      placeholder: "exa-...",
+      sensitive: true
+    },
+    firecrawlApiKey: {
+      label: "Firecrawl API Key",
+      placeholder: "fc-...",
+      sensitive: true
+    },
+    youApiKey: {
+      label: "You.com API Key",
+      placeholder: "...",
+      sensitive: true
+    },
+    searxngInstanceUrl: {
+      label: "SearXNG Instance URL",
+      placeholder: "https://searx.example.com",
+      description: "Self-hosted metasearch instance URL. Counts as a configured provider even without an API key.",
+      sensitive: false
+    },
+    searxngAllowPrivate: {
+      label: "Allow private-network SearXNG (danger)",
+      description: "Disables SearXNG SSRF/private-network protection. Only enable on fully trusted private networks.",
+      sensitive: false
+    },
+    routingConfigPath: {
+      label: "Routing preferences namespace",
+      placeholder: "default",
+      description: "Optional namespace for runtime routing behavior. Secrets remain in plugin config; behavior is kept in process memory to avoid runtime filesystem reads.",
+      sensitive: false
+    },
+    parallelApiKey: {
+      label: "Parallel API Key",
+      placeholder: "par-...",
+      sensitive: true
+    },
+    parallelMode: {
+      label: "Parallel Search mode",
+      placeholder: "fast",
+      description: "Default fast. Turbo/basic/advanced may change latency and cost.",
+      sensitive: false
+    },
+    serpbaseApiKey: {
+      label: "SerpBase API Key",
+      placeholder: "sb-...",
+      sensitive: true
+    },
+    keenableApiKey: {
+      label: "Keenable API Key",
+      placeholder: "...",
+      sensitive: true
+    },
+    keenableAllowPublic: {
+      label: "Allow Keenable keyless public tier",
+      description: "Sends queries and fetched URLs to Keenable's unauthenticated shared service. Off by default.",
+      sensitive: false
+    },
+    monidApiKey: {
+      label: "Monid API Key (Octen)",
+      placeholder: "...",
+      sensitive: true
+    },
+    octenTimeoutSeconds: {
+      label: "Octen timeout seconds",
+      placeholder: "30",
+      sensitive: false
+    },
+    tinyfishApiKey: {
+      label: "TinyFish API Key",
+      placeholder: "...",
+      description: "Explicit-only BYOK provider. Review TinyFish terms before sending sensitive queries.",
+      sensitive: true
+    },
+    tinyfishTimeoutSeconds: {
+      label: "TinyFish timeout seconds",
+      placeholder: "30",
+      sensitive: false
+    },
+    donsetchBin: {
+      label: "DonSeTch executable",
+      placeholder: "/absolute/path/to/donsetch",
+      description: "Separately installed executable; no shell is used.",
+      sensitive: false
+    },
+    donsetchTimeoutSeconds: {
+      label: "DonSeTch timeout seconds",
+      placeholder: "180",
+      sensitive: false
+    },
+    donsetchMaxContentChars: {
+      label: "DonSeTch extract chars",
+      placeholder: "15000",
+      sensitive: false
+    },
+    donsetchTier: {
+      label: "DonSeTch fetch tier",
+      placeholder: "auto",
+      sensitive: false
+    },
+    extractAllowPrivateUrls: {
+      label: "Allow private-network extraction targets (danger)",
+      description: "Disables the private/internal URL guard for web_extract_plus. Only enable on fully trusted private networks.",
+      sensitive: false
+    },
+    extractCharLimit: {
+      label: "Extract inline character budget",
+      placeholder: "15000",
+      sensitive: false
+    },
+    extractMaxUrls: {
+      label: "Extract URL ceiling",
+      placeholder: "10",
+      sensitive: false
+    },
+    extractMaxContextChars: {
+      label: "Extract aggregate context ceiling",
+      placeholder: "60000",
+      sensitive: false
+    },
+    extractCacheMaxEntries: {
+      label: "Extract cache entry limit",
+      placeholder: "64",
+      sensitive: false
+    },
+    extractCacheMaxChars: {
+      label: "Extract cache character limit",
+      placeholder: "4000000",
+      sensitive: false
+    },
+    extractDeadlineSeconds: {
+      label: "Extract deadline seconds",
+      placeholder: "30",
+      sensitive: false
+    },
+    localeCountry: {
+      label: "Default search country",
+      placeholder: "at",
+      sensitive: false
+    },
+    localeLanguage: {
+      label: "Default search language",
+      placeholder: "de or auto",
+      sensitive: false
+    },
+    routingPreferences: {
+      label: "Initial routing preferences",
+      sensitive: false
+    },
+    parallelMaxCharsPerResult: {
+      label: "Parallel extract chars per result",
+      placeholder: "60000",
+      sensitive: false
+    },
+    parallelMaxCharsTotal: {
+      label: "Parallel extract chars total",
+      placeholder: "120000",
+      sensitive: false
+    },
+    qualityBlockedDomains: {
+      label: "Extra blocked result domains",
+      sensitive: false
+    },
+    qualityAllowedDomains: {
+      label: "Rescued result domains",
+      sensitive: false
+    },
+    qualityDiversityRerank: {
+      label: "Rerank research duplicates",
+      description: "Moves near-duplicate research results behind the diverse head. Off by default.",
+      sensitive: false
     }
   }
 };
-function normalizeMaxEntries(value, fallback) {
-  if (!Number.isFinite(value) || value <= 0) return fallback;
-  return Math.max(1, Math.floor(value));
-}
-
-// node_modules/openclaw/dist/ansi-Dqm1lzVL.js
-var ANSI_CSI_PATTERN = "\\x1b\\[[\\x20-\\x3f]*[\\x40-\\x7e]";
-var OSC8_PATTERN = "\\x1b\\]8;;.*?(?:\\x1b\\\\|\\x07)|\\x1b\\]8;;(?:\\x1b\\\\|\\x07)";
-var ANSI_CSI_REGEX = new RegExp(ANSI_CSI_PATTERN, "g");
-var OSC8_REGEX = new RegExp(OSC8_PATTERN, "g");
-var graphemeSegmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter(void 0, { granularity: "grapheme" }) : null;
-
-// node_modules/openclaw/dist/schema-validator-CwMY3Tzl.js
-import { createRequire } from "node:module";
-var require2 = createRequire(import.meta.url);
-var schemaCache = new PluginLruCache(512);
-
-// node_modules/openclaw/dist/config-schema-Crc2mMHj.js
-function error(message) {
-  return {
-    success: false,
-    error: { issues: [{
-      path: [],
-      message
-    }] }
-  };
-}
-function emptyPluginConfigSchema() {
-  return {
-    safeParse(value) {
-      if (value === void 0) return {
-        success: true,
-        data: void 0
-      };
-      if (!value || typeof value !== "object" || Array.isArray(value)) return error("expected config object");
-      if (Object.keys(value).length > 0) return error("config must be empty");
-      return {
-        success: true,
-        data: value
-      };
-    },
-    jsonSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {}
-    }
-  };
-}
-
-// node_modules/openclaw/dist/plugin-entry-DmhVEOw1.js
-function createCachedLazyValueGetter(value, fallback) {
-  let resolved = false;
-  let cached;
-  return () => {
-    if (!resolved) {
-      cached = (typeof value === "function" ? value() : value) ?? fallback;
-      resolved = true;
-    }
-    return cached;
-  };
-}
-function definePluginEntry({ id, name, description, kind, configSchema = emptyPluginConfigSchema, reload, nodeHostCommands, securityAuditCollectors, register: register2 }) {
-  const getConfigSchema = createCachedLazyValueGetter(configSchema);
-  return {
-    id,
-    name,
-    description,
-    ...kind ? { kind } : {},
-    ...reload ? { reload } : {},
-    ...nodeHostCommands ? { nodeHostCommands } : {},
-    ...securityAuditCollectors ? { securityAuditCollectors } : {},
-    get configSchema() {
-      return getConfigSchema();
-    },
-    register: register2
-  };
-}
 
 // runtime-config.ts
 function maybeString(value) {
@@ -136,7 +449,7 @@ function maybeString(value) {
   const trimmed = value.trim();
   return trimmed ? trimmed : void 0;
 }
-function getRuntimeConfig(pluginConfig) {
+function getRuntimeConfig(pluginConfig, runCommandWithTimeout) {
   return {
     serperApiKey: maybeString(pluginConfig?.serperApiKey),
     braveApiKey: maybeString(pluginConfig?.braveApiKey),
@@ -148,15 +461,21 @@ function getRuntimeConfig(pluginConfig) {
     firecrawlApiKey: maybeString(pluginConfig?.firecrawlApiKey),
     youApiKey: maybeString(pluginConfig?.youApiKey),
     parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
+    parallelMode: normalizeParallelMode(pluginConfig?.parallelMode),
     serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
+    monidApiKey: maybeString(pluginConfig?.monidApiKey),
+    octenTimeoutSeconds: maybeBoundedInt(pluginConfig?.octenTimeoutSeconds, 1, 120),
+    tinyfishApiKey: maybeString(pluginConfig?.tinyfishApiKey),
+    tinyfishTimeoutSeconds: maybeBoundedInt(pluginConfig?.tinyfishTimeoutSeconds, 1, 120),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0,
     keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
     keenableAllowPublic: pluginConfig?.keenableAllowPublic === true ? true : void 0,
-    houndMcpUrl: maybeString(pluginConfig?.houndMcpUrl),
-    houndTimeoutSeconds: maybePositiveInt(pluginConfig?.houndTimeoutSeconds),
-    houndMaxResponseBytes: maybePositiveInt(pluginConfig?.houndMaxResponseBytes),
-    houndMaxContentChars: maybePositiveInt(pluginConfig?.houndMaxContentChars),
+    donsetchBin: maybeString(pluginConfig?.donsetchBin),
+    donsetchTimeoutSeconds: maybeBoundedInt(pluginConfig?.donsetchTimeoutSeconds, 5, 600),
+    donsetchMaxContentChars: maybeBoundedInt(pluginConfig?.donsetchMaxContentChars, 500, 2e5),
+    donsetchTier: normalizeDonsetchTier(pluginConfig?.donsetchTier),
+    runCommandWithTimeout,
     extractAllowPrivateUrls: pluginConfig?.extractAllowPrivateUrls === true ? true : void 0,
     extractCharLimit: Number.isFinite(Number(pluginConfig?.extractCharLimit)) && Number(pluginConfig?.extractCharLimit) > 0 ? Math.max(1e3, Math.floor(Number(pluginConfig.extractCharLimit))) : void 0,
     extractMaxUrls: maybePositiveInt(pluginConfig?.extractMaxUrls),
@@ -171,6 +490,19 @@ function getRuntimeConfig(pluginConfig) {
     qualityDiversityRerank: pluginConfig?.qualityDiversityRerank === true ? true : void 0
   };
 }
+function normalizeParallelMode(value) {
+  if (value == null || String(value).trim() === "") return "fast";
+  const normalized = String(value).trim().toLowerCase();
+  if (["turbo", "fast", "basic", "advanced"].includes(normalized)) return normalized;
+  throw new Error("parallelMode must be one of turbo, fast, basic, advanced");
+}
+function normalizeDonsetchTier(value) {
+  if (value == null || String(value).trim() === "") return "auto";
+  if (value === 1 || value === "1") return 1;
+  if (value === 2 || value === "2") return 2;
+  if (String(value).trim().toLowerCase() === "auto") return "auto";
+  throw new Error("donsetchTier must be auto, 1, or 2");
+}
 function maybePositiveInt(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : void 0;
@@ -181,9 +513,10 @@ function maybeBoundedInt(value, minimum, maximum) {
 }
 
 // routing-config.ts
-var DEFAULT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "serper", "brave", "serpbase", "querit", "searxng", "keenable", "hound"];
-var DEFAULT_EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "hound"];
-var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "parallel", "hound"];
+var ALL_PROVIDER_NAMES = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "you", "searxng", "parallel", "serpbase", "keenable", "donsetch", "octen", "tinyfish"];
+var DEFAULT_PROVIDER_PRIORITY = ["you", "serper", "exa", "firecrawl", "tavily", "linkup", "brave", "parallel", "serpbase", "querit", "searxng", "keenable"];
+var DEFAULT_EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch"];
+var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "donsetch", "octen", "tinyfish"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 2,
   profile: "standard",
@@ -191,10 +524,10 @@ var DEFAULT_ROUTING_PREFERENCES = {
   default_provider: null,
   provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
   extract_provider_priority: [...DEFAULT_EXTRACT_PROVIDER_PRIORITY],
-  fallback_provider: null,
+  fallback_provider: "serper",
   disabled_providers: [],
-  confidence_threshold: 0.4,
-  auto_allow: Object.fromEntries(DEFAULT_PROVIDER_PRIORITY.map((provider) => [provider, !GUARDED_AUTO_PROVIDERS.includes(provider)]))
+  confidence_threshold: 0.3,
+  auto_allow: Object.fromEntries(ALL_PROVIDER_NAMES.map((provider) => [provider, !GUARDED_AUTO_PROVIDERS.includes(provider)]))
 };
 var memoryRoutingPreferences = /* @__PURE__ */ new Map();
 function cloneConfig(config) {
@@ -223,13 +556,13 @@ function applyRoutingProfile(config) {
   ];
   effective.fallback_provider = "keenable";
   effective.auto_allow = Object.fromEntries(
-    DEFAULT_PROVIDER_PRIORITY.map((provider) => [provider, provider === "searxng" || provider === "keenable"])
+    ALL_PROVIDER_NAMES.map((provider) => [provider, provider === "searxng" || provider === "keenable"])
   );
   return effective;
 }
 function normalizeProviderName(value) {
   const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
-  if (DEFAULT_PROVIDER_PRIORITY.includes(normalized)) return normalized;
+  if (ALL_PROVIDER_NAMES.includes(normalized)) return normalized;
   throw new Error(`Unknown provider: ${String(value || "")}`);
 }
 function normalizeOptionalProvider(value) {
@@ -331,12 +664,12 @@ function loadRoutingPreferences(pluginConfig = {}) {
       const validated = validateRoutingPreferences(configuredPreferences);
       memoryRoutingPreferences.set(path, cloneConfig(validated));
       return { config: cloneConfig(validated), path, source: "plugin_config" };
-    } catch (error2) {
+    } catch (error) {
       return {
         config: cloneDefaults(),
         path,
         source: "default",
-        warning: `Routing config reset to defaults after validation failure: ${String(error2?.message || error2)}`
+        warning: `Routing config reset to defaults after validation failure: ${String(error?.message || error)}`
       };
     }
   }
@@ -367,6 +700,9 @@ import crypto from "crypto";
 var TOKEN_RE = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu;
 var PARAGRAPH_BREAK_RE = /(?:\r?\n[\t \f\v]*){2,}/g;
 var SENTENCE_END_RE = /(?<=[.!?])(?:["'’)\]]*)\s+/gu;
+var MARKDOWN_HEADING_RE = /^[\t ]{0,3}(#{1,6})(?:[\t ]+|$)/gm;
+var MAX_HEADING_SECTION_CANDIDATES = 2;
+var MAX_HEADING_SECTION_CHARS = 1200;
 function codepoints(text) {
   return Array.from(text);
 }
@@ -463,6 +799,50 @@ function candidates(text, maxSpanChars) {
 function tokens(text) {
   return [...text.matchAll(TOKEN_RE)].map((match) => match[0].toLocaleLowerCase());
 }
+function headingSectionCandidates(text, query, maxSpanChars, maxSections) {
+  const queryTerms = new Set(tokens(query));
+  if (!queryTerms.size || maxSections <= 0) return [];
+  const mapping = codeUnitToCodepointMap(text);
+  const points = codepoints(text);
+  const headings = [];
+  MARKDOWN_HEADING_RE.lastIndex = 0;
+  let match;
+  while (match = MARKDOWN_HEADING_RE.exec(text)) {
+    const titleStartUnits = match.index + match[0].length;
+    const titleEndUnits = text.indexOf("\n", titleStartUnits);
+    headings.push({
+      start: mapping[match.index],
+      level: match[1].length,
+      titleStart: mapping[titleStartUnits],
+      titleEnd: mapping[titleEndUnits < 0 ? text.length : titleEndUnits]
+    });
+  }
+  const sectionCharBudget = Math.min(maxSpanChars, MAX_HEADING_SECTION_CHARS);
+  const ranked = [];
+  for (let index = 0; index < headings.length; index += 1) {
+    const heading = headings[index];
+    const titleTerms = new Set(tokens(points.slice(heading.titleStart, heading.titleEnd).join("")));
+    const matchedTerms = [...queryTerms].filter((term) => titleTerms.has(term)).length;
+    if (!matchedTerms) continue;
+    let sectionEnd = points.length;
+    for (const laterHeading of headings.slice(index + 1)) {
+      if (laterHeading.level <= heading.level) {
+        sectionEnd = laterHeading.start;
+        break;
+      }
+    }
+    const candidate = trimCandidate(
+      points,
+      heading.start,
+      Math.min(sectionEnd, heading.start + sectionCharBudget)
+    );
+    if (candidate && candidate.end >= heading.titleEnd) {
+      ranked.push({ matchedTerms, candidate });
+    }
+  }
+  ranked.sort((left, right) => right.matchedTerms - left.matchedTerms || left.candidate.start - right.candidate.start || left.candidate.end - right.candidate.end);
+  return ranked.slice(0, maxSections).map(({ candidate }) => candidate);
+}
 function lexicalScore(candidate, query, total) {
   const candidateTokens = tokens(candidate.text);
   if (!candidateTokens.length) return 0;
@@ -492,344 +872,540 @@ function selectSpans(text, query, options = {}) {
   if (maxSpans <= 0 || maxSpanChars <= 0) return [];
   const normalized = text.normalize("NFC");
   const normalizedQuery = (query || "").normalize("NFC").trim();
-  const ranked = candidates(normalized, maxSpanChars).map((candidate) => {
+  const headingCandidates = headingSectionCandidates(
+    normalized,
+    normalizedQuery,
+    maxSpanChars,
+    Math.min(maxSpans, MAX_HEADING_SECTION_CANDIDATES)
+  );
+  const allCandidates = /* @__PURE__ */ new Map();
+  for (const candidate of [...candidates(normalized, maxSpanChars), ...headingCandidates]) {
+    allCandidates.set(`${candidate.start}:${candidate.end}`, candidate);
+  }
+  const ranked = [...allCandidates.values()].map((candidate) => {
     const score = options.ranker ? options.ranker(candidate.text, normalizedQuery) : lexicalScore(candidate, normalizedQuery, codepoints(normalized).length);
     if (!Number.isFinite(score)) throw new Error("Span ranker scores must be finite numbers");
     return { candidate, score };
   });
   ranked.sort((left, right) => right.score - left.score || left.candidate.start - right.candidate.start || left.candidate.end - right.candidate.end);
   const selected = [];
+  for (const candidate of headingCandidates) {
+    if (selected.some(({ candidate: existing }) => candidate.start < existing.end && existing.start < candidate.end)) continue;
+    const item = ranked.find(({ candidate: rankedCandidate }) => rankedCandidate.start === candidate.start && rankedCandidate.end === candidate.end);
+    if (item) selected.push(item);
+    if (selected.length >= maxSpans) break;
+  }
   for (const item of ranked) {
+    if (selected.length >= maxSpans) break;
     if (selected.some(({ candidate }) => item.candidate.start < candidate.end && candidate.start < item.candidate.end)) continue;
     selected.push(item);
-    if (selected.length >= maxSpans) break;
   }
   selected.sort((left, right) => left.candidate.start - right.candidate.start);
   return selected.map(({ candidate, score }) => ({ ...candidate, score }));
 }
 
-// hound-transport.ts
-var HOUND_SESSION_CLEANUP_TIMEOUT_MS = 250;
-var HoundTransportError = class extends Error {
-  constructor(code = "hound_mcp_unavailable") {
+// donsetch-transport.ts
+var DONSETCH_TESTED_VERSION = "3.2.1";
+var DONSETCH_MCP_PROTOCOL_VERSION = "2025-11-25";
+var DEFAULT_TIMEOUT_SECONDS = 180;
+var DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+var DEFAULT_MAX_TEXT_CHARS = 2e5;
+var MAX_TOOL_CALLS_PER_SESSION = 50;
+var STDERR_EXCERPT_CHARS = 2048;
+var RUNNER_STDERR_LIMIT_BYTES = 8 * 1024;
+var READINESS_STDOUT_LIMIT_BYTES = 32 * 1024;
+var VERSION_RE = /(\d+)\.(\d+)\.(\d+)/;
+var SECRET_ASSIGNMENT_RE = /\b(api[_-]?key|token|secret|password|authorization)\b(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi;
+var BEARER_RE = /\bbearer\s+[^\s,;]+/gi;
+var URL_CREDENTIALS_RE = /\b(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi;
+var HOME_PATH_RE = /(?:\/root|\/home\/[^/\s]+|\/Users\/[^/\s]+)(?=\/|\b)/gi;
+var DonsetchTransportError = class extends Error {
+  code;
+  diagnostic;
+  constructor(code, diagnostic = "") {
     super(code);
-    this.name = "HoundTransportError";
+    this.name = "DonsetchTransportError";
+    this.code = code;
+    const safeDiagnostic = sanitizeDonsetchDiagnostic(diagnostic);
+    if (safeDiagnostic) this.diagnostic = safeDiagnostic;
   }
 };
-function validateHoundEndpoint(value) {
-  const endpoint = String(value || "").trim();
-  if (!endpoint || endpoint.includes("?") || endpoint.includes("#")) throw new Error("hound_endpoint_invalid");
-  let parsed;
-  try {
-    parsed = new URL(endpoint);
-  } catch {
-    throw new Error("hound_endpoint_invalid");
-  }
-  if (parsed.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(parsed.hostname) || !parsed.port || parsed.pathname !== "/mcp" || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error("hound_endpoint_invalid");
-  }
-  return endpoint;
+function boundedInt(value, fallback, minimum, maximum) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.floor(parsed)));
 }
-function parseWirePayload(text) {
-  const candidates2 = text.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).filter(Boolean);
-  const payloadText = candidates2.length ? candidates2[candidates2.length - 1] : text.trim();
-  if (!payloadText) return {};
-  const payload = JSON.parse(payloadText);
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("invalid_mcp_payload");
-  return payload;
+function byteLength(value) {
+  return Buffer.byteLength(value, "utf8");
 }
-async function readBoundedResponse(response, maxResponseBytes) {
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) throw new Error("hound_response_too_large");
-  let bytes;
-  if (response.body) {
-    const reader = response.body.getReader();
-    const chunks = [];
-    let totalBytes = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        totalBytes += value.byteLength;
-        if (totalBytes > maxResponseBytes) {
-          void reader.cancel().catch(() => {
-          });
-          throw new Error("hound_response_too_large");
-        }
-        chunks.push(value);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    bytes = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-  } else {
-    bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > maxResponseBytes) throw new Error("hound_response_too_large");
-  }
-  if (!response.ok && response.status !== 202) throw new Error(`hound_http_${response.status}`);
-  return parseWirePayload(new TextDecoder().decode(bytes));
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error ?? "");
 }
-function toolPayload(result) {
-  if (result.isError === true) throw new Error("hound_mcp_call_failed");
-  if (result.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)) {
-    return result.structuredContent;
-  }
-  for (const item of Array.isArray(result.content) ? result.content : []) {
-    if (item?.type !== "text" || typeof item.text !== "string") continue;
-    try {
-      const parsed = JSON.parse(item.text);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-    } catch {
-    }
-  }
-  throw new Error("hound_mcp_contract_failed");
+function sanitizeDonsetchDiagnostic(value, limit = STDERR_EXCERPT_CHARS) {
+  if (typeof value !== "string" || !value) return "";
+  const boundedLimit = boundedInt(limit, STDERR_EXCERPT_CHARS, 0, 8192);
+  if (!boundedLimit) return "";
+  const cleaned = value.replace(SECRET_ASSIGNMENT_RE, (_match, label, separator) => `${label}${separator}[redacted]`).replace(BEARER_RE, "Bearer [redacted]").replace(URL_CREDENTIALS_RE, "$1[redacted]@").replace(HOME_PATH_RE, "[path]").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  return cleaned.length > boundedLimit ? `${cleaned.slice(0, boundedLimit)}\u2026` : cleaned;
 }
-function closeHoundSession(endpoint, sessionId) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HOUND_SESSION_CLEANUP_TIMEOUT_MS);
-  timer.unref?.();
-  try {
-    void fetch(endpoint, {
-      method: "DELETE",
-      headers: {
-        "Mcp-Session-Id": sessionId,
-        "MCP-Protocol-Version": "2025-03-26"
-      },
-      redirect: "error",
-      signal: controller.signal
-    }).catch(() => {
-    }).finally(() => clearTimeout(timer));
-  } catch {
-    clearTimeout(timer);
+function normalizeBinary(binary) {
+  const candidate = typeof binary === "string" ? binary.trim() : "";
+  if (!candidate || /[\u0000\r\n]/.test(candidate)) {
+    throw new DonsetchTransportError("donsetch_binary_not_configured");
   }
+  return candidate;
 }
-async function callHoundTool(endpointValue, tool, argumentsValue, options = {}) {
-  const endpoint = validateHoundEndpoint(endpointValue);
-  const timeoutSeconds = Math.min(180, Math.max(5, Math.floor(options.timeoutSeconds ?? 120)));
-  const maxResponseBytes = Math.min(16 * 1024 * 1024, Math.max(1024, Math.floor(options.maxResponseBytes ?? 2 * 1024 * 1024)));
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1e3);
-  timer.unref?.();
-  let sessionId = "";
-  let requestId = 1;
-  const request = async (body, includeSession = false) => {
-    const headers = {
-      Accept: "application/json, text/event-stream",
-      "Content-Type": "application/json"
-    };
-    if (includeSession && sessionId) {
-      headers["Mcp-Session-Id"] = sessionId;
-      headers["MCP-Protocol-Version"] = "2025-03-26";
-    }
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      redirect: "error",
-      signal: controller.signal
-    });
-    const returnedSession = response.headers.get("mcp-session-id");
-    if (returnedSession) sessionId = returnedSession;
-    return readBoundedResponse(response, maxResponseBytes);
-  };
-  try {
-    const initialized = await request({
+var PRESERVED_ENV_KEYS = /* @__PURE__ */ new Set([
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "XDG_CACHE_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_RUNTIME_DIR",
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "SystemRoot",
+  "WINDIR",
+  "ComSpec",
+  "PATHEXT",
+  "LOCALAPPDATA",
+  "APPDATA",
+  "USERPROFILE"
+]);
+function preserveEnvironmentKey(key) {
+  return PRESERVED_ENV_KEYS.has(key) || key.startsWith("DONSETCH_") || key.startsWith("PLAYWRIGHT_") || key.startsWith("PUPPETEER_");
+}
+function isolatedDonsetchEnvironment() {
+  const isolated = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    isolated[key] = preserveEnvironmentKey(key) ? value : void 0;
+  }
+  return isolated;
+}
+function buildSessionInput(calls) {
+  const messages = [
+    {
       jsonrpc: "2.0",
-      id: requestId++,
+      id: 1,
       method: "initialize",
       params: {
-        protocolVersion: "2025-03-26",
+        protocolVersion: DONSETCH_MCP_PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: "web-search-plus", version: "3.3.0" }
+        clientInfo: { name: "web-search-plus", version: DONSETCH_TESTED_VERSION }
       }
-    });
-    if (initialized.error || !initialized.result) throw new Error("hound_mcp_initialize_failed");
-    await request({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }, true);
-    const called = await request({
+    },
+    { jsonrpc: "2.0", method: "notifications/initialized", params: {} }
+  ];
+  calls.forEach((call, index) => {
+    messages.push({
       jsonrpc: "2.0",
-      id: requestId,
+      id: index + 2,
       method: "tools/call",
-      params: { name: tool, arguments: argumentsValue }
-    }, true);
-    if (called.error || !called.result || typeof called.result !== "object") throw new Error("hound_mcp_call_failed");
-    return toolPayload(called.result);
-  } catch (error2) {
-    if (error2 instanceof HoundTransportError) throw error2;
-    throw new HoundTransportError();
-  } finally {
-    clearTimeout(timer);
-    if (sessionId) closeHoundSession(endpoint, sessionId);
+      params: { name: call.tool, arguments: call.arguments }
+    });
+  });
+  return `${messages.map((message) => JSON.stringify(message)).join("\n")}
+`;
+}
+function responseMessages(stdout) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+    const id = Number(parsed.id);
+    if (!Number.isSafeInteger(id) || id < 1) continue;
+    if (byId.has(id)) throw new DonsetchTransportError("donsetch_mcp_contract_failed");
+    byId.set(id, parsed);
   }
+  return byId;
+}
+function resultFor(messages, id, initialize = false) {
+  const message = messages.get(id);
+  if (!message) throw new DonsetchTransportError("donsetch_mcp_contract_failed");
+  if (message.error) {
+    throw new DonsetchTransportError(initialize ? "donsetch_mcp_initialize_failed" : "donsetch_mcp_call_failed");
+  }
+  const result = message.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new DonsetchTransportError("donsetch_mcp_contract_failed");
+  }
+  return result;
+}
+function boundedTextContent(value, maxChars) {
+  const parts = [];
+  if (typeof value === "string") {
+    parts.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === "string") parts.push(item);
+      else if (item && typeof item === "object" && !Array.isArray(item) && typeof item.text === "string") {
+        parts.push(item.text);
+      }
+    }
+  }
+  const text = parts.join("\n");
+  return {
+    text: text.slice(0, maxChars),
+    originalChars: text.length,
+    truncated: text.length > maxChars
+  };
+}
+function payloadFromResult(result, maxTextChars) {
+  if (result.isError === true || result.is_error === true) {
+    throw new DonsetchTransportError("donsetch_tool_error");
+  }
+  const preferred = result.structuredContent;
+  const alternate = result.structured_content;
+  const structured = preferred && typeof preferred === "object" && !Array.isArray(preferred) ? preferred : alternate && typeof alternate === "object" && !Array.isArray(alternate) ? alternate : {};
+  const content = boundedTextContent(result.content, maxTextChars);
+  return {
+    structured,
+    text: content.text,
+    textTruncated: content.truncated,
+    originalTextChars: content.originalChars
+  };
+}
+function timedOut(result) {
+  return result.termination === "timeout" || result.termination === "no-output-timeout" || result.noOutputTimedOut === true;
+}
+async function runDonsetchSession(runCommandWithTimeout, binaryValue, calls, options = {}) {
+  const binary = normalizeBinary(binaryValue);
+  if (!Array.isArray(calls) || !calls.length || calls.length > MAX_TOOL_CALLS_PER_SESSION) {
+    throw new DonsetchTransportError("donsetch_mcp_contract_failed");
+  }
+  if (calls.some((call) => !call || !["web_search", "web_fetch"].includes(call.tool))) {
+    throw new DonsetchTransportError("donsetch_mcp_contract_failed");
+  }
+  const timeoutSeconds = boundedInt(options.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS, 5, 600);
+  const maxResponseBytes = boundedInt(options.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES, 1024, 16 * 1024 * 1024);
+  const maxTextChars = boundedInt(options.maxTextChars, DEFAULT_MAX_TEXT_CHARS, 500, 1e6);
+  const input = buildSessionInput(calls);
+  let completed;
+  try {
+    completed = await runCommandWithTimeout([binary, "mcp"], {
+      timeoutMs: timeoutSeconds * 1e3,
+      noOutputTimeoutMs: timeoutSeconds * 1e3,
+      // OpenClaw 2026.5.2 ignores these forward-compatible options, so the
+      // mandatory byte check below remains the compatibility backstop.
+      maxOutputBytes: { stdout: maxResponseBytes, stderr: RUNNER_STDERR_LIMIT_BYTES },
+      maxCombinedOutputBytes: maxResponseBytes + RUNNER_STDERR_LIMIT_BYTES,
+      killProcessTree: true,
+      terminateOnOutputLimit: true,
+      input,
+      env: isolatedDonsetchEnvironment()
+    });
+  } catch (error) {
+    throw new DonsetchTransportError("donsetch_process_failed", errorMessage(error));
+  }
+  const stderr = sanitizeDonsetchDiagnostic(completed.stderr);
+  if (completed.termination === "output-limit" || completed.outputLimitExceeded === true) {
+    throw new DonsetchTransportError("donsetch_response_too_large", stderr);
+  }
+  if (byteLength(completed.stdout) > maxResponseBytes) {
+    throw new DonsetchTransportError("donsetch_response_too_large", stderr);
+  }
+  if (timedOut(completed)) throw new DonsetchTransportError("donsetch_timeout", stderr);
+  if (completed.code !== 0 || completed.killed === true) {
+    throw new DonsetchTransportError("donsetch_process_failed", stderr);
+  }
+  const messages = responseMessages(completed.stdout);
+  resultFor(messages, 1, true);
+  return calls.map((_call, index) => payloadFromResult(resultFor(messages, index + 2), maxTextChars));
+}
+function parsedVersion(value) {
+  const match = VERSION_RE.exec(value);
+  if (!match) return null;
+  return `${Number(match[1])}.${Number(match[2])}.${Number(match[3])}`;
+}
+function donsetchVersionCompatibility(version) {
+  if (!version) return "unknown";
+  const versionParts = version.split(".").map(Number);
+  const testedParts = DONSETCH_TESTED_VERSION.split(".").map(Number);
+  if (versionParts.some((part) => !Number.isInteger(part)) || versionParts.length !== 3) return "unknown";
+  if (versionParts.every((part, index) => part === testedParts[index])) return "tested";
+  return versionParts[0] === testedParts[0] ? "compatible_unverified" : "incompatible_major";
+}
+async function inspectDonsetchReadiness(runCommandWithTimeout, binaryValue, options = {}) {
+  const base = {
+    state: "missing",
+    version: null,
+    testedVersion: DONSETCH_TESTED_VERSION,
+    compatibility: "unknown",
+    binaryConfigured: false
+  };
+  let binary;
+  try {
+    binary = normalizeBinary(binaryValue);
+  } catch {
+    return base;
+  }
+  base.binaryConfigured = true;
+  const timeoutSeconds = boundedInt(options.timeoutSeconds, 5, 1, 15);
+  let completed;
+  try {
+    completed = await runCommandWithTimeout([binary, "--version"], {
+      timeoutMs: timeoutSeconds * 1e3,
+      noOutputTimeoutMs: timeoutSeconds * 1e3,
+      maxOutputBytes: { stdout: READINESS_STDOUT_LIMIT_BYTES, stderr: RUNNER_STDERR_LIMIT_BYTES },
+      maxCombinedOutputBytes: READINESS_STDOUT_LIMIT_BYTES + RUNNER_STDERR_LIMIT_BYTES,
+      killProcessTree: true,
+      terminateOnOutputLimit: true,
+      env: isolatedDonsetchEnvironment()
+    });
+  } catch (error) {
+    return { ...base, state: "unavailable", diagnostic: sanitizeDonsetchDiagnostic(errorMessage(error)) || void 0 };
+  }
+  const diagnostic = sanitizeDonsetchDiagnostic(completed.stderr);
+  if (timedOut(completed)) return { ...base, state: "timeout", diagnostic: diagnostic || void 0 };
+  if (completed.code !== 0 || completed.killed === true) {
+    return { ...base, state: "unavailable", diagnostic: diagnostic || void 0 };
+  }
+  const versionInput = `${completed.stdout.slice(0, 32768)}
+${completed.stderr.slice(0, 32768)}`;
+  const version = parsedVersion(versionInput);
+  return {
+    ...base,
+    state: "executable",
+    version,
+    compatibility: donsetchVersionCompatibility(version)
+  };
 }
 
-// hound-provider.ts
-function boundedInt(value, fallback, minimum, maximum) {
-  return Math.min(maximum, Math.max(minimum, Math.floor(value ?? fallback)));
+// donsetch-provider.ts
+var ALLOWED_SEARCH_TYPES = /* @__PURE__ */ new Set(["search", "news"]);
+var ALLOWED_INTENTS = /* @__PURE__ */ new Set(["auto", "web", "code", "paper", "news", "entity"]);
+var MAX_URL_CHARS = 8192;
+var MAX_TITLE_CHARS = 512;
+var MAX_SNIPPET_CHARS = 4096;
+function boundedInt2(value, fallback, minimum, maximum) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.floor(parsed)));
 }
-function cleanStrings(value, limit = 20) {
-  return Array.isArray(value) ? value.slice(0, limit).filter((item) => typeof item === "string" && !!item) : [];
+function finiteNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
-function textContent(value) {
-  if (typeof value === "string") return value;
-  return Array.isArray(value) ? value.filter((item) => typeof item === "string").join("\n") : "";
+function boundedString(value, maxChars) {
+  return (typeof value === "string" ? value : "").slice(0, maxChars);
+}
+function cleanStrings(value, limit = 50, maxChars = 256) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, limit).filter((item) => typeof item === "string" && !!item.trim()).map((item) => item.trim().slice(0, maxChars));
+}
+function cleanDomains(value) {
+  return cleanStrings(value, 50, 253).map((domain) => domain.toLowerCase().replace(/^\*\./, "").replace(/\.$/, "")).filter((domain) => !!domain && !/[\s/@]/.test(domain));
 }
 function domainMatches(hostname, domain) {
-  const normalized = String(domain || "").trim().toLowerCase().replace(/^\*\./, "").replace(/\.$/, "");
-  return !!normalized && (hostname === normalized || hostname.endsWith(`.${normalized}`));
+  return hostname === domain || hostname.endsWith(`.${domain}`);
 }
-function urlAllowed(url, includeDomains, excludeDomains) {
+function safeHttpUrl(value) {
+  if (typeof value !== "string" || !value || value.length > MAX_URL_CHARS) return null;
   try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
-    if (!["http:", "https:"].includes(parsed.protocol) || !hostname) return false;
-    if (excludeDomains.some((domain) => domainMatches(hostname, domain))) return false;
-    return !includeDomains.length || includeDomains.some((domain) => domainMatches(hostname, domain));
+    const parsed = new URL(value);
+    if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) return null;
+    return value;
   } catch {
-    return false;
+    return null;
   }
 }
-async function searchHound(query, endpoint, maxResults, freshness, includeDomains = [], excludeDomains = [], locale, options = {}) {
-  const houndOptions = {
-    max_results: boundedInt(maxResults, 6, 1, 50),
-    cache_ttl: 0
-  };
-  if (["day", "week", "month", "year"].includes(String(freshness || ""))) houndOptions.freshness = freshness;
-  if (includeDomains.length === 1) houndOptions.site = includeDomains[0];
-  if (excludeDomains.length) houndOptions.exclude_sites = excludeDomains;
-  if (locale?.language) houndOptions.language = locale.language;
-  if (locale?.country) houndOptions.region = locale.language ? `${locale.country}-${locale.language}` : locale.country;
-  const payload = await callHoundTool(endpoint, "mcp_smart_search", {
-    query,
-    options: houndOptions
-  }, options);
-  if (!Array.isArray(payload.results)) throw new Error("hound_search_contract_failed");
-  if (payload.error && !payload.results.length) throw new Error("hound_search_failed");
-  const results = payload.results.filter((item) => item && typeof item.url === "string" && urlAllowed(item.url, includeDomains, excludeDomains)).slice(0, maxResults).map((item, index) => ({
-    title: String(item.title || ""),
-    url: item.url,
-    snippet: String(item.snippet || ""),
-    score: Number.isFinite(Number(item.relevance_score)) ? Number(item.relevance_score) : Number((1 - index * 0.05).toFixed(3)),
-    position: Number.isFinite(Number(item.position)) ? Number(item.position) : void 0,
-    source: String(item.source || ""),
-    fetch_relevance: String(item.fetch_relevance || ""),
-    engines_consensus: String(item.engines_consensus || "")
-  }));
+function urlAllowed(value, includeDomains, excludeDomains) {
+  const url = safeHttpUrl(value);
+  if (!url) return null;
+  const hostname = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+  if (excludeDomains.some((domain) => domainMatches(hostname, domain))) return null;
+  if (includeDomains.length && !includeDomains.some((domain) => domainMatches(hostname, domain))) return null;
+  return url;
+}
+function searchIntent(request) {
+  const searchType = request.searchType || "search";
+  if (!ALLOWED_SEARCH_TYPES.has(searchType)) throw new Error("donsetch_search_type_unsupported");
+  if (searchType === "news") return "news";
+  return request.category && ALLOWED_INTENTS.has(request.category) ? request.category : "auto";
+}
+function engineMetadata(structured) {
+  const enginesUsed = [];
+  const enginesBlocked = [];
+  if (Array.isArray(structured.engines)) {
+    for (const item of structured.engines.slice(0, 50)) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const engine = boundedString(item.engine, 128);
+      if (!engine) continue;
+      if (String(item.status || "").toLowerCase() === "ok") enginesUsed.push(engine);
+      else enginesBlocked.push(engine);
+    }
+  }
+  if (!enginesUsed.length) enginesUsed.push(...cleanStrings(structured.engines_used, 50, 128));
+  if (!enginesBlocked.length) enginesBlocked.push(...cleanStrings(structured.engine_blocked, 50, 128));
+  return { enginesUsed, enginesBlocked };
+}
+async function searchDonsetch(runCommandWithTimeout, request) {
+  const query = boundedString(request.query, 2e3).trim();
+  if (!query) throw new Error("donsetch_query_required");
+  if (request.freshness) throw new Error("donsetch_freshness_unsupported");
+  if (request.images) throw new Error("donsetch_image_search_unsupported");
+  const maxResults = boundedInt2(request.maxResults, 7, 1, 12);
+  const includeDomains = cleanDomains(request.includeDomains);
+  const excludeDomains = cleanDomains(request.excludeDomains);
+  const [payload] = await runDonsetchSession(
+    runCommandWithTimeout,
+    request.binary,
+    [{
+      tool: "web_search",
+      arguments: { query, max_results: maxResults, intent: searchIntent(request) }
+    }],
+    {
+      timeoutSeconds: request.timeoutSeconds,
+      maxResponseBytes: request.maxResponseBytes,
+      maxTextChars: request.maxTextChars
+    }
+  );
+  const upstreamResults = payload.structured.results;
+  if (!Array.isArray(upstreamResults)) throw new Error("donsetch_search_contract_failed");
+  const results = [];
+  for (const item of upstreamResults) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const source = item;
+    const url = urlAllowed(source.url, includeDomains, excludeDomains);
+    if (!url) continue;
+    results.push({
+      title: boundedString(source.title, MAX_TITLE_CHARS),
+      url,
+      snippet: boundedString(source.snippet, MAX_SNIPPET_CHARS),
+      score: finiteNumber(source.score),
+      position: results.length + 1,
+      source: "donsetch",
+      engines: cleanStrings(source.engines, 20, 128),
+      engines_consensus: boundedString(source.consensus, 512),
+      source_type: "web"
+    });
+    if (results.length >= maxResults) break;
+  }
+  const engines = engineMetadata(payload.structured);
   return {
-    provider: "hound",
+    provider: "donsetch",
     query,
     results,
     images: [],
-    answer: results[0]?.snippet || "",
     metadata: {
-      engines_used: cleanStrings(payload.engines_used),
-      engine_blocked: cleanStrings(payload.engine_blocked),
-      rerank_mode: String(payload.rerank_mode || ""),
-      duration_ms: Number.isFinite(Number(payload.duration_ms)) ? Number(payload.duration_ms) : 0,
+      engines_used: engines.enginesUsed,
+      engine_blocked: engines.enginesBlocked,
+      intent: boundedString(payload.structured.intent, 64),
+      cached: payload.structured.cached === true,
+      weak: payload.structured.weak === true,
+      duration_ms: finiteNumber(payload.structured.elapsed_ms),
       local_sidecar: true
     }
   };
 }
-function fetchArguments(url, outputFormat, includeImages, renderJs, maxContentChars) {
-  return {
-    urls: [url],
-    extraction_type: outputFormat,
-    cache_ttl: 0,
-    max_content_chars: maxContentChars,
-    options: { include_media: includeImages },
-    ...renderJs ? { force_fetcher: "stealthy" } : {}
-  };
+function normalizedTier(request) {
+  if (request.renderJs) return "2";
+  return request.tier === "1" || request.tier === "2" ? request.tier : "auto";
 }
-function singleFetchItem(payload) {
-  return Array.isArray(payload.results) && payload.results.length === 1 && payload.results[0] && typeof payload.results[0] === "object" ? payload.results[0] : {};
-}
-function projectFetchItem(item, requestedUrl) {
-  const url = typeof item.url === "string" ? item.url : requestedUrl;
-  const status = Number.isFinite(Number(item.status)) ? Number(item.status) : 0;
-  const content = textContent(item.content);
-  if (item.error || item.content_ok !== true || status >= 400 || !content.trim()) {
+function projectFetchItem(payload, requestedUrl, includeImages, includeRawHtml) {
+  const structured = payload.structured;
+  const observedUrl = safeHttpUrl(structured.url) || requestedUrl;
+  const status = boundedInt2(structured.status, 0, 0, 999);
+  const verdict = boundedString(structured.verdict, 32).toLowerCase();
+  const failed = structured.content_ok !== true || ["error", "blocked", "failed"].includes(verdict) || status >= 400 || !payload.text.trim();
+  if (failed) {
     return {
-      url,
+      url: observedUrl,
       title: "",
       content: "",
       raw_content: "",
-      provider: "hound",
-      error: "hound_fetch_failed",
-      metadata: { status }
+      provider: "donsetch",
+      error: "donsetch_fetch_failed",
+      metadata: { status, local_sidecar: true }
     };
   }
-  const metadata = item.metadata && typeof item.metadata === "object" ? item.metadata : {};
-  return {
-    url,
-    title: String(metadata.title || ""),
-    content,
-    raw_content: content,
-    provider: "hound",
-    images: cleanStrings(item.media).map((imageUrl) => ({ url: imageUrl })),
+  const result = {
+    url: observedUrl,
+    title: boundedString(structured.title, MAX_TITLE_CHARS),
+    content: payload.text,
+    raw_content: payload.text,
+    provider: "donsetch",
     metadata: {
       status,
-      fetcher: String(item.fetcher_used || ""),
-      page_type: String(item.page_type || ""),
-      source_type: String(item.source_type || ""),
-      is_official: item.is_official === true,
-      fetched_at: String(item.fetched_at || ""),
-      duration_ms: Number.isFinite(Number(item.duration_ms)) ? Number(item.duration_ms) : 0
+      fetcher: "donsetch",
+      page_type: boundedString(structured.content_kind, 128),
+      source_type: "web",
+      quality: finiteNumber(structured.quality),
+      lang: boundedString(structured.lang, 32),
+      site: boundedString(structured.site, 256),
+      next_offset: structured.next_offset == null ? void 0 : boundedInt2(structured.next_offset, 0, 0, Number.MAX_SAFE_INTEGER),
+      local_sidecar: true
     }
   };
-}
-async function extractHound(urls, endpoint, outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, options = {}) {
-  const maxContentChars = boundedInt(options.maxContentChars, 4e4, 500, 2e5);
-  const results = [];
-  for (const requestedUrl of urls) {
-    try {
-      const payload = await callHoundTool(
-        endpoint,
-        "mcp_smart_fetch",
-        fetchArguments(requestedUrl, outputFormat, includeImages, renderJs, maxContentChars),
-        options
-      );
-      const result = projectFetchItem(singleFetchItem(payload), requestedUrl);
-      if (includeRawHtml && !result.error) {
-        if (outputFormat === "html") {
-          result.raw_html = result.content;
-        } else {
-          try {
-            const rawPayload = await callHoundTool(
-              endpoint,
-              "mcp_smart_fetch",
-              fetchArguments(requestedUrl, "html", false, renderJs, maxContentChars),
-              options
-            );
-            const rawItem = singleFetchItem(rawPayload);
-            const rawStatus = Number.isFinite(Number(rawItem.status)) ? Number(rawItem.status) : 0;
-            const rawContent = textContent(rawItem.content);
-            if (rawItem.error || rawItem.content_ok !== true || rawStatus >= 400 || !rawContent.trim()) {
-              result.raw_error = "hound_raw_html_failed";
-            } else {
-              result.raw_html = rawContent;
-            }
-          } catch {
-            result.raw_error = "hound_raw_html_failed";
-          }
-        }
-      }
-      results.push(result);
-    } catch {
-      results.push({
-        url: requestedUrl,
-        title: "",
-        content: "",
-        raw_content: "",
-        provider: "hound",
-        error: "hound_fetch_failed"
-      });
-    }
+  if (includeImages) {
+    result.images = cleanStrings(structured.images ?? structured.media, 50, MAX_URL_CHARS).map((url) => safeHttpUrl(url)).filter((url) => !!url).map((url) => ({ url }));
   }
-  return { provider: "hound", results };
+  if (payload.textTruncated) {
+    result.truncated = true;
+    result.original_chars = payload.originalTextChars;
+  }
+  if (includeRawHtml) result.raw_error = "donsetch_raw_html_unsupported";
+  return result;
+}
+async function extractDonsetch(runCommandWithTimeout, request) {
+  if ((request.outputFormat || "markdown") !== "markdown") throw new Error("donsetch_output_format_unsupported");
+  if (!Array.isArray(request.urls) || !request.urls.length || request.urls.length > 50) {
+    throw new Error("donsetch_url_count_invalid");
+  }
+  const urls = request.urls.map((value) => safeHttpUrl(value));
+  if (urls.some((url) => !url)) throw new Error("donsetch_url_invalid");
+  const safeUrls = urls;
+  const maxContentChars = boundedInt2(request.maxContentChars, 15e3, 500, 2e5);
+  const payloads = await runDonsetchSession(
+    runCommandWithTimeout,
+    request.binary,
+    safeUrls.map((url) => ({
+      tool: "web_fetch",
+      arguments: {
+        url,
+        max_chars: maxContentChars,
+        media: request.includeImages === true,
+        tier: normalizedTier(request)
+      }
+    })),
+    {
+      timeoutSeconds: request.timeoutSeconds,
+      maxResponseBytes: request.maxResponseBytes,
+      maxTextChars: Math.min(maxContentChars, request.maxTextChars ?? maxContentChars)
+    }
+  );
+  return {
+    provider: "donsetch",
+    results: payloads.map((payload, index) => projectFetchItem(
+      payload,
+      safeUrls[index],
+      request.includeImages === true,
+      request.includeRawHtml === true
+    ))
+  };
 }
 
 // budget-preflight.ts
@@ -949,6 +1525,7 @@ function readCachedExtractContent(reference, start = 0, end, rawStart, rawEnd) {
 var EXTRACT_PROVIDER_PRIORITY = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 var EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
+  additionalProperties: false,
   properties: {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract (required unless content_ref is supplied)" },
     content_ref: { type: "string", description: "Process-local full-content reference returned by a prior extraction; valid only while its cache entry remains live." },
@@ -958,12 +1535,12 @@ var EXTRACT_PARAMETERS_SCHEMA = {
     raw_content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a distinct provider raw text (maximum range 60000)." },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch"],
       description: "Try this provider first with extraction fallback, or use auto priority (default: auto). Use routing_override_provider for a strict single-provider call."
     },
     routing_override_provider: {
       type: "string",
-      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
+      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch"],
       description: "Disable automatic extraction routing and force this provider for this request. Reported visibly in routing.override_provider."
     },
     format: {
@@ -1050,9 +1627,9 @@ async function requestJson(url, init, timeout = 30) {
       throw new Error(String(message));
     }
     return data;
-  } catch (error2) {
-    if (error2?.name === "AbortError") throw new Error(`Request timed out after ${timeout}s`);
-    throw error2;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`Request timed out after ${timeout}s`);
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -1067,7 +1644,7 @@ function getExtractApiKey(provider, runtimeConfig) {
     parallel: runtimeConfig.parallelApiKey,
     keenable: runtimeConfig.keenableApiKey,
     serper: runtimeConfig.serperApiKey,
-    hound: runtimeConfig.houndMcpUrl
+    donsetch: runtimeConfig.donsetchBin
   };
   return keyMap[provider];
 }
@@ -1075,9 +1652,12 @@ function keylessPublicAllowed(provider, runtimeConfig) {
   return provider === "keenable" && runtimeConfig.keenableAllowPublic === true;
 }
 function hasAnyExtractProviderCredential(runtimeConfig) {
-  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig));
+  return EXTRACT_PROVIDER_PRIORITY.some((provider) => isExtractProviderAvailable(provider, runtimeConfig));
 }
 function isExtractProviderAvailable(provider, runtimeConfig) {
+  if (provider === "donsetch") {
+    return Boolean(runtimeConfig.donsetchBin && runtimeConfig.runCommandWithTimeout);
+  }
   return Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig);
 }
 var BLOCKED_EXTRACT_HOSTS = /* @__PURE__ */ new Set(["localhost", "metadata.google.internal", "metadata.internal"]);
@@ -1179,8 +1759,8 @@ async function extractFirecrawl(urls, apiKey, outputFormat = "markdown", include
         images,
         metadata
       }));
-    } catch (error2) {
-      results.push(normalizeExtractResult("firecrawl", url, "", "", void 0, { error: String(error2?.message || error2) }));
+    } catch (error) {
+      results.push(normalizeExtractResult("firecrawl", url, "", "", void 0, { error: String(error?.message || error) }));
     }
   }
   return { provider: "firecrawl", results };
@@ -1211,8 +1791,8 @@ async function extractLinkup(urls, apiKey, outputFormat = "markdown", includeIma
         images: includeImages ? normalizeImages(data?.images) : void 0,
         metadata: data?.metadata && typeof data.metadata === "object" ? data.metadata : void 0
       }));
-    } catch (error2) {
-      results.push(normalizeExtractResult("linkup", url, "", "", void 0, { error: String(error2?.message || error2) }));
+    } catch (error) {
+      results.push(normalizeExtractResult("linkup", url, "", "", void 0, { error: String(error?.message || error) }));
     }
   }
   return { provider: "linkup", results };
@@ -1266,7 +1846,7 @@ async function extractExa(urls, apiKey, outputFormat = "markdown", includeImages
 }
 var PARALLEL_MAX_CHARS_PER_RESULT = 6e4;
 var PARALLEL_MAX_CHARS_TOTAL = 12e4;
-async function extractParallel(urls, apiKey, outputFormat = "markdown", _includeImages = false, includeRawHtml = false, _renderJs = false, budgets = {}, apiUrl = "https://api.parallel.ai/v1beta/tasks/extract", timeout = 30) {
+async function extractParallel(urls, apiKey, outputFormat = "markdown", _includeImages = false, includeRawHtml = false, _renderJs = false, budgets = {}, apiUrl = "https://api.parallel.ai/v1/extract", timeout = 30) {
   const data = await requestJson(apiUrl, {
     method: "POST",
     headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
@@ -1276,18 +1856,22 @@ async function extractParallel(urls, apiKey, outputFormat = "markdown", _include
       advanced_settings: { full_content: { max_chars_per_result: budgets.maxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT } }
     })
   }, timeout);
-  const rawItems = Array.isArray(data?.results) ? data.results : Array.isArray(data?.data) ? data.data : [];
+  const rawItems = Array.isArray(data?.results) ? data.results : [];
   const results = rawItems.map((item) => {
     const url = String(item?.url || item?.source_url || "");
     const excerpts = Array.isArray(item?.excerpts) ? item.excerpts : Array.isArray(item?.snippets) ? item.snippets : [];
-    const markdown = String(item?.markdown || item?.content || item?.text || excerpts.join("\n\n") || "");
+    const excerptText = excerpts.map((excerpt) => typeof excerpt === "string" ? excerpt : excerpt?.text || excerpt?.content || "").filter(Boolean).join("\n\n");
+    const markdown = String(item?.full_content || item?.markdown || item?.content || item?.text || excerptText || "");
     const html = String(item?.html || item?.raw_html || "");
     const content = outputFormat === "html" ? html || markdown : markdown || html;
     return normalizeExtractResult("parallel", url, String(item?.title || ""), content, content, {
       raw_html: includeRawHtml ? html || void 0 : void 0,
-      metadata: { search_id: data?.search_id, session_id: data?.session_id }
+      metadata: { search_id: data?.search_id, session_id: data?.session_id, excerpts: excerpts.length ? excerpts : void 0 }
     });
   });
+  for (const failed of Array.isArray(data?.errors) ? data.errors : []) {
+    results.push(normalizeExtractResult("parallel", typeof failed === "object" ? String(failed?.url || "") : "", "", "", void 0, { error: typeof failed === "string" ? failed : String(failed?.error || "parallel_extract_failed") }));
+  }
   return { provider: "parallel", results };
 }
 async function extractYou(urls, apiKey, outputFormat = "markdown", includeImages = false, includeRawHtml = false, _renderJs = false, apiUrl = "https://ydc-index.io/v1/contents", timeout = 30) {
@@ -1421,8 +2005,8 @@ async function extractKeenable(urls, apiKey, _outputFormat = "markdown", _includ
       results.push(normalizeExtractResult("keenable", String(data?.url || url), String(data?.title || ""), content, content, {
         metadata: Object.keys(metadata).length ? metadata : void 0
       }));
-    } catch (error2) {
-      results.push(normalizeExtractResult("keenable", url, "", "", void 0, { error: String(error2?.message || error2) }));
+    } catch (error) {
+      results.push(normalizeExtractResult("keenable", url, "", "", void 0, { error: String(error?.message || error) }));
     }
   }
   return { provider: "keenable", results };
@@ -1449,8 +2033,8 @@ async function extractSerper(urls, apiKey, _outputFormat = "markdown", _includeI
       if (data?.jsonld != null) extra.jsonld = data.jsonld;
       if (data?.credits != null) extra.credits = data.credits;
       results.push(normalizeExtractResult("serper", url, title, content, content, extra));
-    } catch (error2) {
-      results.push(normalizeExtractResult("serper", url, "", "", void 0, { error: String(error2?.message || error2) }));
+    } catch (error) {
+      results.push(normalizeExtractResult("serper", url, "", "", void 0, { error: String(error?.message || error) }));
     }
   }
   return { provider: "serper", results };
@@ -1477,11 +2061,11 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       HARD_EXTRACT_MAX_CONTEXT_CHARS
     );
     deadlineSeconds = preflightDeadline(contextOptions.deadlineSeconds, runtimeConfig.extractDeadlineSeconds);
-  } catch (error2) {
+  } catch (error) {
     return {
       provider: requestedProvider,
       results: [],
-      error: String(error2?.message || error2),
+      error: String(error?.message || error),
       routing: { requested_provider: requestedProvider }
     };
   }
@@ -1507,11 +2091,11 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
   }
   try {
     await validateExtractUrls(cleanedUrls, runtimeConfig);
-  } catch (error2) {
+  } catch (error) {
     return {
       provider: requestedProvider,
       results: [],
-      error: String(error2?.message || error2),
+      error: String(error?.message || error),
       routing: { requested_provider: requestedProvider }
     };
   }
@@ -1539,7 +2123,8 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       extract_char_limit: runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT,
       parallel_max_chars_per_result: runtimeConfig.parallelMaxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT,
       parallel_max_chars_total: runtimeConfig.parallelMaxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
-      hound_max_content_chars: runtimeConfig.houndMaxContentChars ?? null,
+      donsetch_max_content_chars: runtimeConfig.donsetchMaxContentChars ?? null,
+      donsetch_tier: runtimeConfig.donsetchTier ?? "auto",
       deadline_seconds: deadlineSeconds
     },
     provider_policy: {
@@ -1547,11 +2132,11 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       disabled: [...disabledProviders].sort(),
       auto_allow: contextOptions.autoAllow || {},
       strict_provider: contextOptions.strictProvider === true,
-      // Credential availability affects which fallback can answer, while the
+      // Credential availability affects which fallback can serve the request, while the
       // credential values themselves never enter the identity.
-      available: Object.fromEntries(EXTRACT_PROVIDER_PRIORITY.map((item) => [item, Boolean(getExtractApiKey(item, runtimeConfig)) || keylessPublicAllowed(item, runtimeConfig)]))
+      available: Object.fromEntries(EXTRACT_PROVIDER_PRIORITY.map((item) => [item, isExtractProviderAvailable(item, runtimeConfig)]))
     },
-    endpoints: { hound_mcp_url: runtimeConfig.houndMcpUrl || null },
+    endpoints: { donsetch_binary_configured: Boolean(runtimeConfig.donsetchBin) },
     url_policy: { extract_allow_private_urls: runtimeConfig.extractAllowPrivateUrls === true },
     storage_policy: "process_memory_only"
   });
@@ -1592,20 +2177,19 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         result = await extractKeenable(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
       } else if (currentProvider === "serper") {
         result = await extractSerper(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
-      } else if (currentProvider === "hound") {
-        result = await extractHound(
-          cleanedUrls,
-          providerCredential,
+      } else if (currentProvider === "donsetch") {
+        if (!runtimeConfig.runCommandWithTimeout) throw new Error("donsetch_openclaw_runner_unavailable");
+        result = await extractDonsetch(runtimeConfig.runCommandWithTimeout, {
+          binary: providerCredential,
+          urls: cleanedUrls,
           outputFormat,
           includeImages,
           includeRawHtml,
           renderJs,
-          {
-            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
-            maxResponseBytes: runtimeConfig.houndMaxResponseBytes,
-            maxContentChars: runtimeConfig.houndMaxContentChars
-          }
-        );
+          timeoutSeconds: runtimeConfig.donsetchTimeoutSeconds,
+          maxContentChars: runtimeConfig.donsetchMaxContentChars,
+          tier: String(runtimeConfig.donsetchTier ?? "auto")
+        });
       } else {
         result = await extractYou(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }
@@ -1711,8 +2295,8 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
         );
       }
       return response;
-    } catch (error2) {
-      errors.push({ provider: currentProvider, error: String(error2?.message || error2) });
+    } catch (error) {
+      errors.push({ provider: currentProvider, error: String(error?.message || error) });
     }
   }
   return {
@@ -1723,6 +2307,9 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
     routing: { requested_provider: requestedProvider, fallback_used: errors.length > 0, fallback_errors: errors }
   };
 }
+
+// research.ts
+import { createHash } from "node:crypto";
 
 // diversity.ts
 var MULTI_LABEL_SUFFIXES = /* @__PURE__ */ new Set([
@@ -1928,10 +2515,180 @@ function rerankDuplicateCandidates(results, threshold = 0.6) {
 }
 
 // research.ts
+var SNIPPET_SEPARATOR = "\n\n";
+var MAX_AGGREGATED_SNIPPET_CODEPOINTS = 600;
+var RESULT_GRACE_MILLISECONDS = 250;
+var DEFAULT_QUORUM_RESULT_TARGET_CAP = 5;
+var DEFAULT_QUORUM_MIN_UNIQUE_DOMAINS = 3;
+var AUTHORITATIVE_SOURCE_TYPES = /* @__PURE__ */ new Set(["docs", "paper", "repo", "reference"]);
+function stableId(prefix, ...parts) {
+  const raw = parts.map((part) => String(part)).join("");
+  return `${prefix}_${createHash("sha256").update(raw).digest("hex").slice(0, 16)}`;
+}
+function positiveInteger(value, fallback, minimum = 1) {
+  if (typeof value === "boolean") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.floor(parsed)) : fallback;
+}
+function codePointLength(value) {
+  return Array.from(value).length;
+}
+function takeCodePoints(value, count) {
+  return Array.from(value).slice(0, Math.max(0, count)).join("");
+}
+function compareStrings(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+function compareObservations(left, right) {
+  return compareStrings(left.provider, right.provider) || left.provider_result_index - right.provider_result_index || compareStrings(left.observation_id, right.observation_id);
+}
+function sourceType(url, rawHint) {
+  let host = "";
+  let path = "";
+  try {
+    const parsed = new URL(url);
+    host = parsed.hostname.toLowerCase();
+    path = parsed.pathname.toLowerCase();
+  } catch {
+  }
+  if (["github.com", "gitlab.com", "bitbucket.org"].includes(host)) {
+    return { value: "repo", method: "url_heuristic", method_version: "1", confidence: "high" };
+  }
+  if (["arxiv.org", "doi.org", "semanticscholar.org", "pubmed.ncbi.nlm.nih.gov"].includes(host) || path.endsWith(".pdf")) {
+    return { value: "paper", method: "url_heuristic", method_version: "1", confidence: "high" };
+  }
+  if (host.startsWith("docs.") || path.includes("/docs") || path.includes("/documentation")) {
+    return { value: "docs", method: "url_heuristic", method_version: "1", confidence: "high" };
+  }
+  if (["wikipedia.org", "en.wikipedia.org", "developer.mozilla.org"].includes(host)) {
+    return { value: "reference", method: "url_heuristic", method_version: "1", confidence: "high" };
+  }
+  if (["reddit.", "stackoverflow.", "discourse.", "forum.", "community."].some((token) => host.includes(token))) {
+    return { value: "forum", method: "url_heuristic", method_version: "1", confidence: "high" };
+  }
+  if (host.startsWith("news.") || path.includes("/news")) {
+    return { value: "news", method: "url_heuristic", method_version: "1", confidence: "medium" };
+  }
+  if (host.startsWith("blog.") || path.includes("/blog")) {
+    return { value: "blog", method: "url_heuristic", method_version: "1", confidence: "medium" };
+  }
+  const hintValue = rawHint && typeof rawHint === "object" && "value" in rawHint ? rawHint.value : rawHint;
+  const hint = String(hintValue || "").toLowerCase().replace(/_/g, "-");
+  const hintMap = {
+    "official-docs": "docs",
+    docs: "docs",
+    documentation: "docs",
+    paper: "paper",
+    repository: "repo",
+    repo: "repo",
+    blog: "blog",
+    forum: "forum",
+    reference: "reference",
+    news: "news"
+  };
+  if (hintMap[hint]) {
+    return { value: hintMap[hint], method: "provider_hint_normalized", method_version: "1", confidence: "medium" };
+  }
+  return { value: "other", method: "url_heuristic", method_version: "1", confidence: "low" };
+}
+function fetchPriority(engineRank, observations2, classifiedSource) {
+  const consensus = new Set(observations2.map((observation) => observation.provider)).size >= 2;
+  return fetchPriorityFromSignals(engineRank, consensus, classifiedSource);
+}
+function fetchPriorityFromSignals(engineRank, consensus, classifiedSource) {
+  const authoritative = AUTHORITATIVE_SOURCE_TYPES.has(classifiedSource.value);
+  const reasonCodes = [
+    consensus ? "cluster_consensus" : "cluster_single_observation",
+    engineRank <= 3 ? "rank_top_3" : "rank_beyond_top_3",
+    authoritative ? "source_type_authoritative" : "source_type_general"
+  ];
+  const score = (consensus ? 2 : 0) + (engineRank <= 3 ? 1 : 0) + (authoritative ? 1 : 0);
+  return { tier: score >= 3 ? "high" : score >= 1 ? "medium" : "low", reason_codes: reasonCodes };
+}
+function aggregateSnippet(observations2) {
+  const candidates2 = observations2.filter((observation) => typeof observation.item.snippet === "string" && observation.item.snippet.length > 0);
+  if (!candidates2.length) return null;
+  const normalizedSnippet = (observation) => String(observation.item.snippet).normalize("NFC").toLowerCase().replace(/\s+/g, " ").trim();
+  const retained = [];
+  const retainedNormalized = [];
+  for (const candidate of [...candidates2].sort((left, right) => {
+    const lengthDifference = codePointLength(normalizedSnippet(right)) - codePointLength(normalizedSnippet(left));
+    return lengthDifference || compareObservations(left, right);
+  })) {
+    const normalized = normalizedSnippet(candidate);
+    if (!normalized) continue;
+    if (retainedNormalized.some((existing) => normalized.includes(existing) || existing.includes(normalized))) continue;
+    retained.push(candidate);
+    retainedNormalized.push(normalized);
+  }
+  retained.sort(compareObservations);
+  const fragments = [];
+  let usedCodePoints = 0;
+  for (const observation of retained) {
+    const separatorLength = fragments.length ? codePointLength(SNIPPET_SEPARATOR) : 0;
+    const remaining = MAX_AGGREGATED_SNIPPET_CODEPOINTS - usedCodePoints - separatorLength;
+    if (remaining <= 0) break;
+    const sourceText = String(observation.item.snippet).normalize("NFC");
+    const text2 = takeCodePoints(sourceText, remaining);
+    const transformations = ["mechanical_segmentation"];
+    if (codePointLength(text2) < codePointLength(sourceText)) transformations.push("deterministic_truncation");
+    fragments.push({
+      observation_id: observation.observation_id,
+      provider: observation.provider,
+      provider_result_index: observation.provider_result_index,
+      source_field: "snippet",
+      text: text2,
+      transformations
+    });
+    usedCodePoints += codePointLength(text2) + separatorLength;
+    if (codePointLength(text2) < codePointLength(sourceText)) break;
+  }
+  if (!fragments.length) return null;
+  const text = fragments.map((fragment) => fragment.text).join(SNIPPET_SEPARATOR);
+  const provenance = observations2.length > 1 ? { aggregation: "concat", separator: SNIPPET_SEPARATOR, fragments } : { ...fragments[0] };
+  return { text, provenance };
+}
+function enrichCluster(cluster, engineRank) {
+  const representative = cluster.representative;
+  const observations2 = [...cluster.observations].sort(compareObservations);
+  const classifiedSource = sourceType(representative.item.url || "", representative.item.source_type);
+  const snippet2 = aggregateSnippet(observations2);
+  const result = {
+    ...representative.item,
+    // The actual adapter is authoritative; a provider-returned provider label must
+    // not be able to misattribute the result or its snippet fragments.
+    provider: representative.provider,
+    representative_observation_id: representative.observation_id,
+    observation_ids: observations2.map((observation) => observation.observation_id),
+    source_observations: observations2.map((observation) => {
+      const rawSnippet = typeof observation.item.snippet === "string" ? observation.item.snippet.normalize("NFC") : "";
+      return {
+        observation_id: observation.observation_id,
+        provider: observation.provider,
+        provider_result_index: observation.provider_result_index,
+        url: String(observation.item.url || ""),
+        title: String(observation.item.title || ""),
+        ...rawSnippet ? {
+          snippet_sha256: createHash("sha256").update(rawSnippet).digest("hex"),
+          snippet_codepoint_length: codePointLength(rawSnippet)
+        } : {}
+      };
+    }),
+    dedup_cluster_id: stableId("cluster", cluster.key),
+    source_type: classifiedSource,
+    fetch_priority: fetchPriority(engineRank, observations2, classifiedSource)
+  };
+  if (snippet2) {
+    result.snippet = snippet2.text;
+    result.snippet_origin = observations2.length > 1 ? "engine" : "provider";
+    result.snippet_provenance = snippet2.provenance;
+  }
+  return result;
+}
 function normalizeResultUrl(url) {
   try {
     const u = new URL(url.trim());
-    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    const host = u.host.replace(/^www\./i, "").toLowerCase();
     const pathname = u.pathname.replace(/\/$/, "");
     return `${host}${pathname}`;
   } catch {
@@ -1944,6 +2701,7 @@ function deduplicateResultsAcrossProviders(resultsByProvider, maxResults) {
   let dedupCount = 0;
   for (const [provider, data] of resultsByProvider) {
     for (const item of data.results || []) {
+      if (!item || typeof item !== "object") continue;
       const norm = normalizeResultUrl(item.url || "");
       if (norm && seen.has(norm)) {
         dedupCount += 1;
@@ -1956,6 +2714,71 @@ function deduplicateResultsAcrossProviders(resultsByProvider, maxResults) {
   }
   return { results: deduped, dedupCount };
 }
+function mergeResearchResultsAcrossProviders(resultsByProvider, maxResults) {
+  const clusters = [];
+  const clustersByKey = /* @__PURE__ */ new Map();
+  let dedupCount = 0;
+  for (const [providerSubmissionIndex, [provider, data]] of resultsByProvider.entries()) {
+    for (const [providerResultIndex, item] of (data.results || []).entries()) {
+      if (!item || typeof item !== "object") continue;
+      const norm = normalizeResultUrl(item.url || "");
+      const key = norm || `missing-url:${providerSubmissionIndex}:${providerResultIndex}`;
+      const observation = {
+        observation_id: stableId(
+          "obs",
+          provider,
+          providerSubmissionIndex,
+          providerResultIndex,
+          norm,
+          String(item.title || ""),
+          String(item.snippet || "").normalize("NFC")
+        ),
+        provider,
+        provider_submission_index: providerSubmissionIndex,
+        provider_result_index: providerResultIndex,
+        item
+      };
+      const existing = clustersByKey.get(key);
+      if (existing) {
+        existing.observations.push(observation);
+        dedupCount += 1;
+        continue;
+      }
+      const cluster = { key, representative: observation, observations: [observation] };
+      clusters.push(cluster);
+      clustersByKey.set(key, cluster);
+    }
+  }
+  const limit = Number.isFinite(maxResults) ? Math.max(0, Math.floor(maxResults)) : 0;
+  return {
+    results: clusters.slice(0, limit).map((cluster, index) => enrichCluster(cluster, index + 1)),
+    dedupCount
+  };
+}
+function researchQuorumSnapshot(resultsByProvider) {
+  const seenUrls = /* @__PURE__ */ new Set();
+  const domains = /* @__PURE__ */ new Set();
+  const contributingProviders = [];
+  let deduplicatedResultCount = 0;
+  for (const [provider, payload] of resultsByProvider) {
+    let contributed = false;
+    for (const item of payload.results || []) {
+      if (!item || typeof item !== "object" || typeof item.url !== "string" || !item.url.trim()) continue;
+      const normalized = normalizeResultUrl(item.url);
+      if (!normalized || seenUrls.has(normalized)) continue;
+      seenUrls.add(normalized);
+      deduplicatedResultCount += 1;
+      contributed = true;
+      try {
+        const domain = new URL(item.url).hostname.replace(/^www\./i, "").toLowerCase();
+        if (domain) domains.add(domain);
+      } catch {
+      }
+    }
+    if (contributed) contributingProviders.push(provider);
+  }
+  return { deduplicatedResultCount, uniqueDomainCount: domains.size, contributingProviders };
+}
 function selectResearchProviders(primaryProvider, providerPriority, availableProviders, maxProviders = 3) {
   const preferred = [primaryProvider, "linkup", "tavily", "exa", "firecrawl", "brave", "serper", "you", "querit"];
   const ordered = [];
@@ -1967,19 +2790,33 @@ function selectResearchProviders(primaryProvider, providerPriority, availablePro
   }
   return ordered;
 }
-function withResearchDeadline(promise, remainingSeconds) {
+function withResearchDeadline(promise, remainingSeconds, onTimeout, graceMilliseconds = 0) {
   if (remainingSeconds == null) return promise;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("research_deadline_exceeded")), Math.max(1, remainingSeconds * 1e3));
+    let graceTimer;
+    const rejectForDeadline = () => {
+      onTimeout?.();
+      reject(new Error("research_deadline_exceeded"));
+    };
+    const timer = setTimeout(() => {
+      if (graceMilliseconds > 0) {
+        graceTimer = setTimeout(rejectForDeadline, graceMilliseconds);
+        graceTimer.unref?.();
+      } else {
+        rejectForDeadline();
+      }
+    }, Math.max(1, remainingSeconds * 1e3));
     timer.unref?.();
     promise.then(
       (value) => {
         clearTimeout(timer);
+        if (graceTimer) clearTimeout(graceTimer);
         resolve(value);
       },
-      (error2) => {
+      (error) => {
         clearTimeout(timer);
-        reject(error2);
+        if (graceTimer) clearTimeout(graceTimer);
+        reject(error);
       }
     );
   });
@@ -1991,37 +2828,119 @@ async function runResearchMode(options) {
   const now = options.nowFn || (() => Date.now() / 1e3);
   const start = now();
   const budgetExhausted = () => timeBudgetSeconds != null && now() - start >= timeBudgetSeconds;
+  const quorumEnabled = options.quorumEnabled !== false;
+  const quorumMinContributingProviders = Math.max(2, positiveInteger(options.quorumMinContributingProviders, 2));
+  const quorumResultTargetCap = positiveInteger(options.quorumResultTargetCap, DEFAULT_QUORUM_RESULT_TARGET_CAP);
+  const quorumResultTarget = Math.min(Math.max(1, positiveInteger(maxResults, 1)), quorumResultTargetCap);
+  const quorumMinUniqueDomains = Math.min(
+    quorumResultTarget,
+    positiveInteger(options.quorumMinUniqueDomains, DEFAULT_QUORUM_MIN_UNIQUE_DOMAINS)
+  );
   const providerErrors = [];
   const providerAttempts = /* @__PURE__ */ new Map();
-  const launched = [];
+  const launched = /* @__PURE__ */ new Map();
+  const completionQueue = [];
+  let wakeCompletion = null;
+  const publishCompletion = (completion) => {
+    completionQueue.push(completion);
+    const wake = wakeCompletion;
+    wakeCompletion = null;
+    wake?.();
+  };
+  const waitForCompletion = async () => {
+    if (completionQueue.length) return;
+    await new Promise((resolve) => {
+      wakeCompletion = resolve;
+    });
+  };
   for (const [index, provider] of researchProviders.entries()) {
     if (budgetExhausted()) {
-      const error2 = "skipped: research time budget exhausted";
-      providerErrors.push({ provider, error: error2 });
-      providerAttempts.set(index, { provider, outcome: "skipped", result_count: 0, error: error2 });
+      const error = "skipped: research time budget exhausted";
+      providerErrors.push({ index, provider, error });
+      providerAttempts.set(index, { provider, outcome: "skipped", result_count: 0, error });
       continue;
     }
     const elapsed = now() - start;
     const remaining = timeBudgetSeconds == null ? null : Math.max(0, timeBudgetSeconds - elapsed);
-    launched.push({ index, provider, promise: withResearchDeadline(executeSearch2(provider), remaining) });
+    const controller = new AbortController();
+    launched.set(index, { provider, controller });
+    const providerPromise = Promise.resolve().then(() => executeSearch2(provider, controller.signal));
+    void withResearchDeadline(
+      providerPromise,
+      remaining,
+      () => controller.abort("research_deadline_exceeded"),
+      RESULT_GRACE_MILLISECONDS
+    ).then(
+      (response) => publishCompletion({ index, provider, response }),
+      (error) => publishCompletion({ index, provider, error })
+    );
   }
   const resultsByIndex = /* @__PURE__ */ new Map();
-  for (const { index, provider, promise } of launched) {
-    try {
-      const response = await promise;
+  const pending = new Set(launched.keys());
+  let quorumTriggered = false;
+  const providerResultsInSubmissionOrder = () => [...resultsByIndex.keys()].sort((left, right) => left - right).map((index) => resultsByIndex.get(index));
+  const quorumSnapshot = () => researchQuorumSnapshot(providerResultsInSubmissionOrder());
+  const quorumReached = () => {
+    if (!quorumEnabled) return false;
+    const snapshot = quorumSnapshot();
+    return snapshot.contributingProviders.length >= quorumMinContributingProviders && snapshot.deduplicatedResultCount >= quorumResultTarget && snapshot.uniqueDomainCount >= quorumMinUniqueDomains;
+  };
+  const harvestCompletion = (completion) => {
+    if (!pending.delete(completion.index)) return;
+    const { index, provider } = completion;
+    if (completion.error == null) {
+      const response = completion.response;
+      if (!response || typeof response !== "object" || Array.isArray(response)) {
+        const error2 = "provider returned a non-object result";
+        providerErrors.push({ index, provider, error: error2 });
+        providerAttempts.set(index, { provider, outcome: "failed", result_count: 0, error: error2 });
+        return;
+      }
       resultsByIndex.set(index, [provider, response]);
-      providerAttempts.set(index, { provider, outcome: "success", result_count: (response.results || []).length });
-    } catch (error2) {
-      const deadlineExceeded = String(error2?.message || error2) === "research_deadline_exceeded";
-      const message = deadlineExceeded ? "cancelled: research time budget exceeded after provider start" : String(error2?.message || error2);
-      providerErrors.push({ provider, error: message });
-      providerAttempts.set(index, { provider, outcome: deadlineExceeded ? "cancelled" : "failed", result_count: 0, error: message });
+      providerAttempts.set(index, { provider, outcome: "success", result_count: Array.isArray(response.results) ? response.results.length : 0 });
+      return;
+    }
+    const rawMessage = String(completion.error?.message || completion.error);
+    const deadlineExceeded = rawMessage === "research_deadline_exceeded";
+    const error = deadlineExceeded ? "cancelled: research time budget exceeded after provider start" : rawMessage;
+    providerErrors.push({ index, provider, error });
+    providerAttempts.set(index, { provider, outcome: deadlineExceeded ? "cancelled" : "failed", result_count: 0, error });
+  };
+  while (pending.size) {
+    await waitForCompletion();
+    await Promise.resolve();
+    while (completionQueue.length) harvestCompletion(completionQueue.shift());
+    if (!pending.size) break;
+    if (quorumReached()) {
+      await new Promise((resolve) => setImmediate(resolve));
+      while (completionQueue.length) harvestCompletion(completionQueue.shift());
+      if (!pending.size) break;
+    }
+    if (quorumReached()) {
+      for (const index of [...pending].sort((left, right) => left - right)) {
+        const launchedProvider = launched.get(index);
+        launchedProvider.controller.abort("preempted_after_quorum");
+        const error = "preempted_after_quorum";
+        providerErrors.push({ index, provider: launchedProvider.provider, error });
+        providerAttempts.set(index, { provider: launchedProvider.provider, outcome: "cancelled", result_count: 0, error });
+        pending.delete(index);
+      }
+      quorumTriggered = true;
+      break;
     }
   }
-  const providerResults = [...resultsByIndex.keys()].sort((a, b) => a - b).map((index) => resultsByIndex.get(index));
-  const { results: deduped, dedupCount } = deduplicateResultsAcrossProviders(providerResults, maxResults);
+  const providerResults = providerResultsInSubmissionOrder();
+  const publicProviderErrors = providerErrors.sort((left, right) => left.index - right.index || compareStrings(left.error, right.error)).map(({ provider, error }) => ({ provider, error }));
+  const { results: deduped, dedupCount } = mergeResearchResultsAcrossProviders(providerResults, maxResults);
   const diversityRerank = options.diversityRerank ? rerankDuplicateCandidates(deduped) : { results: deduped, duplicates: [] };
-  const researchResults = diversityRerank.results;
+  const researchResults = diversityRerank.results.map((item, index) => {
+    const classifiedSource = item.source_type;
+    const consensus = item.fetch_priority?.reason_codes?.[0] === "cluster_consensus";
+    return {
+      ...item,
+      fetch_priority: fetchPriorityFromSignals(index + 1, consensus, classifiedSource)
+    };
+  });
   const urls = researchResults.map((item) => item.url).filter(Boolean).slice(0, Math.max(0, maxExtractUrls));
   let extracted = { provider: null, results: [] };
   let extractionError = null;
@@ -2030,26 +2949,29 @@ async function runResearchMode(options) {
       extractionError = "skipped: research time budget exhausted";
     } else {
       try {
-        extracted = await extractUrls(urls) || { provider: null, results: [] };
+        const remaining = timeBudgetSeconds == null ? null : Math.max(0, timeBudgetSeconds - (now() - start));
+        extracted = await withResearchDeadline(extractUrls(urls), remaining) || { provider: null, results: [] };
         if (extracted.error && !(extracted.results || []).length) {
           extractionError = String(extracted.error);
           extracted = { provider: extracted.provider ?? null, results: [] };
         }
-      } catch (error2) {
-        extractionError = String(error2?.message || error2);
+      } catch (error) {
+        extractionError = String(error?.message || error) === "research_deadline_exceeded" ? "timed out: research time budget exhausted" : String(error?.message || error);
         extracted = { provider: null, results: [] };
       }
     }
   }
   const routing = {
-    providers_queried: launched.map(({ provider }) => provider),
+    providers_queried: providerResults.map(([provider]) => provider),
     provider_attempts: [...providerAttempts.entries()].sort(([left], [right]) => left - right).map(([, attempt]) => attempt),
-    provider_errors: providerErrors,
+    provider_errors: publicProviderErrors,
     extraction_provider: extracted.provider ?? null
   };
   if (extractionError) routing.extraction_error = extractionError;
   const sourceSummaries = extracted.results || [];
-  const status = providerResults.length === 0 ? "failed" : providerErrors.length > 0 || extractionError ? "degraded" : "success";
+  const materialProviderErrors = publicProviderErrors.filter((entry) => entry.error !== "preempted_after_quorum");
+  const finalQuorumSnapshot = quorumSnapshot();
+  const status = providerResults.length === 0 ? "failed" : materialProviderErrors.length > 0 || extractionError ? "degraded" : "success";
   return {
     status,
     mode: "research",
@@ -2067,7 +2989,17 @@ async function runResearchMode(options) {
         duplicates: diversityRerank.duplicates
       },
       providers_merged: providerResults.map(([provider]) => provider),
-      extracted_url_count: sourceSummaries.length
+      extracted_url_count: sourceSummaries.length,
+      research_quorum: {
+        enabled: quorumEnabled,
+        triggered: quorumTriggered,
+        min_contributing_providers: quorumMinContributingProviders,
+        result_target: quorumResultTarget,
+        min_unique_domains: quorumMinUniqueDomains,
+        contributing_providers: finalQuorumSnapshot.contributingProviders,
+        deduplicated_result_count: finalQuorumSnapshot.deduplicatedResultCount,
+        unique_domain_count: finalQuorumSnapshot.uniqueDomainCount
+      }
     }
   };
 }
@@ -2275,12 +3207,12 @@ var processStartedAt = Date.now();
 function nowSeconds() {
   return Date.now() / 1e3;
 }
-function recordProviderOutcome(provider, latencySeconds, resultCount2, error2, now) {
+function recordProviderOutcome(provider, latencySeconds, resultCount2, error, now) {
   const sample = {
     t: Math.floor(now ?? nowSeconds()),
     lat: Math.round(Math.max(0, Number(latencySeconds) || 0) * 1e3) / 1e3,
     n: Math.max(0, Math.floor(Number(resultCount2) || 0)),
-    err: Boolean(error2)
+    err: Boolean(error)
   };
   const samples = providerSamples.get(provider) || [];
   samples.push(sample);
@@ -2343,7 +3275,7 @@ function __resetProviderStatsForTests() {
 var FALLBACK_COUNTRY = "us";
 var FALLBACK_LANGUAGE = "en";
 var AUTO_LANGUAGE = "auto";
-var LOCALE_PROVIDERS = /* @__PURE__ */ new Set(["serper", "brave", "querit", "firecrawl", "you", "searxng"]);
+var LOCALE_PROVIDERS = /* @__PURE__ */ new Set(["serper", "serpbase", "brave", "querit", "firecrawl", "you", "searxng", "tinyfish"]);
 var LOCATION_COUNTRY_HINTS = {
   // Austria
   wien: "at",
@@ -2532,6 +3464,710 @@ function saveExtractBenchmark(result) {
   latest = structuredClone(result);
 }
 
+// provider-http.ts
+var ProviderConfigError = class extends Error {
+  code;
+  constructor(code) {
+    super(code);
+    this.name = "ProviderConfigError";
+    this.code = code;
+  }
+};
+var ProviderRequestError = class extends Error {
+  code;
+  statusCode;
+  transient;
+  retryAfter;
+  constructor(code, options = {}) {
+    super(code);
+    this.name = "ProviderRequestError";
+    this.code = code;
+    this.statusCode = options.statusCode;
+    this.transient = options.transient === true;
+    this.retryAfter = options.retryAfter;
+  }
+};
+function boundedTimeoutSeconds(value, fallback, errorCode) {
+  const parsed = value == null ? fallback : Number(value);
+  if (!Number.isFinite(parsed)) throw new ProviderConfigError(errorCode);
+  const bounded = Math.floor(parsed);
+  if (bounded < 1 || bounded > 120) throw new ProviderConfigError(errorCode);
+  return bounded;
+}
+function parseFiniteRetryAfter(value) {
+  if (value == null || !value.trim()) return void 0;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : void 0;
+}
+async function discardBody(response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+  }
+}
+async function readBoundedBytes(response, maxResponseBytes, errorPrefix) {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) {
+    await discardBody(response);
+    throw new ProviderRequestError(`${errorPrefix}_response_too_large`, { transient: true });
+  }
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxResponseBytes) {
+      throw new ProviderRequestError(`${errorPrefix}_response_too_large`, { transient: true });
+    }
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxResponseBytes) {
+        try {
+          await reader.cancel();
+        } catch {
+        }
+        throw new ProviderRequestError(`${errorPrefix}_response_too_large`, { transient: true });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const output = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+async function requestBoundedJson(url, init, options) {
+  const timeoutSeconds = boundedTimeoutSeconds(
+    options.timeoutSeconds,
+    30,
+    `${options.errorPrefix}_timeout_invalid`
+  );
+  const maxResponseBytes = Math.floor(Number(options.maxResponseBytes));
+  if (!Number.isFinite(maxResponseBytes) || maxResponseBytes < 1) {
+    throw new ProviderConfigError(`${options.errorPrefix}_response_limit_invalid`);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1e3);
+  timer.unref?.();
+  try {
+    const response = await fetch(url, {
+      ...init,
+      redirect: "error",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const statusCode = response.status;
+      const retryAfter = statusCode === 429 ? parseFiniteRetryAfter(response.headers.get("retry-after")) : void 0;
+      await discardBody(response);
+      throw new ProviderRequestError(`${options.errorPrefix}_http_${statusCode}`, {
+        statusCode,
+        transient: options.transientStatuses?.has(statusCode) === true,
+        retryAfter
+      });
+    }
+    const bytes = await readBoundedBytes(response, maxResponseBytes, options.errorPrefix);
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      return JSON.parse(text);
+    } catch {
+      throw new ProviderRequestError(`${options.errorPrefix}_invalid_response`, { transient: true });
+    }
+  } catch (error) {
+    if (error instanceof ProviderConfigError || error instanceof ProviderRequestError) throw error;
+    throw new ProviderRequestError(`${options.errorPrefix}_unavailable`, { transient: true });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// octen-provider.ts
+var OCTEN_API_URL = "https://api.monid.ai/v1/run";
+var OCTEN_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+var OCTEN_TRANSIENT_STATUSES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
+var FRESHNESS_VALUES = /* @__PURE__ */ new Set(["day", "week", "month", "year"]);
+var OCTEN_PROVIDER_METADATA = Object.freeze({
+  id: "octen",
+  displayName: "Octen via Monid",
+  apiKeyConfig: "monidApiKey",
+  autoAllowedByDefault: false,
+  capabilities: ["search", "freshness"],
+  freeTier: "No free-tier claim; Monid API key and wallet balance required",
+  signupUrl: "https://app.monid.ai/access/api-keys"
+});
+function cleanDomains2(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+}
+function finiteCount(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new ProviderConfigError("octen_max_results_invalid");
+  return Math.max(1, Math.min(100, Math.floor(parsed)));
+}
+function stringValue(value) {
+  return typeof value === "string" ? value : "";
+}
+function providerFailure(code) {
+  const statusCode = Number.isInteger(code) ? Number(code) : void 0;
+  const suffix = statusCode == null ? "unknown" : String(statusCode);
+  return new ProviderRequestError(`octen_api_${suffix}`, {
+    statusCode,
+    transient: statusCode != null && OCTEN_TRANSIENT_STATUSES.has(statusCode)
+  });
+}
+function projectMetadata(envelope, output) {
+  const metadata = {};
+  if (typeof envelope.runId === "string" && envelope.runId) metadata.monid_run_id = envelope.runId;
+  if (typeof output.request_id === "string" && output.request_id) metadata.request_id = output.request_id;
+  const meta = output.meta;
+  if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+    if (typeof meta.latency === "number" && Number.isFinite(meta.latency)) metadata.latency_ms = meta.latency;
+    const usage = meta.usage;
+    if (usage && typeof usage === "object" && !Array.isArray(usage)) {
+      const projectedUsage = {};
+      if (Number.isInteger(usage.num_search_queries) && usage.num_search_queries >= 0) {
+        projectedUsage.search_queries = usage.num_search_queries;
+      }
+      if (Number.isInteger(usage.full_content_tokens) && usage.full_content_tokens >= 0) {
+        projectedUsage.full_content_tokens = usage.full_content_tokens;
+      }
+      if (Object.keys(projectedUsage).length) metadata.usage = projectedUsage;
+    }
+  }
+  const actualCost = envelope.billing?.actualCost;
+  if (actualCost && typeof actualCost === "object" && typeof actualCost.value === "number" && Number.isFinite(actualCost.value) && actualCost.unit === "MICRO_DOLLAR") {
+    metadata.cost_usd = actualCost.value / 1e6;
+  }
+  return metadata;
+}
+async function searchOcten(query, apiKey, maxResults, options = {}) {
+  if (typeof apiKey !== "string" || !apiKey.trim()) {
+    throw new ProviderConfigError("monid_api_key_required");
+  }
+  if (typeof query !== "string" || !query.trim()) {
+    throw new ProviderConfigError("octen_query_invalid");
+  }
+  const count = finiteCount(maxResults);
+  const timeoutSeconds = boundedTimeoutSeconds(
+    options.timeoutSeconds,
+    30,
+    "octen_timeout_invalid"
+  );
+  const input = {
+    query,
+    count,
+    // Octen has a news topic, but this source-only adapter intentionally stays
+    // on the truthful capability surface until native vertical metadata is
+    // wired through the OpenClaw router.
+    topic: "general",
+    highlight: { enable: true, max_tokens: 300 },
+    full_content: { enable: false },
+    format: "text"
+  };
+  const includeDomains = cleanDomains2(options.includeDomains);
+  const excludeDomains = cleanDomains2(options.excludeDomains);
+  if (includeDomains.length) input.include_domains = includeDomains;
+  if (excludeDomains.length) input.exclude_domains = excludeDomains;
+  const freshness = FRESHNESS_VALUES.has(String(options.freshness || "")) ? options.freshness : options.timeRange;
+  if (FRESHNESS_VALUES.has(String(freshness || ""))) input.time_range = freshness;
+  const envelope = await requestBoundedJson(OCTEN_API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey.trim()}`,
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify({ provider: "octen", endpoint: "/search", input })
+  }, {
+    timeoutSeconds,
+    maxResponseBytes: OCTEN_MAX_RESPONSE_BYTES,
+    errorPrefix: "octen",
+    transientStatuses: OCTEN_TRANSIENT_STATUSES
+  });
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+    throw new ProviderRequestError("octen_invalid_response", { transient: true });
+  }
+  if (envelope.provider !== "octen" || envelope.endpoint !== "/search") {
+    throw new ProviderRequestError("octen_monid_invalid_envelope", { transient: true });
+  }
+  if (envelope.status === "FAILED") {
+    throw new ProviderRequestError("octen_monid_failed", { statusCode: 500, transient: true });
+  }
+  if (envelope.status !== "COMPLETED") {
+    throw new ProviderRequestError("octen_monid_not_completed", { transient: true });
+  }
+  const providerResponse = envelope.providerResponse;
+  const providerStatus = providerResponse && typeof providerResponse === "object" ? providerResponse.httpStatus : void 0;
+  if (!Number.isInteger(providerStatus)) {
+    throw new ProviderRequestError("octen_monid_invalid_response", { transient: true });
+  }
+  if (providerStatus < 200 || providerStatus >= 300) {
+    throw new ProviderRequestError(`octen_provider_http_${providerStatus}`, {
+      statusCode: providerStatus,
+      transient: OCTEN_TRANSIENT_STATUSES.has(providerStatus)
+    });
+  }
+  const output = envelope.output;
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    throw new ProviderRequestError("octen_monid_invalid_response", { transient: true });
+  }
+  if (output.code !== 0) throw providerFailure(output.code);
+  if (!output.data || typeof output.data !== "object" || !Array.isArray(output.data.results)) {
+    throw new ProviderRequestError("octen_invalid_response", { transient: true });
+  }
+  const results = [];
+  for (const item of output.data.results.slice(0, count)) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const url = stringValue(item.url).trim();
+    if (!url.startsWith("https://") && !url.startsWith("http://")) continue;
+    const projected = {
+      url,
+      title: stringValue(item.title),
+      snippet: stringValue(item.highlight)
+    };
+    const optional = {
+      date: item.time_published,
+      author: item.authors,
+      favicon: item.favicon,
+      last_crawled: item.time_last_crawled
+    };
+    for (const [field, value] of Object.entries(optional)) {
+      if (typeof value === "string" && value) projected[field] = value;
+    }
+    results.push(projected);
+  }
+  return {
+    provider: "octen",
+    query,
+    results,
+    images: [],
+    metadata: projectMetadata(envelope, output)
+  };
+}
+
+// tinyfish-provider.ts
+var TINYFISH_PROVIDER_METADATA = Object.freeze({
+  id: "tinyfish",
+  kind: "search",
+  envVar: "TINYFISH_API_KEY",
+  displayName: "TinyFish Search",
+  description: "Direct source-only TinyFish web/news search using your own account/API key. The plugin does not provide, pool, proxy, or share TinyFish credentials. Domain filters and result hosts are accepted only as ASCII/Punycode hostnames. Privacy warning: TinyFish's standard Terms permit Customer Data to be used for model training and fine-tuning; review https://www.tinyfish.ai/terms and https://www.tinyfish.ai/privacy-policy before use. Explicit-only by default.",
+  capabilityLabels: Object.freeze(["search", "news", "freshness", "privacy-warning"]),
+  upstreamCapabilities: Object.freeze([
+    "search",
+    "news",
+    "research-paper",
+    "freshness",
+    "domain-filtering"
+  ]),
+  autoAllowedByDefault: false,
+  explicitOnly: true,
+  recommended: false,
+  supportsFreshness: true,
+  freeTier: "Search does not consume credits; API access required (30 rpm Free/PAYG)",
+  signupUrl: "https://agent.tinyfish.ai/api-keys",
+  termsUrl: "https://www.tinyfish.ai/terms",
+  privacyPolicyUrl: "https://www.tinyfish.ai/privacy-policy"
+});
+var API_URL = "https://api.search.tinyfish.ai/";
+var MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+var MAX_QUERY_CHARS = 2e3;
+var MAX_DOMAIN_COUNT = 20;
+var MAX_DOMAIN_CHARS = 253;
+var MAX_DOMAIN_LIST_CHARS = 2048;
+var MAX_REQUEST_URL_CHARS = 8192;
+var MAX_URL_CHARS2 = 8192;
+var MAX_TITLE_CHARS2 = 1e3;
+var MAX_SNIPPET_CHARS2 = 8e3;
+var TRANSIENT_STATUSES = /* @__PURE__ */ new Set([429, 500, 503]);
+var FRESHNESS_MINUTES = Object.freeze({
+  day: 24 * 60,
+  week: 7 * 24 * 60,
+  month: 30 * 24 * 60,
+  year: 365 * 24 * 60
+});
+var OTHER_CHARACTER = new RegExp("\\p{C}", "u");
+var WHITE_SPACE = new RegExp("\\p{White_Space}", "u");
+var DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+function codePoints(value) {
+  return Array.from(value);
+}
+function codePointLength2(value) {
+  return codePoints(value).length;
+}
+function hasWhitespaceOrOther(value) {
+  return codePoints(value).some((character) => WHITE_SPACE.test(character) || OTHER_CHARACTER.test(character));
+}
+function canonicalHostname(hostname) {
+  if (!hostname || hostname.endsWith("..") || hasWhitespaceOrOther(hostname)) return "";
+  const token = hostname.endsWith(".") ? hostname.slice(0, -1) : hostname;
+  if (codePoints(token).some((character) => character.codePointAt(0) > 127)) return "";
+  const canonical = token.toLowerCase();
+  const labels = canonical.split(".");
+  if (!canonical || canonical.length > MAX_DOMAIN_CHARS || labels.length < 2 || labels.some((label) => !DOMAIN_LABEL.test(label))) return "";
+  return canonical;
+}
+function cleanDomains3(value) {
+  if (!Array.isArray(value)) return [];
+  if (value.length > MAX_DOMAIN_COUNT) throw new ProviderConfigError("tinyfish_domains_invalid");
+  const rawItems = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !item || hasWhitespaceOrOther(item)) {
+      throw new ProviderConfigError("tinyfish_domains_invalid");
+    }
+    const rootDotAllowance = item.endsWith(".") ? 1 : 0;
+    if (codePointLength2(item) > MAX_DOMAIN_CHARS + rootDotAllowance) {
+      throw new ProviderConfigError("tinyfish_domains_invalid");
+    }
+    rawItems.push(item);
+  }
+  if (rawItems.join(",").length > MAX_DOMAIN_LIST_CHARS) {
+    throw new ProviderConfigError("tinyfish_domains_invalid");
+  }
+  const domains = [];
+  for (const item of rawItems) {
+    const raw = item.toLowerCase();
+    if (raw.endsWith("..")) throw new ProviderConfigError("tinyfish_domains_invalid");
+    const token = raw.endsWith(".") ? raw.slice(0, -1) : raw;
+    const wildcard = token.startsWith("*.");
+    const hostname = wildcard ? token.slice(2) : token;
+    const canonical = canonicalHostname(hostname);
+    if (!canonical) throw new ProviderConfigError("tinyfish_domains_invalid");
+    const normalized = wildcard ? `*.${canonical}` : canonical;
+    if (normalized.length > MAX_DOMAIN_CHARS) {
+      throw new ProviderConfigError("tinyfish_domains_invalid");
+    }
+    if (!domains.includes(normalized)) domains.push(normalized);
+  }
+  if (domains.join(",").length > MAX_DOMAIN_LIST_CHARS) {
+    throw new ProviderConfigError("tinyfish_domains_invalid");
+  }
+  return domains;
+}
+function rawAuthority(url) {
+  const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(url);
+  return match?.[1] ?? "";
+}
+function rawHostname(authority) {
+  if (!authority || authority.includes("@") || authority.startsWith("[")) return "";
+  const firstColon = authority.indexOf(":");
+  if (firstColon < 0) return authority;
+  if (firstColon !== authority.lastIndexOf(":")) return "";
+  const portToken = authority.slice(firstColon + 1);
+  if (portToken && (!/^\d+$/.test(portToken) || Number(portToken) < 1 || Number(portToken) > 65535)) {
+    return "";
+  }
+  return authority.slice(0, firstColon);
+}
+function safeUrl(value) {
+  if (typeof value !== "string" || !value || codePointLength2(value) > MAX_URL_CHARS2 || hasWhitespaceOrOther(value)) return "";
+  const authority = rawAuthority(value);
+  const canonical = canonicalHostname(rawHostname(authority));
+  if (!canonical) return "";
+  try {
+    const parsed = new URL(value);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return "";
+  } catch {
+    return "";
+  }
+  return value;
+}
+function boundedString2(value, limit) {
+  if (typeof value !== "string") return "";
+  const cleaned = codePoints(value).filter((character) => character === " " || character === "\n" || character === "	" || !OTHER_CHARACTER.test(character) && !WHITE_SPACE.test(character)).join("").trim();
+  return codePoints(cleaned).slice(0, limit).join("");
+}
+function domainMatches2(hostname, domain) {
+  let normalized = domain.trim().toLowerCase().replace(/\.$/, "");
+  if (normalized.startsWith("*.")) normalized = normalized.slice(2);
+  return !!normalized && (hostname === normalized || hostname.endsWith(`.${normalized}`));
+}
+function urlAllowedByDomains(url, includeDomains, excludeDomains) {
+  const hostname = canonicalHostname(rawHostname(rawAuthority(url)));
+  if (!hostname || excludeDomains.some((domain) => domainMatches2(hostname, domain))) return false;
+  return !includeDomains.length || includeDomains.some((domain) => domainMatches2(hostname, domain));
+}
+function boundedResultCount(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new ProviderConfigError("tinyfish_max_results_invalid");
+  }
+  return Math.max(1, Math.min(Math.trunc(value), 100));
+}
+function queryParams(options, query, includeDomains, excludeDomains) {
+  const params = new URLSearchParams({ query });
+  if (typeof options.country === "string" && options.country.trim()) {
+    params.set("location", options.country.trim().toUpperCase());
+  }
+  if (typeof options.language === "string" && options.language.trim()) {
+    params.set("language", options.language.trim().toLowerCase());
+  }
+  if (includeDomains.length) params.set("include_domains", includeDomains.join(","));
+  if (excludeDomains.length) params.set("exclude_domains", excludeDomains.join(","));
+  params.set("domain_type", options.searchType === "news" ? "news" : "web");
+  const freshness = options.freshness && FRESHNESS_MINUTES[options.freshness] != null ? options.freshness : options.timeRange;
+  if (freshness && FRESHNESS_MINUTES[freshness] != null) {
+    params.set("recency_minutes", String(FRESHNESS_MINUTES[freshness]));
+  }
+  return params;
+}
+function projectResults(rawResults, count, includeDomains, excludeDomains) {
+  const projected = [];
+  for (const item of rawResults) {
+    if (projected.length >= count) break;
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const source = item;
+    const url = safeUrl(source.url);
+    if (!url || !urlAllowedByDomains(url, includeDomains, excludeDomains)) continue;
+    const result = {
+      url,
+      title: boundedString2(source.title, MAX_TITLE_CHARS2),
+      snippet: boundedString2(source.snippet, MAX_SNIPPET_CHARS2)
+    };
+    for (const [field, value] of [
+      ["date", source.date],
+      ["source", source.site_name],
+      ["author", source.publisher]
+    ]) {
+      const projectedValue = boundedString2(value, 1e3);
+      if (projectedValue) result[field] = projectedValue;
+    }
+    if (Number.isInteger(source.position) && source.position >= 1) result.position = source.position;
+    projected.push(result);
+  }
+  return projected;
+}
+async function searchTinyFish(query, apiKey, maxResults, options = {}) {
+  if (typeof apiKey !== "string" || !apiKey.trim()) {
+    throw new ProviderConfigError("tinyfish_api_key_required");
+  }
+  if (typeof query !== "string") throw new ProviderConfigError("tinyfish_query_invalid");
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery || codePointLength2(normalizedQuery) > MAX_QUERY_CHARS) {
+    throw new ProviderConfigError("tinyfish_query_invalid");
+  }
+  const count = boundedResultCount(maxResults);
+  const includeDomains = cleanDomains3(options.includeDomains);
+  const excludeDomains = cleanDomains3(options.excludeDomains);
+  const timeoutSeconds = boundedTimeoutSeconds(
+    options.timeoutSeconds,
+    30,
+    "tinyfish_timeout_invalid"
+  );
+  const params = queryParams(options, normalizedQuery, includeDomains, excludeDomains);
+  const requestUrl = `${API_URL}?${params.toString()}`;
+  if (requestUrl.length > MAX_REQUEST_URL_CHARS) {
+    throw new ProviderConfigError("tinyfish_request_too_large");
+  }
+  const payload = await requestBoundedJson(requestUrl, {
+    method: "GET",
+    headers: {
+      "X-API-Key": apiKey.trim(),
+      Accept: "application/json"
+    },
+    redirect: "error"
+  }, {
+    timeoutSeconds,
+    maxResponseBytes: MAX_RESPONSE_BYTES,
+    errorPrefix: "tinyfish",
+    transientStatuses: TRANSIENT_STATUSES
+  });
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || !Array.isArray(payload.results)) {
+    throw new ProviderRequestError("tinyfish_invalid_response", { transient: true });
+  }
+  const body = payload;
+  const metadata = {};
+  for (const field of ["total_results", "page"]) {
+    const value = body[field];
+    if (Number.isInteger(value) && value >= 0) metadata[field] = value;
+  }
+  return {
+    provider: "tinyfish",
+    query: normalizedQuery,
+    results: projectResults(body.results, count, includeDomains, excludeDomains),
+    images: [],
+    metadata
+  };
+}
+
+// source-only-gate.ts
+var ANSWER_ONLY_PROVIDERS = /* @__PURE__ */ new Set([
+  "perplexity",
+  "kilo-perplexity"
+]);
+var BANNED_REQUEST_KEYS = /* @__PURE__ */ new Set([
+  "messages",
+  "system",
+  "systemprompt",
+  "answer",
+  "includeanswer",
+  "synthesis",
+  "fullsynthesis",
+  "reasoning",
+  "claim",
+  "verification"
+]);
+var BANNED_RESULT_KEYS = /* @__PURE__ */ new Set([
+  "answer",
+  "synthesis",
+  "fullsynthesis",
+  "claim",
+  "verification"
+]);
+var BANNED_INSTRUCTION_FRAGMENTS = [
+  "answer the user",
+  "provide an answer",
+  "synthesize",
+  "reason step by step",
+  "verify the claim"
+];
+var SourceOnlyGateError = class extends Error {
+  code;
+  path;
+  constructor(code, path, detail = code) {
+    super(path ? `${detail} at ${path}` : detail);
+    this.name = "SourceOnlyGateError";
+    this.code = code;
+    this.path = path;
+  }
+};
+function normalizedProvider(provider) {
+  return String(provider ?? "").trim().toLowerCase().replace(/_/g, "-");
+}
+function normalizedKey(key) {
+  return key.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+function childPath(parent, key) {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? `${parent}.${key}` : `${parent}[${JSON.stringify(key)}]`;
+}
+function isInstructionLikeKey(key) {
+  const keyName = normalizedKey(key);
+  return keyName.includes("instruction") || keyName.includes("prompt") || keyName === "system" || keyName.startsWith("system");
+}
+function walkRecursively(value, visitor, path = "$", key = void 0, ancestors = /* @__PURE__ */ new Set(), parentInstructionContext = false) {
+  const instructionContext = parentInstructionContext || key != null && isInstructionLikeKey(key);
+  visitor(value, path, key, instructionContext);
+  if (value == null || typeof value !== "object") return;
+  if (ancestors.has(value)) {
+    throw new SourceOnlyGateError("source_only_non_json_cycle", path);
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      value.forEach((child, index) => {
+        walkRecursively(
+          child,
+          visitor,
+          `${path}[${index}]`,
+          void 0,
+          ancestors,
+          instructionContext
+        );
+      });
+      return;
+    }
+    for (const [key2, child] of Object.entries(value)) {
+      walkRecursively(
+        child,
+        visitor,
+        childPath(path, key2),
+        key2,
+        ancestors,
+        instructionContext
+      );
+    }
+  } finally {
+    ancestors.delete(value);
+  }
+}
+function requireObject(value, code) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    throw new SourceOnlyGateError(code, "$");
+  }
+}
+function assertSourceOnlyProvider(provider) {
+  const normalized = normalizedProvider(provider);
+  if (ANSWER_ONLY_PROVIDERS.has(normalized)) {
+    throw new SourceOnlyGateError(
+      "source_only_answer_provider",
+      void 0,
+      `${normalized} has no verified source-only endpoint`
+    );
+  }
+  return normalized;
+}
+function validateSourceOnlyOutboundRequest(provider, body) {
+  const normalized = assertSourceOnlyProvider(provider);
+  requireObject(body, "source_only_request_body_invalid");
+  walkRecursively(body, (value, path, key, instructionContext) => {
+    if (key != null) {
+      const keyName = normalizedKey(key);
+      if (BANNED_REQUEST_KEYS.has(keyName)) {
+        if (keyName === "includeanswer" && value === false) return;
+        throw new SourceOnlyGateError("source_only_request_field", path);
+      }
+    }
+    if (instructionContext && typeof value === "string") {
+      const instruction = value.toLowerCase().replace(/\s+/g, " ");
+      if (BANNED_INSTRUCTION_FRAGMENTS.some((fragment) => instruction.includes(fragment))) {
+        throw new SourceOnlyGateError("source_only_request_instruction", path);
+      }
+    }
+  });
+  if (normalized === "tavily" && body.include_answer !== false) {
+    throw new SourceOnlyGateError(
+      "source_only_tavily_requires_include_answer_false",
+      "$.include_answer",
+      "tavily source-only mode requires include_answer=false"
+    );
+  }
+  if (normalized === "linkup" && body.outputType !== "searchResults") {
+    throw new SourceOnlyGateError(
+      "source_only_linkup_requires_search_results",
+      "$.outputType",
+      "linkup source-only mode requires outputType=searchResults"
+    );
+  }
+  if (normalized === "exa") {
+    walkRecursively(body, (value, path, key) => {
+      if (key == null || typeof value !== "string") return;
+      if (!["type", "depth", "searchdepth"].includes(normalizedKey(key))) return;
+      const mode = value.trim().toLowerCase();
+      if (mode === "deep" || mode === "deep-reasoning") {
+        throw new SourceOnlyGateError(
+          "source_only_exa_deep_mode",
+          path,
+          "exa deep modes are not source-only"
+        );
+      }
+    });
+  }
+}
+function validateSourceOnlyAdapterResult(provider, result) {
+  assertSourceOnlyProvider(provider);
+  requireObject(result, "source_only_adapter_result_invalid");
+  walkRecursively(result, (value, path, key) => {
+    if (key != null && BANNED_RESULT_KEYS.has(normalizedKey(key))) {
+      throw new SourceOnlyGateError("source_only_adapter_result_field", path);
+    }
+    if (key != null && normalizedKey(key) === "type" && typeof value === "string") {
+      const resultType = value.trim().toLowerCase();
+      if (resultType === "answer" || resultType === "synthesis") {
+        throw new SourceOnlyGateError("source_only_adapter_result_type", path);
+      }
+    }
+  });
+}
+
 // index.ts
 var DEFAULT_CACHE_TTL = 3600;
 var RETRY_BACKOFF_MS = [1e3, 3e3, 9e3];
@@ -2543,9 +4179,10 @@ var TRANSIENT_HTTP_CODES = /* @__PURE__ */ new Set([408, 425, 429, 500, 502, 503
 var FAILURE_DECAY_SECONDS = 1800;
 var RATE_LIMIT_MAX_ATTEMPTS = 2;
 var MAX_RETRY_AFTER_WAIT_SECONDS = 30;
-var SEARCH_PROVIDER_ENUM = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound", "auto"];
+var SEARCH_PROVIDER_ENUM = [...ALL_PROVIDER_NAMES, "auto"];
 var PARAMETERS_SCHEMA = {
   type: "object",
+  additionalProperties: false,
   required: ["query"],
   properties: {
     query: { type: "string", description: "Search query" },
@@ -2559,12 +4196,7 @@ var PARAMETERS_SCHEMA = {
       enum: SEARCH_PROVIDER_ENUM.filter((provider) => provider !== "auto"),
       description: "Disable automatic search routing and force this provider for this request. Reported visibly in routing.override_provider."
     },
-    count: { type: "number", description: "Number of results (default: 5)" },
-    depth: {
-      type: "string",
-      enum: ["normal", "deep", "deep-reasoning"],
-      description: "Exa depth when using Exa or when auto-routing chooses Exa."
-    },
+    count: { type: "integer", minimum: 1, maximum: 10, default: 5, description: "Number of source results (default: 5)" },
     time_range: {
       type: "string",
       enum: ["hour", "day", "week", "month", "year"],
@@ -2598,6 +4230,7 @@ var PARAMETERS_SCHEMA = {
     },
     research_providers: {
       type: "array",
+      maxItems: 3,
       items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") },
       description: "Explicit provider list for mode=research. Defaults to an auto-selected compact set."
     },
@@ -2621,6 +4254,7 @@ var ROUTING_CONFIG_ACTIONS = [
 ];
 var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
   type: "object",
+  additionalProperties: false,
   required: ["action"],
   properties: {
     action: { type: "string", enum: ROUTING_CONFIG_ACTIONS },
@@ -2631,21 +4265,7 @@ var ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     profile: { type: "string", enum: ["standard", "self_hosted"] }
   }
 };
-var ALL_PROVIDERS = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "parallel", "serpbase", "you", "searxng", "keenable", "hound"];
-var ProviderConfigError = class extends Error {
-};
-var ProviderRequestError = class extends Error {
-  statusCode;
-  transient;
-  retryAfter;
-  constructor(message, statusCode, transient = false, retryAfter) {
-    super(message);
-    this.name = "ProviderRequestError";
-    this.statusCode = statusCode;
-    this.transient = transient;
-    this.retryAfter = retryAfter;
-  }
-};
+var ALL_PROVIDERS = [...ALL_PROVIDER_NAMES];
 function parseRetryAfter(value) {
   if (!value) return void 0;
   const trimmed = value.trim();
@@ -2814,17 +4434,11 @@ function selectAutoProvider(query, availableProviders, routingConfig) {
   const autoProviders = availableProviders.filter((provider2) => routingConfig.auto_allow?.[provider2] !== false);
   const orderedProviders = orderProvidersByPreference(autoProviders.length ? autoProviders : availableProviders, routingConfig);
   const analyzer = new QueryAnalyzer();
-  const adaptiveAdjustments = performanceAdjustments(orderedProviders);
+  const baseAnalysis = analyzer.analyze(query);
+  const hasQuerySignals = Math.max(...orderedProviders.map((provider2) => Number(baseAnalysis.provider_scores[provider2] || 0)), 0) > 0;
+  const adaptiveAdjustments = hasQuerySignals ? performanceAdjustments(orderedProviders) : {};
   const analysis = analyzer.route(query, orderedProviders, adaptiveAdjustments);
-  let provider = analysis.provider;
-  let reason = analysis.reason;
-  if (analysis.confidence < routingConfig.confidence_threshold) {
-    const lowConfidenceProvider = pickStrictDefaultProvider(availableProviders, routingConfig) || orderedProviders[0];
-    if (lowConfidenceProvider && lowConfidenceProvider !== provider) {
-      provider = lowConfidenceProvider;
-      reason = pickStrictDefaultProvider(availableProviders, routingConfig) ? "below_confidence_threshold_default_provider" : "below_confidence_threshold_priority_provider";
-    }
-  }
+  const provider = analysis.provider;
   return {
     provider,
     routing: {
@@ -2832,7 +4446,7 @@ function selectAutoProvider(query, availableProviders, routingConfig) {
       auto_routed: true,
       provider,
       confidence_level: analysis.confidence >= routingConfig.confidence_threshold ? analysis.confidence_level : "low",
-      reason,
+      reason: analysis.reason,
       confidence_threshold: routingConfig.confidence_threshold,
       exa_depth: analysis.exa_depth,
       routing_policy: analysis.routing_policy,
@@ -2840,6 +4454,7 @@ function selectAutoProvider(query, availableProviders, routingConfig) {
       routing_class: analysis.analysis_summary?.routing_class,
       scores: analysis.scores,
       adaptive_adjustments: analysis.adaptive_adjustments,
+      below_threshold: analysis.confidence < routingConfig.confidence_threshold,
       auto_allow_excluded: autoExcluded
     }
   };
@@ -2874,7 +4489,9 @@ function getApiKey(provider, runtimeConfig) {
     parallel: runtimeConfig.parallelApiKey,
     serpbase: runtimeConfig.serpbaseApiKey,
     keenable: runtimeConfig.keenableApiKey,
-    hound: runtimeConfig.houndMcpUrl
+    donsetch: runtimeConfig.donsetchBin,
+    octen: runtimeConfig.monidApiKey,
+    tinyfish: runtimeConfig.tinyfishApiKey
   };
   return keyMap[provider];
 }
@@ -2890,7 +4507,9 @@ function validateApiKey(provider, runtimeConfig) {
       if (runtimeConfig.keenableAllowPublic === true) return "";
       throw new ProviderConfigError("Keenable requires an API key (pluginConfig.keenableApiKey) or the opt-in public tier (pluginConfig.keenableAllowPublic=true)");
     }
-    if (provider === "hound") throw new ProviderConfigError("Missing Hound MCP endpoint (pluginConfig.houndMcpUrl)");
+    if (provider === "donsetch") throw new ProviderConfigError("Missing DonSeTch executable path (pluginConfig.donsetchBin)");
+    if (provider === "octen") throw new ProviderConfigError("Missing Monid API key for Octen (pluginConfig.monidApiKey)");
+    if (provider === "tinyfish") throw new ProviderConfigError("Missing TinyFish API key (pluginConfig.tinyfishApiKey)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -2898,7 +4517,15 @@ function validateApiKey(provider, runtimeConfig) {
 function toTimeRange(value) {
   return value && ["hour", "day", "week", "month", "year"].includes(value) ? value : void 0;
 }
-var FRESHNESS_VALUES = ["day", "week", "month", "year"];
+var FRESHNESS_VALUES2 = ["day", "week", "month", "year"];
+var EXA_FRESHNESS_DAYS = { day: 1, week: 7, month: 30, year: 365 };
+function exaDateBounds(freshness, now = /* @__PURE__ */ new Date()) {
+  if (!freshness || EXA_FRESHNESS_DAYS[freshness] == null) return {};
+  const end = new Date(now.getTime());
+  const start = new Date(end.getTime() - EXA_FRESHNESS_DAYS[freshness] * 24 * 60 * 60 * 1e3);
+  const secondPrecision = (value) => value.toISOString().replace(/\.\d{3}Z$/, "Z");
+  return { startPublishedDate: secondPrecision(start), endPublishedDate: secondPrecision(end) };
+}
 var PROVIDER_FRESHNESS_FORMATS = {
   // searchSerper: body.tbs
   serper: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
@@ -2910,32 +4537,40 @@ var PROVIDER_FRESHNESS_FORMATS = {
   firecrawl: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
   // searchKeenable: body.published_after
   keenable: { day: "1d", week: "7d", month: "1mo", year: "1y" },
-  // searchSerpBase: time_range query param (plugin-specific endpoint support)
-  serpbase: { day: "day", week: "week", month: "month", year: "year" },
+  // Exa receives absolute UTC start/end publication bounds.
+  exa: { day: "day", week: "week", month: "month", year: "year" },
+  // Octen and TinyFish expose native recency controls in their source APIs.
+  octen: { day: "day", week: "week", month: "month", year: "year" },
+  tinyfish: { day: "day", week: "week", month: "month", year: "year" },
   // searchYou: freshness query param (native values match the unified ones)
   you: { day: "day", week: "week", month: "month", year: "year" },
   // searchSearxng: time_range query param
-  searxng: { day: "day", week: "week", month: "month", year: "year" },
-  hound: { day: "day", week: "week", month: "month", year: "year" }
+  searxng: { day: "day", week: "week", month: "month", year: "year" }
 };
 function normalizeFreshness(value) {
   if (value == null) return null;
   const normalized = String(value).trim().toLowerCase();
   if (!normalized) return null;
-  if (!FRESHNESS_VALUES.includes(normalized)) {
-    throw new Error(`Invalid freshness value: ${JSON.stringify(value)}. Valid values: ${FRESHNESS_VALUES.join(", ")}`);
+  if (!FRESHNESS_VALUES2.includes(normalized)) {
+    throw new Error(`Invalid freshness value: ${JSON.stringify(value)}. Valid values: ${FRESHNESS_VALUES2.join(", ")}`);
   }
   return normalized;
 }
-function freshnessMetadata(provider, requested) {
+function freshnessMetadata(provider, requested, exaBounds) {
   const native = PROVIDER_FRESHNESS_FORMATS[provider]?.[requested];
+  if (provider === "exa" && native != null) {
+    const bounds = exaBounds || exaDateBounds(requested);
+    return { requested, applied: true, provider, native_value: bounds };
+  }
   if (native != null) return { requested, applied: true, provider, native_value: native };
   return { requested, applied: false, provider, reason: `provider ${provider} does not support freshness` };
 }
 var SEARCH_TYPE_VALUES = ["search", "news"];
 var PROVIDER_SEARCH_TYPES = {
   // searchSerper: endpoint path https://google.serper.dev/<type>
-  serper: { search: "search", news: "news" }
+  serper: { search: "search", news: "news" },
+  // TinyFish: domain_type query parameter.
+  tinyfish: { search: "web", news: "news" }
 };
 function normalizeSearchType(value) {
   if (value == null) return null;
@@ -2995,13 +4630,13 @@ async function httpJson(url, init, timeoutMs = 3e4) {
     if (!res.ok) {
       const detail = data?.error || data?.message || text || res.statusText;
       const retryAfter = res.status === 429 ? parseRetryAfter(res.headers.get("retry-after")) : void 0;
-      throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, res.status, TRANSIENT_HTTP_CODES.has(res.status), retryAfter);
+      throw new ProviderRequestError(`${detail} (HTTP ${res.status})`, { statusCode: res.status, transient: TRANSIENT_HTTP_CODES.has(res.status), retryAfter });
     }
     return data ?? {};
-  } catch (error2) {
-    if (error2?.name === "AbortError") throw new ProviderRequestError(`Request timed out after ${timeoutMs}ms`, void 0, true);
-    if (error2 instanceof ProviderRequestError) throw error2;
-    throw new ProviderRequestError(`Network error: ${String(error2?.message || error2)}`, void 0, true);
+  } catch (error) {
+    if (error?.name === "AbortError") throw new ProviderRequestError(`Request timed out after ${timeoutMs}ms`, { transient: true });
+    if (error instanceof ProviderRequestError) throw error;
+    throw new ProviderRequestError(`Network error: ${String(error?.message || error)}`, { transient: true });
   } finally {
     clearTimeout(timer);
   }
@@ -3456,7 +5091,7 @@ var QueryAnalyzer = class {
       boost("linkup", 5, "finance IR grounding");
       boost("tavily", 4, "finance research");
     } else if (routingClass === "weather/factual") boost("you", 10, "snippet-first factual intent");
-    else if (routingClass === "oss-discovery") boost("exa", 6, "similar-page discovery");
+    else if (routingClass === "oss-discovery") boost("exa", 6, "semantic source discovery");
     else if (routingClass === "answer/synthesis") {
       boost("exa", 3, "synthesis intent without answer tool");
       boost("tavily", 3, "synthesis research");
@@ -3560,32 +5195,24 @@ var QueryAnalyzer = class {
     const maxScore = Math.max(...providers.map((p) => available[p]));
     let winners = providers.filter((p) => available[p] === maxScore);
     if (winners.length > 1 && winners.includes("keenable")) winners = winners.filter((p) => p !== "keenable");
-    const priority = [...DEFAULT_PROVIDER_PRIORITY];
-    const braveSerperCandidates = ["brave", "serper"].filter((p) => providers.includes(p) && maxScore - (available[p] || 0) <= 0.5);
-    const winner = braveSerperCandidates.length > 0 && maxScore <= 6.5 ? chooseTieWinner(query, braveSerperCandidates, ["brave", "serper"]) : chooseTieWinner(query, winners, priority);
+    const winner = chooseTieWinner(query, winners, availableProviders);
     const secondBest = [...providers.map((p) => available[p])].sort((a, b) => b - a)[1] || 0;
     const margin = maxScore > 0 ? (maxScore - secondBest) / maxScore : 0;
     const normalizedScore = Math.min(maxScore / 15, 1);
     const confidence = maxScore === 0 ? 0 : Number((normalizedScore * 0.6 + margin * 0.4).toFixed(3));
-    let exaDepth = "normal";
-    if (winner === "exa") {
-      if ((analysis.exa_deep_reasoning_score || 0) >= 4) exaDepth = "deep-reasoning";
-      else if ((analysis.exa_deep_score || 0) >= 4) exaDepth = "deep";
-    }
     return {
       provider: winner,
       confidence,
       confidence_level: confidence >= 0.7 ? "high" : confidence >= 0.4 ? "medium" : "low",
       reason: maxScore === 0 ? "no_signals_matched" : confidence >= 0.7 ? "high_confidence_match" : confidence >= 0.4 ? "moderate_confidence_match" : "low_confidence_match",
       adaptive_adjustments: adaptiveAdjustments,
-      exa_depth: exaDepth,
+      exa_depth: "normal",
       scores: Object.fromEntries(providers.map((p) => [p, Number((available[p] || 0).toFixed(2))])),
       top_signals: (analysis.provider_matches[winner] || []).sort((a, b) => b.weight - a.weight).slice(0, 5).map((s) => ({ matched: s.matched, weight: s.weight })),
       routing_policy: "routing-v2",
       analysis_summary: {
         language_hint: analysis.language_hint,
         routing_class: analysis.routing_class,
-        answer_mode_recommended: analysis.routing_class === "answer/synthesis",
         query_length: query.trim().split(/\s+/).filter(Boolean).length,
         is_complex: analysis.complexity.is_complex,
         has_url: !!analysis.detected_url,
@@ -3609,8 +5236,7 @@ async function searchSerper(query, apiKey, maxResults, timeRange, locale, search
     }
     return result;
   });
-  const answer = data?.answerBox?.answer || data?.answerBox?.snippet || data?.knowledgeGraph?.description || results[0]?.snippet || "";
-  return { provider: "serper", query, results, images: [], answer, knowledge_graph: data.knowledgeGraph, related_searches: (data.relatedSearches || []).map((r) => r.query) };
+  return { provider: "serper", query, results, images: [], knowledge_graph: data.knowledgeGraph, related_searches: (data.relatedSearches || []).map((r) => r.query) };
 }
 async function searchBrave(query, apiKey, maxResults, options) {
   const freshnessMap = { hour: "pd", day: "pd", week: "pw", month: "pm", year: "py" };
@@ -3642,21 +5268,22 @@ async function searchBrave(query, apiKey, maxResults, options) {
       age: item.age
     };
   });
-  const answer = data?.summary || data?.infobox?.description || results[0]?.snippet || "";
-  return { provider: "brave", query, results, images: [], answer, mixed: data?.mixed };
+  return { provider: "brave", query, results, images: [], mixed: data?.mixed };
 }
 async function searchTavily(query, apiKey, maxResults, includeDomains, excludeDomains) {
-  const body = { api_key: apiKey, query, max_results: maxResults, search_depth: "basic", topic: "general", include_images: false, include_answer: true, include_raw_content: false };
+  const body = { api_key: apiKey, query, max_results: maxResults, search_depth: "basic", topic: "general", include_images: false, include_answer: false, include_raw_content: false };
   if (includeDomains?.length) body.include_domains = includeDomains;
   if (excludeDomains?.length) body.exclude_domains = excludeDomains;
+  validateSourceOnlyOutboundRequest("tavily", body);
   const data = await httpJson("https://api.tavily.com/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const results = (data.results || []).slice(0, maxResults).map((item) => ({ title: item.title || "", url: item.url || "", snippet: item.content || "", score: Number((item.score || 0).toFixed(3)) }));
-  return { provider: "tavily", query, results, images: data.images || [], answer: data.answer || "" };
+  return { provider: "tavily", query, results, images: data.images || [] };
 }
 async function searchLinkup(query, apiKey, maxResults, includeDomains, excludeDomains) {
   const body = { q: query, depth: "standard", outputType: "searchResults" };
   if (includeDomains?.length) body.includeDomains = includeDomains.slice(0, 50);
   if (excludeDomains?.length) body.excludeDomains = excludeDomains.slice(0, 50);
+  validateSourceOnlyOutboundRequest("linkup", body);
   const data = await httpJson("https://api.linkup.so/v1/search", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (data.error) throw new ProviderRequestError(String(data.error));
   const raw = data.results || data.sources || [];
@@ -3672,7 +5299,7 @@ async function searchLinkup(query, apiKey, maxResults, includeDomains, excludeDo
     if (item.favicon != null) result.favicon = item.favicon;
     return result;
   });
-  return { provider: "linkup", query, results, images: data.images || [], answer: data.answer || "", metadata: { depth: body.depth, output_type: body.outputType } };
+  return { provider: "linkup", query, results, images: data.images || [], metadata: { depth: body.depth, output_type: body.outputType } };
 }
 async function searchQuerit(query, apiKey, maxResults, timeRange, includeDomains, excludeDomains, locale) {
   const timeMap = { day: "d1", week: "w1", month: "m1", year: "y1" };
@@ -3688,31 +5315,19 @@ async function searchQuerit(query, apiKey, maxResults, timeRange, includeDomains
   if (data.error_msg || data.error_code != null && ![0, 200].includes(data.error_code)) throw new ProviderRequestError(data.error_msg || `Querit request failed with error_code=${data.error_code}`);
   const raw = data?.results?.result || [];
   const results = raw.slice(0, maxResults).map((item, i) => ({ title: item.title || titleFromUrl2(item.url || ""), url: item.url || "", snippet: item.snippet || item.page_age || "", score: Number((1 - i * 0.05).toFixed(3)), page_time: item.page_time, date: item.page_age, language: item.language }));
-  return { provider: "querit", query, results, images: [], answer: results[0]?.snippet || "", metadata: { search_id: data.search_id, time_range: timeRange && timeMap[timeRange] } };
+  return { provider: "querit", query, results, images: [], metadata: { search_id: data.search_id, time_range: timeRange && timeMap[timeRange] } };
 }
-async function searchExa(query, apiKey, maxResults, exaDepth, includeDomains, excludeDomains) {
-  const isDeep = exaDepth === "deep" || exaDepth === "deep-reasoning";
-  const body = isDeep ? { query, numResults: maxResults, type: exaDepth, contents: { text: { maxCharacters: 5e3, verbosity: "full" } } } : { query, numResults: maxResults, type: "neural", contents: { text: { maxCharacters: 2e3, verbosity: "standard" }, highlights: { numSentences: 3, highlightsPerUrl: 2 } } };
+async function searchExa(query, apiKey, maxResults, includeDomains, excludeDomains, freshness, suppliedDateBounds) {
+  const body = { query, numResults: maxResults, type: "neural", contents: { text: { maxCharacters: 2e3, verbosity: "standard" }, highlights: { numSentences: 3, highlightsPerUrl: 2 } } };
   if (includeDomains?.length) body.includeDomains = includeDomains;
   if (excludeDomains?.length) body.excludeDomains = excludeDomains;
-  const data = await httpJson("https://api.exa.ai/search", { method: "POST", headers: { "x-api-key": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) }, isDeep ? 55e3 : 3e4);
-  if (isDeep) {
-    const deepOutput = data.output || {};
-    const synthesis = typeof deepOutput.content === "string" ? deepOutput.content : deepOutput.content ? JSON.stringify(deepOutput.content) : "";
-    const grounding = [];
-    for (const field of deepOutput.grounding || []) {
-      for (const cite of field.citations || []) grounding.push({ url: cite.url || "", title: cite.title || "", confidence: field.confidence, field: field.field });
-    }
-    const results2 = [];
-    if (synthesis) results2.push({ title: `Exa ${exaDepth.replace(/-/g, " ")} synthesis`, url: "", snippet: synthesis, full_synthesis: synthesis, score: 1, grounding: grounding.slice(0, 10), type: "synthesis" });
-    for (const item of (data.results || []).slice(0, maxResults)) {
-      const snippet2 = item.text ? String(item.text).slice(0, 800) : (item.highlights || [])[0] || "";
-      results2.push({ title: item.title || "", url: item.url || "", snippet: snippet2, score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author, type: "source" });
-    }
-    return { provider: "exa", query, exa_depth: exaDepth, results: results2, images: [], answer: synthesis || results2[1]?.snippet || "", grounding, metadata: { synthesis_length: synthesis.length, source_count: (data.results || []).length } };
-  }
+  const dateBounds = suppliedDateBounds || exaDateBounds(freshness);
+  if (dateBounds.startPublishedDate) body.startPublishedDate = dateBounds.startPublishedDate;
+  if (dateBounds.endPublishedDate) body.endPublishedDate = dateBounds.endPublishedDate;
+  validateSourceOnlyOutboundRequest("exa", body);
+  const data = await httpJson("https://api.exa.ai/search", { method: "POST", headers: { "x-api-key": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const results = (data.results || []).slice(0, maxResults).map((item) => ({ title: item.title || "", url: item.url || "", snippet: item.text ? String(item.text).slice(0, 800) : Array.isArray(item.highlights) ? item.highlights.slice(0, 2).join(" ... ") : "", score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author }));
-  return { provider: "exa", query, results, images: [], answer: results[0]?.snippet || "" };
+  return { provider: "exa", query, results, images: [], metadata: freshness ? { freshness: { requested: freshness, ...dateBounds } } : {} };
 }
 function mapFirecrawlTimeRange(timeRange) {
   const tbsMap = { hour: "qdr:h", day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" };
@@ -3748,7 +5363,7 @@ async function searchFirecrawl(query, apiKey, maxResults, timeRange, includeDoma
     return result;
   });
   const images = (responseData.images || []).map((image) => image.imageUrl).filter(Boolean);
-  return { provider: "firecrawl", query, results, images, answer: results[0]?.snippet || "", warning: data.warning, credits_used: data.creditsUsed, metadata: { id: data.id, sources: body.sources, tbs } };
+  return { provider: "firecrawl", query, results, images, warning: data.warning, credits_used: data.creditsUsed, metadata: { id: data.id, sources: body.sources, tbs } };
 }
 function stripTrackingParams(rawUrl) {
   try {
@@ -3761,39 +5376,42 @@ function stripTrackingParams(rawUrl) {
     return rawUrl;
   }
 }
-async function searchSerpBase(query, apiKey, maxResults, timeRange) {
-  const url = new URL("https://api.serpbase.com/search");
-  url.searchParams.set("api_key", apiKey);
-  url.searchParams.set("q", query);
-  url.searchParams.set("num", String(maxResults));
-  if (timeRange) url.searchParams.set("time_range", timeRange);
-  const data = await httpJson(url.toString(), { method: "GET", headers: { Accept: "application/json" } });
+async function searchSerpBase(query, apiKey, maxResults, locale) {
+  const body = { q: query, hl: locale?.language || "en", gl: locale?.country || "us", page: 1 };
+  const data = await httpJson("https://api.serpbase.dev/google/search", {
+    method: "POST",
+    headers: { "X-API-Key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body)
+  });
   if (data?.status != null && Number(data.status) !== 0) {
-    throw new ProviderRequestError(String(data?.error || data?.message || `SerpBase request failed with status=${data.status}`));
+    const status = Number(data.status);
+    throw new ProviderRequestError(`SerpBase error ${status}`, { transient: [1029, 1502, 1503, 1504].includes(status) });
   }
-  const organic = data.organic_results || data.organic || data.results || [];
+  const organic = data.organic || [];
   const results = organic.slice(0, maxResults).map((item, i) => ({
     title: item.title || "",
     url: stripTrackingParams(item.link || item.url || ""),
     snippet: item.snippet || item.description || "",
-    score: Number((1 - i * 0.05).toFixed(3)),
-    position: item.position
+    score: Number((1 - i * 0.1).toFixed(2)),
+    rank: item.rank || item.position || i + 1,
+    display_link: item.display_link || item.displayed_link
   }));
-  return { provider: "serpbase", query, results, images: [], answer: data?.answer_box?.answer || data?.knowledge_graph?.description || results[0]?.snippet || "", knowledge_graph: data?.knowledge_graph, related_searches: (data.related_searches || []).map((r) => typeof r === "string" ? r : r.query).filter(Boolean), metadata: { session_id: data.session_id } };
+  return { provider: "serpbase", query, results, images: [], knowledge_graph: data?.knowledge_graph, related_searches: (data.related_searches || []).map((r) => typeof r === "string" ? r : r?.query || r?.title).filter(Boolean), session_id: data.session_id, metadata: { session_id: data.session_id } };
 }
-async function searchParallel(query, apiKey, maxResults, includeDomains, excludeDomains) {
+async function searchParallel(query, apiKey, maxResults, includeDomains, excludeDomains, mode = "fast") {
   const searchQuery = [query, ...(includeDomains || []).map((domain) => `site:${domain}`), ...(excludeDomains || []).map((domain) => `-site:${domain}`)].join(" ").trim();
-  const data = await httpJson("https://api.parallel.ai/v1beta/search", {
+  const data = await httpJson("https://api.parallel.ai/v1/search", {
     method: "POST",
     headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ objective: query, search_queries: [searchQuery] })
-  }, 3e4);
-  const raw = data.results || data.search_results || data.data || [];
+    body: JSON.stringify({ objective: query, search_queries: [searchQuery], mode: mode || "fast" })
+  }, 45e3);
+  const raw = data.results || [];
   const results = raw.slice(0, maxResults).map((item, i) => {
-    const excerpts = Array.isArray(item.excerpts) ? item.excerpts : Array.isArray(item.snippets) ? item.snippets : [];
-    return { title: item.title || titleFromUrl2(item.url || ""), url: item.url || item.link || "", snippet: excerpts.length ? excerpts.join(" ... ") : item.snippet || item.description || "", score: Number((1 - i * 0.05).toFixed(3)) };
+    const excerpts = Array.isArray(item.excerpts) ? item.excerpts : [];
+    const snippet2 = excerpts.map((excerpt) => typeof excerpt === "string" ? excerpt : excerpt?.text || excerpt?.content || "").filter(Boolean).join("\n\n").trim();
+    return { title: item.title || titleFromUrl2(item.url || ""), url: item.url || "", snippet: snippet2, score: Number((1 - i * 0.05).toFixed(3)), publish_date: item.publish_date, excerpts };
   });
-  return { provider: "parallel", query, results, images: [], answer: results[0]?.snippet || "", metadata: { search_id: data.search_id, session_id: data.session_id } };
+  return { provider: "parallel", query, results, images: [], metadata: { search_id: data.search_id, session_id: data.session_id, result_count_raw: raw.length, mode: mode || "fast" } };
 }
 async function searchYou(query, apiKey, maxResults, timeRange, locale) {
   const url = new URL("https://ydc-index.io/v1/search");
@@ -3807,8 +5425,7 @@ async function searchYou(query, apiKey, maxResults, timeRange, locale) {
   const web = data?.results?.web || [];
   const news = data?.results?.news || [];
   const results = web.slice(0, maxResults).map((item, i) => ({ title: item.title || "", url: item.url || "", snippet: item?.snippets?.[0] || item.description || "", score: Number((1 - i * 0.05).toFixed(3)), date: item.page_age, source: "web", additional_snippets: Array.isArray(item.snippets) ? item.snippets.slice(1, 3) : void 0, thumbnail: item.thumbnail_url, favicon: item.favicon_url }));
-  const answer = results.slice(0, 3).map((r) => r.snippet).filter(Boolean).join(" ").slice(0, 1e3);
-  return { provider: "you", query, results, news: news.slice(0, 5), images: [], answer, metadata: { search_uuid: data?.metadata?.search_uuid, latency: data?.metadata?.latency } };
+  return { provider: "you", query, results, news: news.slice(0, 5), images: [], metadata: { search_uuid: data?.metadata?.search_uuid, latency: data?.metadata?.latency } };
 }
 var KEENABLE_TIME_RANGE = { hour: "1h", day: "1d", week: "7d", month: "1mo", year: "1y" };
 var keenablePublicWarned = false;
@@ -3843,7 +5460,7 @@ async function searchKeenable(query, apiKey, maxResults, timeRange, includeDomai
       metadata.public_endpoint_warning = "Keenable keyless public endpoint in use: queries are sent to an unauthenticated shared service (https://keenable.ai) with no SLA. Set pluginConfig.keenableApiKey for the authenticated endpoint.";
     }
   }
-  return { provider: "keenable", query, results, images: [], answer: results[0]?.snippet || "", metadata };
+  return { provider: "keenable", query, results, images: [], metadata };
 }
 async function searchSearxng(query, instanceUrl, maxResults, timeRange, runtimeConfig, locale) {
   const base = await validateSearxngUrl(instanceUrl, runtimeConfig);
@@ -3859,8 +5476,7 @@ async function searchSearxng(query, instanceUrl, maxResults, timeRange, runtimeC
     enginesUsed.add(item.engine || "unknown");
     return { title: item.title || "", url: item.url || "", snippet: item.content || "", score: Number((item.score ?? 1 - i * 0.05).toFixed(3)), engine: item.engine || "unknown", category: item.category || "general", date: item.publishedDate };
   });
-  const answer = Array.isArray(data.answers) && data.answers[0] ? String(data.answers[0]) : Array.isArray(data.infoboxes) && data.infoboxes[0] ? String(data.infoboxes[0].content || data.infoboxes[0].infobox || "") : results[0]?.snippet || "";
-  return { provider: "searxng", query, results, images: [], answer, suggestions: data.suggestions || [], corrections: data.corrections || [], metadata: { number_of_results: data.number_of_results, engines_used: [...enginesUsed], instance_url: base } };
+  return { provider: "searxng", query, results, images: [], suggestions: data.suggestions || [], corrections: data.corrections || [], metadata: { number_of_results: data.number_of_results, engines_used: [...enginesUsed], instance_url: base } };
 }
 function computeRetryDelayMs(attempt) {
   const base = RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)];
@@ -3871,17 +5487,17 @@ async function executeWithRetry(fn) {
   for (let attempt = 0; attempt < RETRY_BACKOFF_MS.length; attempt += 1) {
     try {
       return await fn();
-    } catch (error2) {
-      lastError = error2;
-      if (!(error2 instanceof ProviderRequestError) || !error2.transient || error2.statusCode === 401 || error2.statusCode === 403) break;
-      const isRateLimited = error2.statusCode === 429;
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof ProviderRequestError) || !error.transient || error.statusCode === 401 || error.statusCode === 403) break;
+      const isRateLimited = error.statusCode === 429;
       const attemptCap = isRateLimited ? Math.min(RETRY_BACKOFF_MS.length, RATE_LIMIT_MAX_ATTEMPTS) : RETRY_BACKOFF_MS.length;
       if (attempt >= attemptCap - 1) break;
-      if (isRateLimited && error2.retryAfter != null) {
-        if (error2.retryAfter > MAX_RETRY_AFTER_WAIT_SECONDS) {
+      if (isRateLimited && error.retryAfter != null) {
+        if (error.retryAfter > MAX_RETRY_AFTER_WAIT_SECONDS) {
           break;
         }
-        await sleep(error2.retryAfter * 1e3);
+        await sleep(error.retryAfter * 1e3);
       } else {
         await sleep(computeRetryDelayMs(attempt));
       }
@@ -3934,9 +5550,10 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     try {
       freshness = normalizeFreshness(params.freshness);
       searchType = normalizeSearchType(params.search_type);
-    } catch (error2) {
-      return { ok: false, payload: { error: `Search failed: ${String(error2?.message || error2)}` } };
+    } catch (error) {
+      return { ok: false, payload: { error: `Search failed: ${String(error?.message || error)}` } };
     }
+    const exaFreshnessBounds = exaDateBounds(freshness);
     const timeRange = freshness || toTimeRange(params.time_range);
     const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : void 0;
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : void 0;
@@ -3951,7 +5568,6 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     let routingInfo = { requested_provider: requestedProvider };
     let provider;
     let strictProviderMode = false;
-    let exaDepthHint = "normal";
     if (requestedProvider === "auto") {
       if (!configuredProviders.length) {
         return { ok: false, payload: { error: "Search failed: no search providers are configured" } };
@@ -3977,10 +5593,9 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         strictProviderMode = true;
         routingInfo = { requested_provider: "auto", auto_routed: false, provider, fixed_provider_mode: true, reason: "auto_routing_disabled" };
       } else {
-        const selection = selectAutoProvider(query, autoEnabledProviders, routingConfig);
+        const selection = selectAutoProvider(query, enabledProviders, routingConfig);
         provider = selection.provider;
         routingInfo = selection.routing;
-        exaDepthHint = selection.routing.exa_depth || "normal";
       }
     } else {
       provider = requestedProvider;
@@ -3997,7 +5612,6 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       ...routingOverride ? { override_provider: routingOverride, override_mode: "forced_provider" } : {},
       ...routingConfig.profile === "self_hosted" && requestedProvider !== "auto" ? { explicit_profile_override: true } : {}
     };
-    if (provider === "exa" && params.depth) exaDepthHint = params.depth;
     const providersToTry = strictProviderMode ? [provider] : buildAutoFallbackOrder(provider, autoEnabledProviders, routingConfig);
     const eligibleProviders = [];
     const cooldownSkips = [];
@@ -4014,41 +5628,45 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     const runProvider = async (p) => {
       const key = validateApiKey(p, runtimeConfig);
       const locale = providerSupportsLocale(p) ? resolveLocale(p, runtimeConfig, query) : void 0;
-      if (p === "serper") return searchSerper(query, key, count, timeRange, locale, PROVIDER_SEARCH_TYPES.serper[searchType || "search"] || "search");
-      if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
-      if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
-      if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
-      if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains, locale);
-      if (p === "exa") {
-        const exaDepth = params.depth || exaDepthHint || "normal";
-        return searchExa(query, key, count, exaDepth, includeDomains, excludeDomains);
-      }
-      if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
-      if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains);
-      if (p === "serpbase") return searchSerpBase(query, key, count, timeRange);
-      if (p === "you") return searchYou(query, key, count, timeRange, locale);
-      if (p === "keenable") return searchKeenable(query, key || void 0, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
-      if (p === "hound") {
-        if (searchType && searchType !== "search") throw new ProviderConfigError("Hound supports search_type=search only");
-        return searchHound(
-          query,
-          key,
-          count,
-          timeRange,
-          includeDomains,
-          excludeDomains,
-          void 0,
-          {
-            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
-            maxResponseBytes: runtimeConfig.houndMaxResponseBytes
-          }
-        );
-      }
-      return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
+      const executeProvider = async () => {
+        if (p === "serper") return searchSerper(query, key, count, timeRange, locale, PROVIDER_SEARCH_TYPES.serper[searchType || "search"] || "search");
+        if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
+        if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
+        if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
+        if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains, locale);
+        if (p === "exa") {
+          return searchExa(query, key, count, includeDomains, excludeDomains, freshness, exaFreshnessBounds);
+        }
+        if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
+        if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains, runtimeConfig.parallelMode);
+        if (p === "serpbase") return searchSerpBase(query, key, count, locale);
+        if (p === "you") return searchYou(query, key, count, timeRange, locale);
+        if (p === "keenable") return searchKeenable(query, key || void 0, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
+        if (p === "octen") return searchOcten(query, key, count, { freshness: freshness || void 0, timeRange, searchType: searchType === "news" ? "news" : "search", includeDomains, excludeDomains, timeoutSeconds: runtimeConfig.octenTimeoutSeconds });
+        if (p === "tinyfish") return searchTinyFish(query, key, count, { freshness: freshness || void 0, timeRange, searchType: searchType || "search", includeDomains, excludeDomains, country: locale?.country, language: locale?.language, timeoutSeconds: runtimeConfig.tinyfishTimeoutSeconds });
+        if (p === "donsetch") {
+          if (!runtimeConfig.runCommandWithTimeout) throw new ProviderConfigError("donsetch_openclaw_runner_unavailable");
+          return searchDonsetch(runtimeConfig.runCommandWithTimeout, {
+            binary: key,
+            query,
+            maxResults: count,
+            searchType: searchType || "search",
+            freshness: timeRange,
+            includeDomains,
+            excludeDomains,
+            timeoutSeconds: runtimeConfig.donsetchTimeoutSeconds
+          });
+        }
+        return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
+      };
+      const response = await executeProvider();
+      validateSourceOnlyAdapterResult(p, response);
+      return response;
     };
     if (params.mode === "research") {
-      const providerEligibleForResearch = (p) => !routingConfig.disabled_providers.includes(p) && routingConfig.auto_allow?.[p] !== false && providerIsConfigured(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
-      const availableResearchProviders = new Set(configuredProviders.filter(providerEligibleForResearch));
+      const providerEligibleForExplicitResearch = (p) => !routingConfig.disabled_providers.includes(p) && providerIsConfigured(p, runtimeConfig) && !providerInCooldown(p).inCooldown;
+      const providerEligibleForAutomaticResearch = (p) => providerEligibleForExplicitResearch(p) && routingConfig.auto_allow?.[p] !== false;
+      const availableResearchProviders = new Set(configuredProviders.filter(providerEligibleForAutomaticResearch));
       if (providerIsConfigured(provider, runtimeConfig) && !routingConfig.disabled_providers.includes(provider) && !providerInCooldown(provider).inCooldown) {
         availableResearchProviders.add(provider);
       }
@@ -4056,7 +5674,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       if (routingOverride) {
         researchProviders = [provider];
       } else if (Array.isArray(params.research_providers) && params.research_providers.length) {
-        researchProviders = [...new Set(params.research_providers.map((value) => normalizeProviderName(value)))].filter(providerEligibleForResearch);
+        researchProviders = [...new Set(params.research_providers.map((value) => normalizeProviderName(value)))].filter(providerEligibleForExplicitResearch);
       } else {
         researchProviders = selectResearchProviders(
           provider,
@@ -4082,12 +5700,12 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
             recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, (response.results || []).length, false);
             resetProviderHealth(p);
             return response;
-          } catch (error2) {
-            if (!(error2 instanceof ProviderConfigError)) {
+          } catch (error) {
+            if (!(error instanceof ProviderConfigError)) {
               recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, 0, true);
-              markProviderFailure(p, String(error2?.message || error2), error2?.retryAfter);
+              markProviderFailure(p, String(error?.message || error), error?.retryAfter);
             }
-            throw error2;
+            throw error;
           }
         },
         extractUrls: (urls) => extractPlus(
@@ -4111,7 +5729,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       if (freshness) {
         result2.metadata = {
           ...result2.metadata || {},
-          freshness: { requested: freshness, per_provider: researchProviders.map((p) => freshnessMetadata(p, freshness)) }
+          freshness: { requested: freshness, per_provider: researchProviders.map((p) => freshnessMetadata(p, freshness, exaFreshnessBounds)) }
         };
       }
       if (searchType && searchType !== "search") {
@@ -4133,7 +5751,8 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       locale: providerSupportsLocale(provider) ? (({ country, language }) => ({ country, language }))(resolveLocale(provider, runtimeConfig, query)) : null,
       include_domains: includeDomains ? [...includeDomains].sort() : null,
       exclude_domains: excludeDomains ? [...excludeDomains].sort() : null,
-      exa_depth: params.depth || exaDepthHint || "normal",
+      exa_depth: "normal",
+      parallel_mode: runtimeConfig.parallelMode || "fast",
       brave_safesearch: normalizeBraveSafesearch(braveOptions.safesearch),
       routing_preferences: routingConfig
     };
@@ -4156,12 +5775,12 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         resetProviderHealth(p);
         successes.push([p, result2]);
         if (strictProviderMode || (result2.results || []).length >= count || errors.length === 0) break;
-      } catch (error2) {
-        const message = sanitizeOutput(String(error2?.message || error2));
-        const isConfigError = error2 instanceof ProviderConfigError;
+      } catch (error) {
+        const message = sanitizeOutput(String(error?.message || error));
+        const isConfigError = error instanceof ProviderConfigError;
         if (!isConfigError) recordProviderOutcome(p, (Date.now() - startedAt2) / 1e3, 0, true);
         const skipCooldown = strictProviderMode || isConfigError;
-        const cooldown = skipCooldown ? { cooldown_seconds: 0 } : markProviderFailure(p, message, error2?.retryAfter);
+        const cooldown = skipCooldown ? { cooldown_seconds: 0 } : markProviderFailure(p, message, error?.retryAfter);
         errors.push({ provider: p, error: message, ...skipCooldown ? {} : { cooldown_seconds: cooldown.cooldown_seconds } });
         if (strictProviderMode) break;
       }
@@ -4213,7 +5832,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       }
     }
     if (freshness) {
-      result.metadata = { ...result.metadata || {}, freshness: freshnessMetadata(successfulProvider, freshness) };
+      result.metadata = { ...result.metadata || {}, freshness: freshnessMetadata(successfulProvider, freshness, exaFreshnessBounds) };
     }
     if (searchType && searchType !== "search") {
       result.metadata = { ...result.metadata || {}, search_type: searchTypeMetadata(successfulProvider, searchType) };
@@ -4231,8 +5850,8 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     }
     cachePut(query, successfulProvider, count, result, cacheContext);
     return { ok: true, payload: sanitizeOutput(result) };
-  } catch (error2) {
-    return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` } };
+  } catch (error) {
+    return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error?.message || error))}` } };
   }
 }
 function routingConfigStatus(loadResult) {
@@ -4340,13 +5959,16 @@ function executeRoutingConfigAction(pluginConfig, params) {
   throw new Error(`Unsupported routing config action: ${action}`);
 }
 function register(api) {
+  const commandRunner = api.runtime?.system?.runCommandWithTimeout;
   api.registerTool(
     {
       name: "web_search_health_plus",
-      description: "Read-only process-local provider health from adaptive routing samples. Reports only what this host process has observed since it started; no HTTP endpoint or persisted history is used.",
+      description: "Read-only process-local provider health from adaptive routing samples. Reports only what this host process has observed since it started; when DonSeTch is configured it also runs the local executable's --version readiness check. No HTTP endpoint or persisted history is used.",
       parameters: { type: "object", properties: {} },
       async execute() {
-        return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot() }) }] };
+        const runtimeConfig = getRuntimeConfig(api.pluginConfig ?? {}, commandRunner);
+        const readiness = commandRunner ? await inspectDonsetchReadiness(commandRunner, runtimeConfig.donsetchBin, { timeoutSeconds: 5 }) : { state: runtimeConfig.donsetchBin ? "unavailable" : "missing", version: null, testedVersion: "3.2.1", compatibility: "unknown", binaryConfigured: Boolean(runtimeConfig.donsetchBin), diagnostic: runtimeConfig.donsetchBin ? "openclaw_command_runner_unavailable" : void 0 };
+        return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot(), donsetch: readiness }) }] };
       }
     },
     { optional: true }
@@ -4362,12 +5984,12 @@ function register(api) {
   api.registerTool(
     {
       name: "web_extract_benchmark_plus",
-      description: "Explicit opt-in extraction benchmark. Never runs automatically; makes at most max_provider_calls (1-3) direct provider calls, bypasses the response cache, and returns a process-local priority recommendation. Hound remains excluded unless auto_allow.hound=true.",
+      description: "Explicit opt-in extraction benchmark. Never runs automatically; makes at most max_provider_calls (1-3) direct provider calls, bypasses the response cache, and returns a process-local priority recommendation. DonSeTch remains excluded unless auto_allow.donsetch=true.",
       parameters: { type: "object", required: ["urls"], properties: { urls: { type: "array", minItems: 1, maxItems: 3, items: { type: "string" } }, max_provider_calls: { type: "integer", minimum: 1, maximum: 3 } } },
       async execute(_id, params) {
         try {
           const pluginConfig = api.pluginConfig ?? {};
-          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig, commandRunner);
           const routing = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
           const maxCalls = Math.max(1, Math.min(3, Math.floor(Number(params?.max_provider_calls ?? 3))));
           const candidates2 = routing.extract_provider_priority.filter((provider) => !routing.disabled_providers.includes(provider) && routing.auto_allow[provider] !== false && isExtractProviderAvailable(provider, runtimeConfig)).slice(0, maxCalls);
@@ -4380,11 +6002,11 @@ function register(api) {
             attempts.push({ provider, latency_ms: Date.now() - startedAt2, status: response.error ? "failed" : "success", result_count: response.results.length, returned_chars: returnedChars, success_rate: Number((successCount / Math.max(1, params.urls.length)).toFixed(3)), score: benchmarkScore(successCount / Math.max(1, params.urls.length), Date.now() - startedAt2, returnedChars, params.urls.length), error: response.error });
           }
           const priority_recommendation = attempts.filter((attempt) => attempt.status === "success" && attempt.result_count > 0).sort((left, right) => right.score - left.score || left.latency_ms - right.latency_ms).map((attempt) => attempt.provider);
-          const result = { scope: "process_local", explicit_opt_in: true, score_weights: BENCHMARK_SCORE_WEIGHTS, max_provider_calls: maxCalls, provider_calls_made: attempts.length, hound_auto_allow: routing.auto_allow.hound === true, attempts, priority_recommendation };
+          const result = { scope: "process_local", explicit_opt_in: true, score_weights: BENCHMARK_SCORE_WEIGHTS, max_provider_calls: maxCalls, provider_calls_made: attempts.length, donsetch_auto_allow: routing.auto_allow.donsetch === true, attempts, priority_recommendation };
           saveExtractBenchmark(result);
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
-        } catch (error2) {
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error2?.message || error2) })) }] };
+        } catch (error) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };
         }
       }
     },
@@ -4393,12 +6015,12 @@ function register(api) {
   api.registerTool(
     {
       name: "web_search_plus",
-      description: "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, and the local Hound MCP sidecar. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and extract top sources for grounding.",
+      description: "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, explicit-only Octen/TinyFish, and optional separately installed DonSeTch. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and stop after a conservative source-quality quorum.",
       parameters: PARAMETERS_SCHEMA,
       async execute(_id, params) {
         try {
           const pluginConfig = api.pluginConfig ?? {};
-          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig, commandRunner);
           const result = await executeSearch(runtimeConfig, params, pluginConfig);
           if (!result.ok) {
             const failure = result.payload;
@@ -4406,8 +6028,8 @@ function register(api) {
           }
           recordShadowQualityObservation(result.payload);
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result.payload)) }] };
-        } catch (error2) {
-          return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error2?.message || error2))}` }] };
+        } catch (error) {
+          return { content: [{ type: "text", text: `Search failed: ${sanitizeOutput(String(error?.message || error))}` }] };
         }
       }
     },
@@ -4422,8 +6044,8 @@ function register(api) {
         try {
           const pluginConfig = api.pluginConfig ?? {};
           return { content: [{ type: "text", text: JSON.stringify(executeRoutingConfigAction(pluginConfig, params)) }] };
-        } catch (error2) {
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error2?.message || error2) })) }] };
+        } catch (error) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };
         }
       }
     },
@@ -4432,11 +6054,11 @@ function register(api) {
   api.registerTool(
     {
       name: "web_extract_plus",
-      description: "Extract URL content across configured providers, including optional local Hound MCP, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
+      description: "Extract URL content across configured providers, including optional separately installed DonSeTch over a host-managed stdio process, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig = api.pluginConfig ?? {};
-        return hasAnyExtractProviderCredential(getRuntimeConfig(pluginConfig));
+        return hasAnyExtractProviderCredential(getRuntimeConfig(pluginConfig, commandRunner));
       },
       async execute(_id, params) {
         try {
@@ -4451,7 +6073,7 @@ function register(api) {
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(content)) }] };
           }
           const pluginConfig = api.pluginConfig ?? {};
-          const runtimeConfig = getRuntimeConfig(pluginConfig);
+          const runtimeConfig = getRuntimeConfig(pluginConfig, commandRunner);
           const routingPreferences = applyRoutingProfile(loadRoutingPreferences(pluginConfig).config);
           const routingOverride = typeof params?.routing_override_provider === "string" ? params.routing_override_provider : null;
           if (routingOverride && params?.provider && params.provider !== "auto" && params.provider !== routingOverride) throw new Error("provider and routing_override_provider disagree");
@@ -4477,8 +6099,8 @@ function register(api) {
           );
           if (routingOverride) result.routing = { ...result.routing || { requested_provider: routingOverride }, override_provider: routingOverride, override_mode: "forced_provider" };
           return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(result)) }] };
-        } catch (error2) {
-          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error2?.message || error2) })) }] };
+        } catch (error) {
+          return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput({ error: String(error?.message || error) })) }] };
         }
       }
     },
@@ -4489,12 +6111,13 @@ var index_default = definePluginEntry({
   id: "web-search-plus-plugin-v2",
   name: "Web Search Plus",
   description: "One clean set of web tools for multi-provider search and extraction.",
+  configSchema: buildJsonPluginConfigSchema(openclaw_plugin_default.configSchema, { uiHints: openclaw_plugin_default.uiHints }),
   register
 });
 export {
   CANONICAL_DOMAIN_RULES,
   FAILURE_DECAY_SECONDS,
-  FRESHNESS_VALUES,
+  FRESHNESS_VALUES2 as FRESHNESS_VALUES,
   MAX_RETRY_AFTER_WAIT_SECONDS,
   PROVIDER_FRESHNESS_FORMATS,
   PROVIDER_SEARCH_TYPES,
@@ -4509,6 +6132,7 @@ export {
   computeRetryDelayMs,
   deduplicateResultsAcrossProviders,
   index_default as default,
+  exaDateBounds,
   freshnessMetadata,
   keenableEndpoint,
   normalizeFreshness,

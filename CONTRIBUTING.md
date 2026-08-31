@@ -41,7 +41,7 @@ npm pack --dry-run
 
 `npm test` runs the network-free Node test suite directly against TypeScript sources. `npm run build` regenerates the bundled `dist/index.js`; commit the bundle whenever source changes alter it. `npm pack --dry-run` is the final truth for what ClawHub/npm consumers will receive.
 
-Provider tests must mock `fetch` or the sidecar transport. CI must not require live credentials, provider quota, mutable search results, an OpenClaw gateway, or a local Hound process.
+Provider tests must mock `fetch` or inject a fake OpenClaw command runner. CI must not require live credentials, provider quota, mutable search results, an OpenClaw gateway, or a local DonSeTch process.
 
 ## Porting from Web Search Plus
 
@@ -75,13 +75,14 @@ Treat registered tool names, input schemas, output envelopes, process-local life
 
 When adding or renaming packaged modules, update the `files` allowlist in `package.json` and prove the tarball with `npm pack --dry-run`. Keep `package.json`, `openclaw.plugin.json`, `SKILL.md`, README version claims, and the built bundle synchronized for releases.
 
-A sidecar remains an independently installed upstream project. Do not bundle it, blur authorship, or weaken loopback/transport limits for convenience. Hound integration requirements and attribution live in [`docs/HOUND.md`](docs/HOUND.md).
+DonSeTch remains an independently installed AGPL-3.0-only upstream project. Do not bundle it, blur authorship, invoke a shell, or bypass OpenClaw's host-owned `api.runtime.system.runCommandWithTimeout` runner. Keep the executable path explicit, the provider guarded by default, unrelated credentials out of its environment, and stdio/diagnostic/time/content limits covered by network-free tests.
 
 ## OpenClaw runtime constraints
 
 - Credentials come only from explicit OpenClaw plugin configuration fields.
 - Routing preferences and health data are process-local unless the public contract says otherwise.
 - Runtime code must remain compatible with the declared OpenClaw plugin API and minimum gateway version.
+- Keep every optional plugin tool declared in the manifest. Document additive onboarding with exact names in `tools.alsoAllow`, and describe `tools.allow` only as the restrictive absolute alternative; `plugins.allow` is a separate plugin-load gate.
 - Avoid runtime filesystem reads that violate ClawHub scanner expectations.
 - Preserve bounded fan-out, context budgets, cache limits, SSRF defenses, redirect policy, and guarded provider defaults.
 - Do not add a background server, persistent ledger, or cross-restart state as a “small” port.

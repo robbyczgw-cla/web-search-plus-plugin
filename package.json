@@ -1,24 +1,24 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "3.3.0",
-  "description": "OpenClaw plugin: source-only Routing v2 web search, research, and Tavily-first extraction across hosted providers plus an optional local Hound MCP sidecar.",
+  "version": "4.0.3",
+  "description": "OpenClaw-native source-only Routing v2 search and extraction across hosted providers plus an optional separately installed DonSeTch stdio provider.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "test": "node --test test/*.test.ts",
-    "build": "esbuild index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js"
+    "test": "node --import ./test/mock-public-dns.ts --test test/*.test.ts",
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --target=node22 --external:openclaw/* --outfile=dist/index.js"
   },
   "openclaw": {
     "extensions": [
       "./index.ts"
     ],
     "compat": {
-      "pluginApi": ">=2026.3.22",
-      "minGatewayVersion": "2026.4.23"
+      "pluginApi": ">=2026.8.1",
+      "minGatewayVersion": "2026.8.1"
     },
     "build": {
-      "openclawVersion": "2026.4.23",
-      "pluginSdkVersion": "2026.4.23"
+      "openclawVersion": "2026.8.1",
+      "pluginSdkVersion": "2026.8.1"
     },
     "runtimeExtensions": [
       "./dist/index.js"
@@ -29,8 +29,12 @@
     "extract.ts",
     "research.ts",
     "span-extraction.ts",
-    "hound-transport.ts",
-    "hound-provider.ts",
+    "provider-http.ts",
+    "octen-provider.ts",
+    "tinyfish-provider.ts",
+    "donsetch-provider.ts",
+    "donsetch-transport.ts",
+    "source-only-gate.ts",
     "quality.ts",
     "diversity.ts",
     "provider-stats.ts",
@@ -45,7 +49,7 @@
     "bin/web-search-plus-setup.mjs",
     "SKILL.md",
     "README.md",
-    "docs/HOUND.md",
+    "docs/DONSETCH.md",
     "CHANGELOG.md"
   ],
   "keywords": [
@@ -58,7 +62,6 @@
     "linkup",
     "querit",
     "exa",
-    "exa-deep",
     "firecrawl",
     "you",
     "searxng",
@@ -71,14 +74,16 @@
     "research-mode",
     "authority-rerank",
     "keenable",
-    "hound",
+    "donsetch",
+    "octen",
+    "tinyfish",
     "freshness",
     "news-search",
     "locale",
     "spam-filtering"
   ],
   "peerDependencies": {
-    "openclaw": ">=2026.3.22"
+    "openclaw": ">=2026.8.1"
   },
   "repository": {
     "type": "git",
@@ -86,8 +91,12 @@
   },
   "author": "robbyczgw-cla",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.22.3"
+  },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "openclaw": "2026.8.1"
   },
   "bin": {
     "web-search-plus-setup": "./bin/web-search-plus-setup.mjs"

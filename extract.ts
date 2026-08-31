@@ -4,7 +4,7 @@ import crypto from "crypto";
 import type { RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_EXTRACT_PROVIDER_PRIORITY, type ExtractProviderName } from "./routing-config.ts";
 import { selectSpans, type SemanticSpan } from "./span-extraction.ts";
-import { extractHound } from "./hound-provider.ts";
+import { extractDonsetch } from "./donsetch-provider.ts";
 import { preflightDeadline } from "./budget-preflight.ts";
 
 type Json = Record<string, any>;
@@ -200,6 +200,7 @@ export function __resetExtractCacheForTests(): void {
 export const EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = [...DEFAULT_EXTRACT_PROVIDER_PRIORITY];
 export const EXTRACT_PARAMETERS_SCHEMA = {
   type: "object",
+  additionalProperties: false,
   properties: {
     urls: { type: "array", items: { type: "string" }, description: "URLs to extract (required unless content_ref is supplied)" },
     content_ref: { type: "string", description: "Process-local full-content reference returned by a prior extraction; valid only while its cache entry remains live." },
@@ -209,12 +210,12 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     raw_content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a distinct provider raw text (maximum range 60000)." },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch"],
       description: "Try this provider first with extraction fallback, or use auto priority (default: auto). Use routing_override_provider for a strict single-provider call.",
     },
     routing_override_provider: {
       type: "string",
-      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "hound"],
+      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch"],
       description: "Disable automatic extraction routing and force this provider for this request. Reported visibly in routing.override_provider.",
     },
     format: {
@@ -334,7 +335,7 @@ function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeC
     parallel: runtimeConfig.parallelApiKey,
     keenable: runtimeConfig.keenableApiKey,
     serper: runtimeConfig.serperApiKey,
-    hound: runtimeConfig.houndMcpUrl,
+    donsetch: runtimeConfig.donsetchBin,
   };
   return keyMap[provider];
 }
@@ -345,10 +346,13 @@ function keylessPublicAllowed(provider: ExtractProviderName, runtimeConfig: Runt
 }
 
 export function hasAnyExtractProviderCredential(runtimeConfig: RuntimeConfig): boolean {
-  return EXTRACT_PROVIDER_PRIORITY.some((provider) => Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig));
+  return EXTRACT_PROVIDER_PRIORITY.some((provider) => isExtractProviderAvailable(provider, runtimeConfig));
 }
 
 export function isExtractProviderAvailable(provider: ExtractProviderName, runtimeConfig: RuntimeConfig): boolean {
+  if (provider === "donsetch") {
+    return Boolean(runtimeConfig.donsetchBin && runtimeConfig.runCommandWithTimeout);
+  }
   return Boolean(getExtractApiKey(provider, runtimeConfig)) || keylessPublicAllowed(provider, runtimeConfig);
 }
 
@@ -614,7 +618,7 @@ export async function extractParallel(
   includeRawHtml = false,
   _renderJs = false,
   budgets: { maxCharsPerResult?: number; maxCharsTotal?: number } = {},
-  apiUrl = "https://api.parallel.ai/v1beta/tasks/extract",
+  apiUrl = "https://api.parallel.ai/v1/extract",
   timeout = 30,
 ): Promise<ExtractResponse> {
   const data = await requestJson(apiUrl, {
@@ -627,18 +631,22 @@ export async function extractParallel(
     }),
   }, timeout);
 
-  const rawItems = Array.isArray(data?.results) ? data.results : Array.isArray(data?.data) ? data.data : [];
+  const rawItems = Array.isArray(data?.results) ? data.results : [];
   const results = rawItems.map((item: any) => {
     const url = String(item?.url || item?.source_url || "");
     const excerpts = Array.isArray(item?.excerpts) ? item.excerpts : Array.isArray(item?.snippets) ? item.snippets : [];
-    const markdown = String(item?.markdown || item?.content || item?.text || excerpts.join("\n\n") || "");
+    const excerptText = excerpts.map((excerpt: any) => typeof excerpt === "string" ? excerpt : excerpt?.text || excerpt?.content || "").filter(Boolean).join("\n\n");
+    const markdown = String(item?.full_content || item?.markdown || item?.content || item?.text || excerptText || "");
     const html = String(item?.html || item?.raw_html || "");
     const content = outputFormat === "html" ? html || markdown : markdown || html;
     return normalizeExtractResult("parallel", url, String(item?.title || ""), content, content, {
       raw_html: includeRawHtml ? html || undefined : undefined,
-      metadata: { search_id: data?.search_id, session_id: data?.session_id },
+      metadata: { search_id: data?.search_id, session_id: data?.session_id, excerpts: excerpts.length ? excerpts : undefined },
     });
   });
+  for (const failed of Array.isArray(data?.errors) ? data.errors : []) {
+    results.push(normalizeExtractResult("parallel", typeof failed === "object" ? String(failed?.url || "") : "", "", "", undefined, { error: typeof failed === "string" ? failed : String(failed?.error || "parallel_extract_failed") }));
+  }
   return { provider: "parallel", results };
 }
 
@@ -982,7 +990,8 @@ export async function extractPlus(
       extract_char_limit: runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT,
       parallel_max_chars_per_result: runtimeConfig.parallelMaxCharsPerResult ?? PARALLEL_MAX_CHARS_PER_RESULT,
       parallel_max_chars_total: runtimeConfig.parallelMaxCharsTotal ?? PARALLEL_MAX_CHARS_TOTAL,
-      hound_max_content_chars: runtimeConfig.houndMaxContentChars ?? null,
+      donsetch_max_content_chars: runtimeConfig.donsetchMaxContentChars ?? null,
+      donsetch_tier: runtimeConfig.donsetchTier ?? "auto",
       deadline_seconds: deadlineSeconds,
     },
     provider_policy: {
@@ -990,11 +999,11 @@ export async function extractPlus(
       disabled: [...disabledProviders].sort(),
       auto_allow: contextOptions.autoAllow || {},
       strict_provider: contextOptions.strictProvider === true,
-      // Credential availability affects which fallback can answer, while the
+      // Credential availability affects which fallback can serve the request, while the
       // credential values themselves never enter the identity.
-      available: Object.fromEntries(EXTRACT_PROVIDER_PRIORITY.map((item) => [item, Boolean(getExtractApiKey(item, runtimeConfig)) || keylessPublicAllowed(item, runtimeConfig)])),
+      available: Object.fromEntries(EXTRACT_PROVIDER_PRIORITY.map((item) => [item, isExtractProviderAvailable(item, runtimeConfig)])),
     },
-    endpoints: { hound_mcp_url: runtimeConfig.houndMcpUrl || null },
+    endpoints: { donsetch_binary_configured: Boolean(runtimeConfig.donsetchBin) },
     url_policy: { extract_allow_private_urls: runtimeConfig.extractAllowPrivateUrls === true },
     storage_policy: "process_memory_only",
   });
@@ -1038,20 +1047,19 @@ export async function extractPlus(
         result = await extractKeenable(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
       } else if (currentProvider === "serper") {
         result = await extractSerper(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
-      } else if (currentProvider === "hound") {
-        result = await extractHound(
-          cleanedUrls as string[],
-          providerCredential!,
+      } else if (currentProvider === "donsetch") {
+        if (!runtimeConfig.runCommandWithTimeout) throw new Error("donsetch_openclaw_runner_unavailable");
+        result = await extractDonsetch(runtimeConfig.runCommandWithTimeout, {
+          binary: providerCredential!,
+          urls: cleanedUrls as string[],
           outputFormat,
           includeImages,
           includeRawHtml,
           renderJs,
-          {
-            timeoutSeconds: runtimeConfig.houndTimeoutSeconds,
-            maxResponseBytes: runtimeConfig.houndMaxResponseBytes,
-            maxContentChars: runtimeConfig.houndMaxContentChars,
-          },
-        );
+          timeoutSeconds: runtimeConfig.donsetchTimeoutSeconds,
+          maxContentChars: runtimeConfig.donsetchMaxContentChars,
+          tier: String(runtimeConfig.donsetchTier ?? "auto"),
+        });
       } else {
         result = await extractYou(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       }

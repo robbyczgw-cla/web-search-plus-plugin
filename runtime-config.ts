@@ -1,3 +1,5 @@
+import type { DonsetchCommandRunner } from "./donsetch-transport.ts";
+
 export type RuntimeConfig = {
   serperApiKey?: string;
   braveApiKey?: string;
@@ -9,17 +11,23 @@ export type RuntimeConfig = {
   firecrawlApiKey?: string;
   youApiKey?: string;
   parallelApiKey?: string;
+  parallelMode?: "turbo" | "fast" | "basic" | "advanced";
   serpbaseApiKey?: string;
+  monidApiKey?: string;
+  octenTimeoutSeconds?: number;
+  tinyfishApiKey?: string;
+  tinyfishTimeoutSeconds?: number;
   searxngInstanceUrl?: string;
   searxngAllowPrivate?: boolean;
   keenableApiKey?: string;
   // Opt-in: routes queries and fetched URLs to Keenable's unauthenticated
   // public endpoints (~1000 req/hour shared, no SLA). Off by default.
   keenableAllowPublic?: boolean;
-  houndMcpUrl?: string;
-  houndTimeoutSeconds?: number;
-  houndMaxResponseBytes?: number;
-  houndMaxContentChars?: number;
+  donsetchBin?: string;
+  donsetchTimeoutSeconds?: number;
+  donsetchMaxContentChars?: number;
+  donsetchTier?: "auto" | 1 | 2;
+  runCommandWithTimeout?: DonsetchCommandRunner;
   // Opt-in: allow web_extract_plus to target private/internal URLs (trusted
   // intranet extraction). Off by default.
   extractAllowPrivateUrls?: boolean;
@@ -46,13 +54,15 @@ export type RuntimeConfig = {
   qualityDiversityRerank?: boolean;
 };
 
+export type RunCommandWithTimeout = DonsetchCommandRunner;
+
 function maybeString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed ? trimmed : undefined;
 }
 
-export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConfig {
+export function getRuntimeConfig(pluginConfig: Record<string, any>, runCommandWithTimeout?: RunCommandWithTimeout): RuntimeConfig {
   return {
     serperApiKey: maybeString(pluginConfig?.serperApiKey),
     braveApiKey: maybeString(pluginConfig?.braveApiKey),
@@ -64,15 +74,21 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     firecrawlApiKey: maybeString(pluginConfig?.firecrawlApiKey),
     youApiKey: maybeString(pluginConfig?.youApiKey),
     parallelApiKey: maybeString(pluginConfig?.parallelApiKey),
+    parallelMode: normalizeParallelMode(pluginConfig?.parallelMode),
     serpbaseApiKey: maybeString(pluginConfig?.serpbaseApiKey),
+    monidApiKey: maybeString(pluginConfig?.monidApiKey),
+    octenTimeoutSeconds: maybeBoundedInt(pluginConfig?.octenTimeoutSeconds, 1, 120),
+    tinyfishApiKey: maybeString(pluginConfig?.tinyfishApiKey),
+    tinyfishTimeoutSeconds: maybeBoundedInt(pluginConfig?.tinyfishTimeoutSeconds, 1, 120),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : undefined,
     keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
     keenableAllowPublic: pluginConfig?.keenableAllowPublic === true ? true : undefined,
-    houndMcpUrl: maybeString(pluginConfig?.houndMcpUrl),
-    houndTimeoutSeconds: maybePositiveInt(pluginConfig?.houndTimeoutSeconds),
-    houndMaxResponseBytes: maybePositiveInt(pluginConfig?.houndMaxResponseBytes),
-    houndMaxContentChars: maybePositiveInt(pluginConfig?.houndMaxContentChars),
+    donsetchBin: maybeString(pluginConfig?.donsetchBin),
+    donsetchTimeoutSeconds: maybeBoundedInt(pluginConfig?.donsetchTimeoutSeconds, 5, 600),
+    donsetchMaxContentChars: maybeBoundedInt(pluginConfig?.donsetchMaxContentChars, 500, 200_000),
+    donsetchTier: normalizeDonsetchTier(pluginConfig?.donsetchTier),
+    runCommandWithTimeout,
     extractAllowPrivateUrls: pluginConfig?.extractAllowPrivateUrls === true ? true : undefined,
     extractCharLimit: Number.isFinite(Number(pluginConfig?.extractCharLimit)) && Number(pluginConfig?.extractCharLimit) > 0
       ? Math.max(1000, Math.floor(Number(pluginConfig.extractCharLimit)))
@@ -88,6 +104,21 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>): RuntimeConf
     parallelMaxCharsTotal: maybePositiveInt(pluginConfig?.parallelMaxCharsTotal),
     qualityDiversityRerank: pluginConfig?.qualityDiversityRerank === true ? true : undefined,
   };
+}
+
+function normalizeParallelMode(value: unknown): RuntimeConfig["parallelMode"] {
+  if (value == null || String(value).trim() === "") return "fast";
+  const normalized = String(value).trim().toLowerCase();
+  if (["turbo", "fast", "basic", "advanced"].includes(normalized)) return normalized as RuntimeConfig["parallelMode"];
+  throw new Error("parallelMode must be one of turbo, fast, basic, advanced");
+}
+
+function normalizeDonsetchTier(value: unknown): RuntimeConfig["donsetchTier"] {
+  if (value == null || String(value).trim() === "") return "auto";
+  if (value === 1 || value === "1") return 1;
+  if (value === 2 || value === "2") return 2;
+  if (String(value).trim().toLowerCase() === "auto") return "auto";
+  throw new Error("donsetchTier must be auto, 1, or 2");
 }
 
 function maybePositiveInt(value: unknown): number | undefined {
