@@ -1,7 +1,7 @@
 ---
 name: web-search-plus-plugin-v2
 version: 4.0.3
-description: OpenClaw plugin for source-only Routing v2 multi-provider search, completion-order Research with quality quorum and attributed provenance, heading-aware extraction spans, Tavily-first extraction, explicit-only Octen/TinyFish, optional separately installed DonSeTch through the OpenClaw host runner, process-local health, routing preferences, and extraction benchmarks. Registers five optional web tools.
+description: OpenClaw plugin for source-only Routing v2 multi-provider search, completion-order Research with quality quorum and attributed provenance, heading-aware extraction spans, Tavily-first extraction, explicit-only Octen/TinyFish/Search1API, optional separately installed DonSeTch through the OpenClaw host runner, process-local health, routing preferences, and extraction benchmarks. Registers five optional web tools.
 ---
 
 # Web Search Plus Plugin
@@ -56,6 +56,7 @@ Hosted Search credentials/settings:
 - `searxngInstanceUrl`, `keenableApiKey`
 - `monidApiKey` for Octen via Monid
 - `tinyfishApiKey`
+- `search1apiApiKey` — one key covers search, news, and extraction
 
 Local provider:
 
@@ -64,7 +65,8 @@ Local provider:
 Important controls:
 
 - `parallelMode`: `turbo`, `fast` (default), `basic`, or `advanced`; Parallel uses its stable v1 Search endpoint and is auto-allowed when configured
-- `octenTimeoutSeconds`, `tinyfishTimeoutSeconds`
+- `octenTimeoutSeconds`, `tinyfishTimeoutSeconds`, `search1apiTimeoutSeconds`
+- `search1apiSearchService`, `search1apiNewsService`
 - `donsetchTimeoutSeconds`, `donsetchMaxContentChars`, `donsetchTier`
 - `keenableAllowPublic`, `searxngAllowPrivate`, `extractAllowPrivateUrls`
 - `extractCharLimit`, `extractMaxUrls`, `extractMaxContextChars`, `extractDeadlineSeconds`
@@ -81,6 +83,7 @@ OpenClaw plugin config is the only credential source; this package does not disc
 - Parallel uses stable v1 Search with `fast` as the default mode and participates in normal automatic routing when configured.
 - Octen via Monid and TinyFish are Search-only and explicit-only by default. Both support freshness and domain filters; TinyFish also supports native news and locale.
 - TinyFish's standard [Terms](https://www.tinyfish.ai/terms) permit Customer Data, including queries, to be used for model training and fine-tuning. Explicit-only is not a privacy guarantee. Review its [Privacy Policy](https://www.tinyfish.ai/privacy-policy) and the terms applicable to your account before sending sensitive data.
+- Search1API is a Search+Extract provider and explicit-only by default. `search_type="news"` uses its `/news` endpoint, extraction uses `/crawl` and returns Markdown text only — html/raw-html/render-js flags have no upstream effect. Review its [Terms](https://blog.s1.dev/pages/terms) and [Privacy Policy](https://s1.dev/privacy) before sending sensitive queries.
 
 ## DonSeTch
 
@@ -101,7 +104,7 @@ Use `provider="donsetch"` explicitly first. Only after verifying the target host
 
 Default search priority: You.com → Serper → Exa → Firecrawl → Tavily → Linkup → Brave → Parallel → SerpBase → Querit → SearXNG → Keenable.
 
-SerpBase, Querit, DonSeTch, Octen, and TinyFish are guarded by `auto_allow=false`; Brave and Parallel are in the normal automatic pool. Search and extraction priorities are independent. The `self_hosted` profile derives SearXNG/Keenable automatic pools while preserving explicit configured-provider calls.
+SerpBase, Querit, DonSeTch, Octen, TinyFish, and Search1API are guarded by `auto_allow=false`; Brave and Parallel are in the normal automatic pool. Search and extraction priorities are independent. The `self_hosted` profile derives SearXNG/Keenable automatic pools while preserving explicit configured-provider calls.
 
 Use `quality_report=true` for routing, authority, diversity, fallback, and result-quality diagnostics. Provider health and shadow-quality state are process-local and disappear on restart.
 

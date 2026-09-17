@@ -19,6 +19,7 @@ const PROVIDERS = [
   { name: "keenable", field: "keenableApiKey", capability: "independent web index search and extraction; keyless public tier via keenableAllowPublic=true", starter: false, guarded: false },
   { name: "octen", field: "monidApiKey", capability: "source-only Octen search through Monid with freshness and domain filters; explicit-only by default", starter: false, guarded: true },
   { name: "tinyfish", field: "tinyfishApiKey", capability: "source-only TinyFish web/news search with freshness, locale, and domain filters; explicit-only BYOK with a privacy warning", starter: false, guarded: true },
+  { name: "search1api", field: "search1apiApiKey", capability: "source-only Search1API web/news search and Markdown page extraction with freshness and domain filters; explicit-only BYOK", starter: false, guarded: true },
   { name: "donsetch", field: "donsetchBin", capability: "separately installed local stdio MCP source search and Markdown extraction; explicit-only by default", starter: false, guarded: true },
 ];
 

@@ -1,18 +1,18 @@
-export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "you" | "searxng" | "parallel" | "serpbase" | "keenable" | "donsetch" | "octen" | "tinyfish";
-export type ExtractProviderName = Extract<ProviderName, "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable" | "serper" | "donsetch">;
+export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "you" | "searxng" | "parallel" | "serpbase" | "keenable" | "donsetch" | "octen" | "tinyfish" | "search1api";
+export type ExtractProviderName = Extract<ProviderName, "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable" | "serper" | "donsetch" | "search1api">;
 
-export const ALL_PROVIDER_NAMES: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "you", "searxng", "parallel", "serpbase", "keenable", "donsetch", "octen", "tinyfish"];
+export const ALL_PROVIDER_NAMES: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "you", "searxng", "parallel", "serpbase", "keenable", "donsetch", "octen", "tinyfish", "search1api"];
 
 // Match Hermes 4.0.3's Routing v2 priority. Explicit-only provider modules do
 // not enter this default order; they remain valid when named directly or when
 // an operator deliberately adds them to a custom priority and auto_allow.
 export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["you", "serper", "exa", "firecrawl", "tavily", "linkup", "brave", "parallel", "serpbase", "querit", "searxng", "keenable"];
-export const DEFAULT_EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch"];
+export const DEFAULT_EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch", "search1api"];
 
 // Parallel joined the normal automatic pool in WSP 4.0.2. DonSeTch, Octen,
-// TinyFish, SerpBase, and Querit remain explicit-only unless an operator opts
-// them in deliberately through auto_allow.
-export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "donsetch", "octen", "tinyfish"];
+// TinyFish, SerpBase, Querit, and Search1API remain explicit-only unless an
+// operator opts them in deliberately through auto_allow.
+export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "donsetch", "octen", "tinyfish", "search1api"];
 
 export type RoutingPreferences = {
   version: 2;

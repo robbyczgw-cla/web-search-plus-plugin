@@ -134,6 +134,24 @@
         "maximum": 120,
         "description": "TinyFish request timeout in seconds (default 30)."
       },
+      "search1apiApiKey": {
+        "type": "string",
+        "description": "Search1API key for explicit-only source search, news, and page extraction. One key serves both the search and extract pools."
+      },
+      "search1apiTimeoutSeconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120,
+        "description": "Search1API request timeout in seconds (default 30)."
+      },
+      "search1apiSearchService": {
+        "type": "string",
+        "description": "Optional Search1API search_service override for /search (default google; e.g. bing, duckduckgo, yahoo, github, arxiv, wikipedia)."
+      },
+      "search1apiNewsService": {
+        "type": "string",
+        "description": "Optional Search1API search_service override for /news (default bing; e.g. google, duckduckgo, yahoo, hackernews, reuters)."
+      },
       "donsetchBin": {
         "type": "string",
         "description": "Absolute path to a separately installed DonSeTch executable. The plugin does not bundle DonSeTch or invoke a shell."
@@ -338,6 +356,27 @@
     "tinyfishTimeoutSeconds": {
       "label": "TinyFish timeout seconds",
       "placeholder": "30",
+      "sensitive": false
+    },
+    "search1apiApiKey": {
+      "label": "Search1API Key",
+      "placeholder": "...",
+      "description": "Explicit-only BYOK provider covering search, news, and extraction.",
+      "sensitive": true
+    },
+    "search1apiTimeoutSeconds": {
+      "label": "Search1API timeout seconds",
+      "placeholder": "30",
+      "sensitive": false
+    },
+    "search1apiSearchService": {
+      "label": "Search1API search service",
+      "placeholder": "google",
+      "sensitive": false
+    },
+    "search1apiNewsService": {
+      "label": "Search1API news service",
+      "placeholder": "bing",
       "sensitive": false
     },
     "donsetchBin": {

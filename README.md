@@ -83,6 +83,7 @@ Runtime credentials still come from explicit OpenClaw plugin config fields. The 
 - **Keenable** — independent web index; keyed or opt-in keyless public tier, lowest-priority fallback
 - **Octen via Monid** — source-only search with freshness and domain filters; explicit-only by default
 - **TinyFish** — source-only web/news search with freshness, locale, and domain filters; BYOK and explicit-only by default
+- **Search1API** — source-only web/news search and Markdown page extraction with freshness and domain filters; BYOK and explicit-only by default
 - **DonSeTch** — separately installed local stdio MCP source search and Markdown extraction; explicit-only by default
 
 ### Extraction providers
@@ -98,6 +99,7 @@ Auto fallback order:
 - Keenable (keyed or opt-in keyless public tier)
 - Serper (webpage scraper via `scrape.serper.dev`, last resort)
 - DonSeTch (separately installed local provider; skipped automatically until deliberately auto-allowed)
+- Search1API (`/crawl` page text; skipped automatically until deliberately auto-allowed)
 
 Tavily is the default first call because it was the fastest reliable benchmark head; Firecrawl stays the robust scraper safety net. Extraction targets are validated against private/internal destinations by default (see `extractAllowPrivateUrls`). Calls process at most 10 URLs and return at most 60,000 aggregate Unicode codepoints by default; `max_urls` and `max_context_chars` may request lower limits, while `extractMaxUrls` and `extractMaxContextChars` set operator ceilings. The aggregate budget first selects a deterministic prefix; `extractCharLimit` then turns an oversized prefix into the documented head/tail window with a truncation marker. Inline base64 images are replaced with `[IMAGE: alt]` placeholders. Inline `raw_content` mirrors the final budgeted `content`; a distinct provider raw text is retained only behind `full_content_ref`. Call `web_extract_plus` with that reference plus `content_start`/`content_end` to read a content range (at most 60,000 Unicode codepoints). When distinct provider raw text exists, the reference read reports its availability and length; request it with its own `raw_content_start`/`raw_content_end` range. The reference is only valid while its process-local cache entry remains in the LRU; restart or eviction expires both ranges.
 
@@ -150,6 +152,7 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `keenableApiKey`
 - `monidApiKey` — Octen access through Monid
 - `tinyfishApiKey`
+- `search1apiApiKey` — one key covers search, news, and extraction
 - `donsetchBin` — absolute path to the separately installed DonSeTch executable
 
 ### Extra fields
@@ -159,7 +162,8 @@ Use explicit OpenClaw plugin config fields. The runtime uses only plugin config 
 - `routingConfigPath` — optional namespace for in-memory routing preferences
 - `keenableAllowPublic` — opt-in keyless Keenable public tier (unauthenticated shared service, off by default)
 - `parallelMode` — Parallel stable v1 Search mode: `turbo`, `fast` (default), `basic`, or `advanced`
-- `octenTimeoutSeconds` / `tinyfishTimeoutSeconds` — bounded hosted-provider request timeouts
+- `octenTimeoutSeconds` / `tinyfishTimeoutSeconds` / `search1apiTimeoutSeconds` — bounded hosted-provider request timeouts
+- `search1apiSearchService` / `search1apiNewsService` — optional Search1API service overrides for `/search` (default `google`) and `/news` (default `bing`)
 - `donsetchTimeoutSeconds` / `donsetchMaxContentChars` / `donsetchTier` — bounded host-runner timeout, extraction content, and browser tier (`auto`, `1`, or `2`)
 - `extractAllowPrivateUrls` — opt-in: allow extraction of private/internal URLs (trusted intranets only)
 - `extractCharLimit` — per-result inline character budget applied after aggregate prefix allocation and before head/tail truncation (default 15000)
@@ -210,7 +214,7 @@ Classes:
 
 Default search priority is You.com, Serper, Exa, Firecrawl, Tavily, Linkup, Brave, Parallel, SerpBase, Querit, SearXNG, then Keenable. Configured Parallel and Brave are in the normal automatic pool; operators can still opt either out with `auto_allow=false`.
 
-Guarded providers require `auto_allow=true` for automatic traffic: SerpBase, Querit, DonSeTch, Octen, and TinyFish. Explicit calls remain available when the provider is configured and enabled. This gate is operational policy, not a privacy or contractual guarantee.
+Guarded providers require `auto_allow=true` for automatic traffic: SerpBase, Querit, DonSeTch, Octen, TinyFish, and Search1API. Explicit calls remain available when the provider is configured and enabled. This gate is operational policy, not a privacy or contractual guarantee.
 
 Search `provider_priority` and extraction `extract_provider_priority` are independent. Partial extraction lists are completed in the public Tavily-first order, and can be updated with `web_routing_config_plus(action="set_extract_provider_priority", providers=[...])`.
 
@@ -227,7 +231,7 @@ Results from known SEO mirror/scraper domains (Stack Overflow clones, GitHub iss
 ### Freshness, news vertical, and locale
 
 - `freshness: day|week|month|year` maps to each provider's native recency filter; providers without one run normally and report `freshness.applied=false` in metadata. Exa translates the unified value into absolute UTC `startPublishedDate`/`endPublishedDate` bounds for `/search` and reports the effective range.
-- `search_type: news` uses Serper's native `/news` endpoint (with date, source, thumbnail, and position metadata); other providers report `search_type.applied=false`.
+- `search_type: news` uses Serper's native `/news` endpoint (with date, source, thumbnail, and position metadata), TinyFish's `domain_type=news`, or Search1API's `/news` endpoint; other providers report `search_type.applied=false`.
 - `localeCountry`/`localeLanguage` set default region and language for the locale-capable providers, with query-aware language inference when `localeLanguage: "auto"`. The resolved locale and its per-value source are reported in `metadata.locale`.
 
 ### Canonical-source reranking
