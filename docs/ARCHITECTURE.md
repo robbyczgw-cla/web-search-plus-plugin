@@ -29,7 +29,7 @@ Together they cover:
 - Provider health and cooldown state management
 - SearXNG SSRF validation using `dns/promises` and `net`
 - Query analysis and auto-routing heuristics
-- Provider-specific request/response adapters, including static Octen and TinyFish modules
+- Provider-specific request/response adapters, including static Octen, TinyFish, and Search1API modules
 - DonSeTch stdio MCP framing over the injected OpenClaw command runner
 - Retry + fallback logic
 - Cross-provider deduplication
@@ -58,7 +58,7 @@ This keeps credential access explicit and avoids mixing plugin runtime behavior 
 
 ### 3. Provider I/O
 
-Hosted provider calls use native `fetch()` from Node.js. Octen and TinyFish additionally use a fixed-origin, redirect-refusing, response-bounded helper so credentials cannot follow redirects and untrusted bodies cannot grow without limit.
+Hosted provider calls use native `fetch()` from Node.js. Octen, TinyFish, and Search1API additionally use a fixed-origin, redirect-refusing, response-bounded helper so credentials cannot follow redirects and untrusted bodies cannot grow without limit.
 
 Shared request behavior includes:
 - JSON request/response handling
@@ -148,7 +148,7 @@ Each adapter is responsible for:
 - response parsing
 - normalization into a shared output schema
 
-Exa provides source-only neural `/search` and translates unified freshness into absolute UTC publication bounds. Parallel uses stable `/v1/search`, defaults to mode `fast`, and is auto-allowed when configured. Octen and TinyFish are source-only Search providers guarded by default. DonSeTch is a separately installed Search/Markdown-Extract provider guarded by default; its adapter owns MCP framing and normalization while OpenClaw owns process execution.
+Exa provides source-only neural `/search` and translates unified freshness into absolute UTC publication bounds. Parallel uses stable `/v1/search`, defaults to mode `fast`, and is auto-allowed when configured. Octen and TinyFish are source-only Search providers guarded by default. Search1API is a source-only Search/Markdown-Extract provider guarded by default; `search_type="news"` maps to its `/news` endpoint and extraction maps to `/crawl`. DonSeTch is a separately installed Search/Markdown-Extract provider guarded by default; its adapter owns MCP framing and normalization while OpenClaw owns process execution.
 
 ### 9. Retry / Fallback
 
@@ -189,7 +189,7 @@ The registered tool currently supports:
 | Parameter | Type | Notes |
 |-----------|------|-------|
 | `query` | string | Required search query |
-| `provider` | string | `serper`, `brave`, `tavily`, `linkup`, `querit`, `exa`, `firecrawl`, `parallel`, `serpbase`, `you`, `searxng`, `keenable`, `octen`, `tinyfish`, `donsetch`, or `auto` |
+| `provider` | string | `serper`, `brave`, `tavily`, `linkup`, `querit`, `exa`, `firecrawl`, `parallel`, `serpbase`, `you`, `searxng`, `keenable`, `octen`, `tinyfish`, `search1api`, `donsetch`, or `auto` |
 | `count` | number | Result count, clamped to safe limits |
 | `time_range` | string | `day`, `week`, `month`, `year` where supported |
 | `include_domains` | string[] | Provider-specific domain allowlist |
@@ -226,6 +226,7 @@ web-search-plus-plugin/
 ├── provider-http.ts         # Fixed-origin bounded hosted-provider HTTP
 ├── octen-provider.ts        # Octen via Monid source Search
 ├── tinyfish-provider.ts     # TinyFish source Search + privacy metadata
+├── search1api-provider.ts   # Search1API source Search + Markdown Extract
 ├── donsetch-provider.ts     # DonSeTch source Search/Markdown Extract adapter
 ├── donsetch-transport.ts    # Stdio MCP over OpenClaw host command runner
 ├── quality.ts               # Canonical-source rerank + authority signals

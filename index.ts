@@ -17,6 +17,7 @@ import { saveExtractBenchmark } from "./extract-benchmark.ts";
 import { ProviderConfigError, ProviderRequestError } from "./provider-http.ts";
 import { searchOcten } from "./octen-provider.ts";
 import { searchTinyFish } from "./tinyfish-provider.ts";
+import { searchSearch1Api } from "./search1api-provider.ts";
 import { searchDonsetch } from "./donsetch-provider.ts";
 import { inspectDonsetchReadiness } from "./donsetch-transport.ts";
 import { validateSourceOnlyAdapterResult, validateSourceOnlyOutboundRequest } from "./source-only-gate.ts";
@@ -428,6 +429,7 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     donsetch: runtimeConfig.donsetchBin,
     octen: runtimeConfig.monidApiKey,
     tinyfish: runtimeConfig.tinyfishApiKey,
+    search1api: runtimeConfig.search1apiApiKey,
   };
   return keyMap[provider];
 }
@@ -450,6 +452,7 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
     if (provider === "donsetch") throw new ProviderConfigError("Missing DonSeTch executable path (pluginConfig.donsetchBin)");
     if (provider === "octen") throw new ProviderConfigError("Missing Monid API key for Octen (pluginConfig.monidApiKey)");
     if (provider === "tinyfish") throw new ProviderConfigError("Missing TinyFish API key (pluginConfig.tinyfishApiKey)");
+    if (provider === "search1api") throw new ProviderConfigError("Missing Search1API key (pluginConfig.search1apiApiKey)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -494,6 +497,8 @@ export const PROVIDER_FRESHNESS_FORMATS: Record<string, Record<string, string>> 
   // Octen and TinyFish expose native recency controls in their source APIs.
   octen: { day: "day", week: "week", month: "month", year: "year" },
   tinyfish: { day: "day", week: "week", month: "month", year: "year" },
+  // Search1API: body.time_range accepts the unified values directly.
+  search1api: { day: "day", week: "week", month: "month", year: "year" },
   // searchYou: freshness query param (native values match the unified ones)
   you: { day: "day", week: "week", month: "month", year: "year" },
   // searchSearxng: time_range query param
@@ -535,6 +540,8 @@ export const PROVIDER_SEARCH_TYPES: Record<string, Record<string, string>> = {
   serper: { search: "search", news: "news" },
   // TinyFish: domain_type query parameter.
   tinyfish: { search: "web", news: "news" },
+  // Search1API: endpoint path api.search1api.com/<search|news>.
+  search1api: { search: "search", news: "news" },
 };
 
 export function normalizeSearchType(value?: string | null): string | null {
@@ -1426,6 +1433,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         if (p === "keenable") return searchKeenable(query, key || undefined, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
         if (p === "octen") return searchOcten(query, key, count, { freshness: freshness || undefined, timeRange, searchType: searchType === "news" ? "news" : "search", includeDomains, excludeDomains, timeoutSeconds: runtimeConfig.octenTimeoutSeconds });
         if (p === "tinyfish") return searchTinyFish(query, key, count, { freshness: freshness || undefined, timeRange, searchType: searchType || "search", includeDomains, excludeDomains, country: locale?.country, language: locale?.language, timeoutSeconds: runtimeConfig.tinyfishTimeoutSeconds }) as Promise<SearchResponse>;
+        if (p === "search1api") return searchSearch1Api(query, key, count, { freshness: freshness || undefined, timeRange, searchType: searchType || "search", includeDomains, excludeDomains, searchService: runtimeConfig.search1apiSearchService, newsService: runtimeConfig.search1apiNewsService, timeoutSeconds: runtimeConfig.search1apiTimeoutSeconds }) as Promise<SearchResponse>;
         if (p === "donsetch") {
           if (!runtimeConfig.runCommandWithTimeout) throw new ProviderConfigError("donsetch_openclaw_runner_unavailable");
           return searchDonsetch(runtimeConfig.runCommandWithTimeout, {

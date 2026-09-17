@@ -141,6 +141,24 @@ var openclaw_plugin_default = {
         maximum: 120,
         description: "TinyFish request timeout in seconds (default 30)."
       },
+      search1apiApiKey: {
+        type: "string",
+        description: "Search1API key for explicit-only source search, news, and page extraction. One key serves both the search and extract pools."
+      },
+      search1apiTimeoutSeconds: {
+        type: "integer",
+        minimum: 1,
+        maximum: 120,
+        description: "Search1API request timeout in seconds (default 30)."
+      },
+      search1apiSearchService: {
+        type: "string",
+        description: "Optional Search1API search_service override for /search (default google; e.g. bing, duckduckgo, yahoo, github, arxiv, wikipedia)."
+      },
+      search1apiNewsService: {
+        type: "string",
+        description: "Optional Search1API search_service override for /news (default bing; e.g. google, duckduckgo, yahoo, hackernews, reuters)."
+      },
       donsetchBin: {
         type: "string",
         description: "Absolute path to a separately installed DonSeTch executable. The plugin does not bundle DonSeTch or invoke a shell."
@@ -347,6 +365,27 @@ var openclaw_plugin_default = {
       placeholder: "30",
       sensitive: false
     },
+    search1apiApiKey: {
+      label: "Search1API Key",
+      placeholder: "...",
+      description: "Explicit-only BYOK provider covering search, news, and extraction.",
+      sensitive: true
+    },
+    search1apiTimeoutSeconds: {
+      label: "Search1API timeout seconds",
+      placeholder: "30",
+      sensitive: false
+    },
+    search1apiSearchService: {
+      label: "Search1API search service",
+      placeholder: "google",
+      sensitive: false
+    },
+    search1apiNewsService: {
+      label: "Search1API news service",
+      placeholder: "bing",
+      sensitive: false
+    },
     donsetchBin: {
       label: "DonSeTch executable",
       placeholder: "/absolute/path/to/donsetch",
@@ -467,6 +506,10 @@ function getRuntimeConfig(pluginConfig, runCommandWithTimeout) {
     octenTimeoutSeconds: maybeBoundedInt(pluginConfig?.octenTimeoutSeconds, 1, 120),
     tinyfishApiKey: maybeString(pluginConfig?.tinyfishApiKey),
     tinyfishTimeoutSeconds: maybeBoundedInt(pluginConfig?.tinyfishTimeoutSeconds, 1, 120),
+    search1apiApiKey: maybeString(pluginConfig?.search1apiApiKey),
+    search1apiTimeoutSeconds: maybeBoundedInt(pluginConfig?.search1apiTimeoutSeconds, 1, 120),
+    search1apiSearchService: maybeString(pluginConfig?.search1apiSearchService),
+    search1apiNewsService: maybeString(pluginConfig?.search1apiNewsService),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : void 0,
     keenableApiKey: maybeString(pluginConfig?.keenableApiKey),
@@ -513,10 +556,10 @@ function maybeBoundedInt(value, minimum, maximum) {
 }
 
 // routing-config.ts
-var ALL_PROVIDER_NAMES = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "you", "searxng", "parallel", "serpbase", "keenable", "donsetch", "octen", "tinyfish"];
+var ALL_PROVIDER_NAMES = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "you", "searxng", "parallel", "serpbase", "keenable", "donsetch", "octen", "tinyfish", "search1api"];
 var DEFAULT_PROVIDER_PRIORITY = ["you", "serper", "exa", "firecrawl", "tavily", "linkup", "brave", "parallel", "serpbase", "querit", "searxng", "keenable"];
-var DEFAULT_EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch"];
-var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "donsetch", "octen", "tinyfish"];
+var DEFAULT_EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch", "search1api"];
+var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "donsetch", "octen", "tinyfish", "search1api"];
 var DEFAULT_ROUTING_PREFERENCES = {
   version: 2,
   profile: "standard",
@@ -1409,6 +1452,372 @@ async function extractDonsetch(runCommandWithTimeout, request) {
   };
 }
 
+// provider-http.ts
+var ProviderConfigError = class extends Error {
+  code;
+  constructor(code) {
+    super(code);
+    this.name = "ProviderConfigError";
+    this.code = code;
+  }
+};
+var ProviderRequestError = class extends Error {
+  code;
+  statusCode;
+  transient;
+  retryAfter;
+  constructor(code, options = {}) {
+    super(code);
+    this.name = "ProviderRequestError";
+    this.code = code;
+    this.statusCode = options.statusCode;
+    this.transient = options.transient === true;
+    this.retryAfter = options.retryAfter;
+  }
+};
+function boundedTimeoutSeconds(value, fallback, errorCode) {
+  const parsed = value == null ? fallback : Number(value);
+  if (!Number.isFinite(parsed)) throw new ProviderConfigError(errorCode);
+  const bounded = Math.floor(parsed);
+  if (bounded < 1 || bounded > 120) throw new ProviderConfigError(errorCode);
+  return bounded;
+}
+function parseFiniteRetryAfter(value) {
+  if (value == null || !value.trim()) return void 0;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : void 0;
+}
+async function discardBody(response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+  }
+}
+async function readBoundedBytes(response, maxResponseBytes, errorPrefix) {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) {
+    await discardBody(response);
+    throw new ProviderRequestError(`${errorPrefix}_response_too_large`, { transient: true });
+  }
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxResponseBytes) {
+      throw new ProviderRequestError(`${errorPrefix}_response_too_large`, { transient: true });
+    }
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxResponseBytes) {
+        try {
+          await reader.cancel();
+        } catch {
+        }
+        throw new ProviderRequestError(`${errorPrefix}_response_too_large`, { transient: true });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const output = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+async function requestBoundedJson(url, init, options) {
+  const timeoutSeconds = boundedTimeoutSeconds(
+    options.timeoutSeconds,
+    30,
+    `${options.errorPrefix}_timeout_invalid`
+  );
+  const maxResponseBytes = Math.floor(Number(options.maxResponseBytes));
+  if (!Number.isFinite(maxResponseBytes) || maxResponseBytes < 1) {
+    throw new ProviderConfigError(`${options.errorPrefix}_response_limit_invalid`);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1e3);
+  timer.unref?.();
+  try {
+    const response = await fetch(url, {
+      ...init,
+      redirect: "error",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const statusCode = response.status;
+      const retryAfter = statusCode === 429 ? parseFiniteRetryAfter(response.headers.get("retry-after")) : void 0;
+      await discardBody(response);
+      throw new ProviderRequestError(`${options.errorPrefix}_http_${statusCode}`, {
+        statusCode,
+        transient: options.transientStatuses?.has(statusCode) === true,
+        retryAfter
+      });
+    }
+    const bytes = await readBoundedBytes(response, maxResponseBytes, options.errorPrefix);
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      return JSON.parse(text);
+    } catch {
+      throw new ProviderRequestError(`${options.errorPrefix}_invalid_response`, { transient: true });
+    }
+  } catch (error) {
+    if (error instanceof ProviderConfigError || error instanceof ProviderRequestError) throw error;
+    throw new ProviderRequestError(`${options.errorPrefix}_unavailable`, { transient: true });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// search1api-provider.ts
+var SEARCH1API_PROVIDER_METADATA = Object.freeze({
+  id: "search1api",
+  kind: "both",
+  envVar: "SEARCH1API_KEY",
+  displayName: "Search1API",
+  description: "Direct source-only Search1API web/news search and page extraction using your own account/API key. The plugin does not provide, pool, proxy, or share Search1API credentials. search_type=news is served by the /news endpoint; extraction uses /crawl and returns Markdown text only, so html/raw-html/render-js flags have no upstream effect. Review https://blog.s1.dev/pages/terms and https://s1.dev/privacy before use. Explicit-only by default.",
+  capabilityLabels: Object.freeze(["search", "news", "extract", "freshness"]),
+  upstreamCapabilities: Object.freeze([
+    "search",
+    "news",
+    "extract",
+    "freshness",
+    "domain-filtering"
+  ]),
+  autoAllowedByDefault: false,
+  explicitOnly: true,
+  recommended: false,
+  supportsFreshness: true,
+  freeTier: "Free plan: 100 credits; 1 credit per search/news/crawl call",
+  signupUrl: "https://s1.dev",
+  termsUrl: "https://blog.s1.dev/pages/terms",
+  privacyPolicyUrl: "https://s1.dev/privacy"
+});
+var API_BASE = "https://api.search1api.com";
+var MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+var MAX_QUERY_CHARS = 2e3;
+var MAX_URL_CHARS2 = 8192;
+var MAX_TITLE_CHARS2 = 1e3;
+var MAX_SNIPPET_CHARS2 = 8e3;
+var MAX_EXTRACT_CONTENT_CHARS = 256e3;
+var MAX_COUNT = 50;
+var TRANSIENT_STATUSES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
+var FRESHNESS_VALUES = /* @__PURE__ */ new Set(["day", "week", "month", "year"]);
+var SEARCH_SERVICES = /* @__PURE__ */ new Set([
+  "google",
+  "bing",
+  "bingcn",
+  "duckduckgo",
+  "yahoo",
+  "youtube",
+  "x",
+  "reddit",
+  "github",
+  "arxiv",
+  "wechat",
+  "bilibili",
+  "imdb",
+  "wikipedia",
+  "baidu",
+  "360",
+  "quark"
+]);
+var NEWS_SERVICES = /* @__PURE__ */ new Set([
+  "google",
+  "bing",
+  "duckduckgo",
+  "yahoo",
+  "hackernews",
+  "reuters"
+]);
+var DEFAULT_SEARCH_SERVICE = "google";
+var DEFAULT_NEWS_SERVICE = "bing";
+function boundedString2(value, limit) {
+  return typeof value === "string" ? value.trim().slice(0, limit) : "";
+}
+function cleanDomains2(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+}
+function safeUrl(value) {
+  const url = boundedString2(value, MAX_URL_CHARS2);
+  if (!url || !url.startsWith("http") || /\s/.test(url)) return "";
+  if (!url.startsWith("https://") && !url.startsWith("http://")) return "";
+  return url;
+}
+function boundedResultCount(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new ProviderConfigError("search1api_max_results_invalid");
+  return Math.max(1, Math.min(Math.trunc(parsed), MAX_COUNT));
+}
+function serviceValue(value, allowed, fallback, field) {
+  if (value == null) return fallback;
+  if (typeof value !== "string") throw new ProviderConfigError(`search1api_${field}_invalid`);
+  const normalized = value.trim().toLowerCase();
+  if (!allowed.has(normalized)) throw new ProviderConfigError(`search1api_${field}_invalid`);
+  return normalized;
+}
+async function postJson(path2, body, apiKey, timeoutSeconds) {
+  let payload;
+  try {
+    payload = await requestBoundedJson(`${API_BASE}${path2}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(body)
+    }, {
+      timeoutSeconds,
+      maxResponseBytes: MAX_RESPONSE_BYTES,
+      errorPrefix: "search1api",
+      transientStatuses: TRANSIENT_STATUSES
+    });
+  } catch (error) {
+    if (error instanceof ProviderRequestError && (error.statusCode === 401 || error.statusCode === 403)) {
+      throw new ProviderConfigError("search1api_key_rejected");
+    }
+    throw error;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new ProviderRequestError("search1api_invalid_response", { transient: true });
+  }
+  return payload;
+}
+async function searchSearch1Api(query, apiKey, maxResults, options = {}) {
+  if (typeof apiKey !== "string" || !apiKey.trim()) {
+    throw new ProviderConfigError("search1api_key_required");
+  }
+  const normalizedQuery = boundedString2(query, MAX_QUERY_CHARS);
+  if (!normalizedQuery) throw new ProviderConfigError("search1api_query_invalid");
+  const count = boundedResultCount(maxResults);
+  const news = options.searchType === "news";
+  const service = serviceValue(
+    news ? options.newsService : options.searchService,
+    news ? NEWS_SERVICES : SEARCH_SERVICES,
+    news ? DEFAULT_NEWS_SERVICE : DEFAULT_SEARCH_SERVICE,
+    news ? "news_service" : "search_service"
+  );
+  const body = {
+    query: normalizedQuery,
+    max_results: count,
+    search_service: service,
+    // Source-only contract: snippets stay attached to their links; inline page
+    // crawling stays off so /search never returns expanded content.
+    crawl_results: 0
+  };
+  const includeDomains = cleanDomains2(options.includeDomains);
+  const excludeDomains = cleanDomains2(options.excludeDomains);
+  if (includeDomains.length) body.include_sites = includeDomains;
+  if (excludeDomains.length) body.exclude_sites = excludeDomains;
+  const freshness = FRESHNESS_VALUES.has(String(options.freshness || "")) ? options.freshness : options.timeRange;
+  if (FRESHNESS_VALUES.has(String(freshness || ""))) body.time_range = freshness;
+  const payload = await postJson(
+    news ? "/news" : "/search",
+    body,
+    apiKey.trim(),
+    boundedTimeoutSeconds(options.timeoutSeconds, 30, "search1api_timeout_invalid")
+  );
+  if (!Array.isArray(payload.results)) {
+    throw new ProviderRequestError("search1api_invalid_response", { transient: true });
+  }
+  const results = [];
+  for (const item of payload.results.slice(0, count)) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const url = safeUrl(item.link || item.url);
+    if (!url) continue;
+    const result = {
+      url,
+      title: boundedString2(item.title, MAX_TITLE_CHARS2),
+      snippet: boundedString2(item.snippet, MAX_SNIPPET_CHARS2)
+    };
+    for (const field of ["date", "source"]) {
+      const value = boundedString2(item[field], 1e3);
+      if (value) result[field] = value;
+    }
+    results.push(result);
+  }
+  return {
+    provider: "search1api",
+    query: normalizedQuery,
+    results,
+    images: [],
+    metadata: { endpoint: news ? "news" : "search", service }
+  };
+}
+async function extractSearch1Api(urls, apiKey, options = {}) {
+  if (typeof apiKey !== "string" || !apiKey.trim()) {
+    throw new ProviderConfigError("search1api_key_required");
+  }
+  const timeoutSeconds = boundedTimeoutSeconds(
+    options.timeoutSeconds,
+    30,
+    "search1api_timeout_invalid"
+  );
+  const results = [];
+  for (const requestedUrl of urls) {
+    const url = safeUrl(requestedUrl);
+    const failed = (code) => ({
+      url: url || boundedString2(requestedUrl, MAX_URL_CHARS2),
+      title: "",
+      content: "",
+      raw_content: "",
+      provider: "search1api",
+      error: code
+    });
+    if (!url) {
+      results.push(failed("search1api_url_invalid"));
+      continue;
+    }
+    let payload;
+    try {
+      payload = await postJson("/crawl", { url }, apiKey.trim(), timeoutSeconds);
+    } catch (error) {
+      if (error instanceof ProviderConfigError) throw error;
+      if (error instanceof ProviderRequestError) {
+        results.push(failed(error.code || "search1api_crawl_failed"));
+        if (error.transient) break;
+        continue;
+      }
+      throw error;
+    }
+    const upstream = payload.results;
+    if (!upstream || typeof upstream !== "object" || Array.isArray(upstream)) {
+      results.push(failed("search1api_invalid_response"));
+      continue;
+    }
+    const content = boundedString2(upstream.content, MAX_EXTRACT_CONTENT_CHARS);
+    if (!content) {
+      results.push(failed("search1api_empty_content"));
+      continue;
+    }
+    const result = {
+      url: safeUrl(upstream.link) || url,
+      title: boundedString2(upstream.title, MAX_TITLE_CHARS2),
+      content,
+      raw_content: content,
+      provider: "search1api",
+      metadata: { fetcher: "search1api", source_type: "web" }
+    };
+    if (options.includeRawHtml === true) {
+      result.raw_error = "search1api_raw_html_unsupported";
+    }
+    results.push(result);
+  }
+  return { provider: "search1api", results };
+}
+
 // budget-preflight.ts
 var MAX_RESEARCH_FANOUT = 3;
 var MAX_EXTRACT_DEADLINE_SECONDS = 180;
@@ -1536,12 +1945,12 @@ var EXTRACT_PARAMETERS_SCHEMA = {
     raw_content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a distinct provider raw text (maximum range 60000)." },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch", "search1api"],
       description: "Try this provider first with extraction fallback, or use auto priority (default: auto). Use routing_override_provider for a strict single-provider call."
     },
     routing_override_provider: {
       type: "string",
-      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch"],
+      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch", "search1api"],
       description: "Disable automatic extraction routing and force this provider for this request. Reported visibly in routing.override_provider."
     },
     format: {
@@ -1645,7 +2054,8 @@ function getExtractApiKey(provider, runtimeConfig) {
     parallel: runtimeConfig.parallelApiKey,
     keenable: runtimeConfig.keenableApiKey,
     serper: runtimeConfig.serperApiKey,
-    donsetch: runtimeConfig.donsetchBin
+    donsetch: runtimeConfig.donsetchBin,
+    search1api: runtimeConfig.search1apiApiKey
   };
   return keyMap[provider];
 }
@@ -2190,6 +2600,12 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           timeoutSeconds: runtimeConfig.donsetchTimeoutSeconds,
           maxContentChars: runtimeConfig.donsetchMaxContentChars,
           tier: String(runtimeConfig.donsetchTier ?? "auto")
+        });
+      } else if (currentProvider === "search1api") {
+        result = await extractSearch1Api(cleanedUrls, providerCredential, {
+          outputFormat,
+          includeRawHtml,
+          timeoutSeconds: runtimeConfig.search1apiTimeoutSeconds
         });
       } else {
         result = await extractYou(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
@@ -3465,138 +3881,11 @@ function saveExtractBenchmark(result) {
   latest = structuredClone(result);
 }
 
-// provider-http.ts
-var ProviderConfigError = class extends Error {
-  code;
-  constructor(code) {
-    super(code);
-    this.name = "ProviderConfigError";
-    this.code = code;
-  }
-};
-var ProviderRequestError = class extends Error {
-  code;
-  statusCode;
-  transient;
-  retryAfter;
-  constructor(code, options = {}) {
-    super(code);
-    this.name = "ProviderRequestError";
-    this.code = code;
-    this.statusCode = options.statusCode;
-    this.transient = options.transient === true;
-    this.retryAfter = options.retryAfter;
-  }
-};
-function boundedTimeoutSeconds(value, fallback, errorCode) {
-  const parsed = value == null ? fallback : Number(value);
-  if (!Number.isFinite(parsed)) throw new ProviderConfigError(errorCode);
-  const bounded = Math.floor(parsed);
-  if (bounded < 1 || bounded > 120) throw new ProviderConfigError(errorCode);
-  return bounded;
-}
-function parseFiniteRetryAfter(value) {
-  if (value == null || !value.trim()) return void 0;
-  const parsed = Number(value.trim());
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : void 0;
-}
-async function discardBody(response) {
-  try {
-    await response.body?.cancel();
-  } catch {
-  }
-}
-async function readBoundedBytes(response, maxResponseBytes, errorPrefix) {
-  const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) {
-    await discardBody(response);
-    throw new ProviderRequestError(`${errorPrefix}_response_too_large`, { transient: true });
-  }
-  if (!response.body) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > maxResponseBytes) {
-      throw new ProviderRequestError(`${errorPrefix}_response_too_large`, { transient: true });
-    }
-    return bytes;
-  }
-  const reader = response.body.getReader();
-  const chunks = [];
-  let totalBytes = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      totalBytes += value.byteLength;
-      if (totalBytes > maxResponseBytes) {
-        try {
-          await reader.cancel();
-        } catch {
-        }
-        throw new ProviderRequestError(`${errorPrefix}_response_too_large`, { transient: true });
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const output = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return output;
-}
-async function requestBoundedJson(url, init, options) {
-  const timeoutSeconds = boundedTimeoutSeconds(
-    options.timeoutSeconds,
-    30,
-    `${options.errorPrefix}_timeout_invalid`
-  );
-  const maxResponseBytes = Math.floor(Number(options.maxResponseBytes));
-  if (!Number.isFinite(maxResponseBytes) || maxResponseBytes < 1) {
-    throw new ProviderConfigError(`${options.errorPrefix}_response_limit_invalid`);
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1e3);
-  timer.unref?.();
-  try {
-    const response = await fetch(url, {
-      ...init,
-      redirect: "error",
-      signal: controller.signal
-    });
-    if (!response.ok) {
-      const statusCode = response.status;
-      const retryAfter = statusCode === 429 ? parseFiniteRetryAfter(response.headers.get("retry-after")) : void 0;
-      await discardBody(response);
-      throw new ProviderRequestError(`${options.errorPrefix}_http_${statusCode}`, {
-        statusCode,
-        transient: options.transientStatuses?.has(statusCode) === true,
-        retryAfter
-      });
-    }
-    const bytes = await readBoundedBytes(response, maxResponseBytes, options.errorPrefix);
-    try {
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      return JSON.parse(text);
-    } catch {
-      throw new ProviderRequestError(`${options.errorPrefix}_invalid_response`, { transient: true });
-    }
-  } catch (error) {
-    if (error instanceof ProviderConfigError || error instanceof ProviderRequestError) throw error;
-    throw new ProviderRequestError(`${options.errorPrefix}_unavailable`, { transient: true });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 // octen-provider.ts
 var OCTEN_API_URL = "https://api.monid.ai/v1/run";
 var OCTEN_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 var OCTEN_TRANSIENT_STATUSES = /* @__PURE__ */ new Set([429, 500, 502, 503, 504]);
-var FRESHNESS_VALUES = /* @__PURE__ */ new Set(["day", "week", "month", "year"]);
+var FRESHNESS_VALUES2 = /* @__PURE__ */ new Set(["day", "week", "month", "year"]);
 var OCTEN_PROVIDER_METADATA = Object.freeze({
   id: "octen",
   displayName: "Octen via Monid",
@@ -3606,7 +3895,7 @@ var OCTEN_PROVIDER_METADATA = Object.freeze({
   freeTier: "No free-tier claim; Monid API key and wallet balance required",
   signupUrl: "https://app.monid.ai/access/api-keys"
 });
-function cleanDomains2(value) {
+function cleanDomains3(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean);
 }
@@ -3685,12 +3974,12 @@ async function searchOcten(query, apiKey, maxResults, options = {}) {
     full_content: { enable: false },
     format: "text"
   };
-  const includeDomains = cleanDomains2(options.includeDomains);
-  const excludeDomains = cleanDomains2(options.excludeDomains);
+  const includeDomains = cleanDomains3(options.includeDomains);
+  const excludeDomains = cleanDomains3(options.excludeDomains);
   if (includeDomains.length) input.include_domains = includeDomains;
   if (excludeDomains.length) input.exclude_domains = excludeDomains;
-  const freshness = FRESHNESS_VALUES.has(String(options.freshness || "")) ? options.freshness : options.timeRange;
-  if (FRESHNESS_VALUES.has(String(freshness || ""))) input.time_range = freshness;
+  const freshness = FRESHNESS_VALUES2.has(String(options.freshness || "")) ? options.freshness : options.timeRange;
+  if (FRESHNESS_VALUES2.has(String(freshness || ""))) input.time_range = freshness;
   const envelope = await requestBoundedJson(OCTEN_API_URL, {
     method: "POST",
     headers: {
@@ -3791,16 +4080,16 @@ var TINYFISH_PROVIDER_METADATA = Object.freeze({
   privacyPolicyUrl: "https://www.tinyfish.ai/privacy-policy"
 });
 var API_URL = "https://api.search.tinyfish.ai/";
-var MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-var MAX_QUERY_CHARS = 2e3;
+var MAX_RESPONSE_BYTES2 = 2 * 1024 * 1024;
+var MAX_QUERY_CHARS2 = 2e3;
 var MAX_DOMAIN_COUNT = 20;
 var MAX_DOMAIN_CHARS = 253;
 var MAX_DOMAIN_LIST_CHARS = 2048;
 var MAX_REQUEST_URL_CHARS = 8192;
-var MAX_URL_CHARS2 = 8192;
-var MAX_TITLE_CHARS2 = 1e3;
-var MAX_SNIPPET_CHARS2 = 8e3;
-var TRANSIENT_STATUSES = /* @__PURE__ */ new Set([429, 500, 503]);
+var MAX_URL_CHARS3 = 8192;
+var MAX_TITLE_CHARS3 = 1e3;
+var MAX_SNIPPET_CHARS3 = 8e3;
+var TRANSIENT_STATUSES2 = /* @__PURE__ */ new Set([429, 500, 503]);
 var FRESHNESS_MINUTES = Object.freeze({
   day: 24 * 60,
   week: 7 * 24 * 60,
@@ -3828,7 +4117,7 @@ function canonicalHostname(hostname) {
   if (!canonical || canonical.length > MAX_DOMAIN_CHARS || labels.length < 2 || labels.some((label) => !DOMAIN_LABEL.test(label))) return "";
   return canonical;
 }
-function cleanDomains3(value) {
+function cleanDomains4(value) {
   if (!Array.isArray(value)) return [];
   if (value.length > MAX_DOMAIN_COUNT) throw new ProviderConfigError("tinyfish_domains_invalid");
   const rawItems = [];
@@ -3880,8 +4169,8 @@ function rawHostname(authority) {
   }
   return authority.slice(0, firstColon);
 }
-function safeUrl(value) {
-  if (typeof value !== "string" || !value || codePointLength2(value) > MAX_URL_CHARS2 || hasWhitespaceOrOther(value)) return "";
+function safeUrl2(value) {
+  if (typeof value !== "string" || !value || codePointLength2(value) > MAX_URL_CHARS3 || hasWhitespaceOrOther(value)) return "";
   const authority = rawAuthority(value);
   const canonical = canonicalHostname(rawHostname(authority));
   if (!canonical) return "";
@@ -3893,7 +4182,7 @@ function safeUrl(value) {
   }
   return value;
 }
-function boundedString2(value, limit) {
+function boundedString3(value, limit) {
   if (typeof value !== "string") return "";
   const cleaned = codePoints(value).filter((character) => character === " " || character === "\n" || character === "	" || !OTHER_CHARACTER.test(character) && !WHITE_SPACE.test(character)).join("").trim();
   return codePoints(cleaned).slice(0, limit).join("");
@@ -3908,7 +4197,7 @@ function urlAllowedByDomains(url, includeDomains, excludeDomains) {
   if (!hostname || excludeDomains.some((domain) => domainMatches2(hostname, domain))) return false;
   return !includeDomains.length || includeDomains.some((domain) => domainMatches2(hostname, domain));
 }
-function boundedResultCount(value) {
+function boundedResultCount2(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new ProviderConfigError("tinyfish_max_results_invalid");
   }
@@ -3937,19 +4226,19 @@ function projectResults(rawResults, count, includeDomains, excludeDomains) {
     if (projected.length >= count) break;
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const source = item;
-    const url = safeUrl(source.url);
+    const url = safeUrl2(source.url);
     if (!url || !urlAllowedByDomains(url, includeDomains, excludeDomains)) continue;
     const result = {
       url,
-      title: boundedString2(source.title, MAX_TITLE_CHARS2),
-      snippet: boundedString2(source.snippet, MAX_SNIPPET_CHARS2)
+      title: boundedString3(source.title, MAX_TITLE_CHARS3),
+      snippet: boundedString3(source.snippet, MAX_SNIPPET_CHARS3)
     };
     for (const [field, value] of [
       ["date", source.date],
       ["source", source.site_name],
       ["author", source.publisher]
     ]) {
-      const projectedValue = boundedString2(value, 1e3);
+      const projectedValue = boundedString3(value, 1e3);
       if (projectedValue) result[field] = projectedValue;
     }
     if (Number.isInteger(source.position) && source.position >= 1) result.position = source.position;
@@ -3963,12 +4252,12 @@ async function searchTinyFish(query, apiKey, maxResults, options = {}) {
   }
   if (typeof query !== "string") throw new ProviderConfigError("tinyfish_query_invalid");
   const normalizedQuery = query.trim();
-  if (!normalizedQuery || codePointLength2(normalizedQuery) > MAX_QUERY_CHARS) {
+  if (!normalizedQuery || codePointLength2(normalizedQuery) > MAX_QUERY_CHARS2) {
     throw new ProviderConfigError("tinyfish_query_invalid");
   }
-  const count = boundedResultCount(maxResults);
-  const includeDomains = cleanDomains3(options.includeDomains);
-  const excludeDomains = cleanDomains3(options.excludeDomains);
+  const count = boundedResultCount2(maxResults);
+  const includeDomains = cleanDomains4(options.includeDomains);
+  const excludeDomains = cleanDomains4(options.excludeDomains);
   const timeoutSeconds = boundedTimeoutSeconds(
     options.timeoutSeconds,
     30,
@@ -3988,9 +4277,9 @@ async function searchTinyFish(query, apiKey, maxResults, options = {}) {
     redirect: "error"
   }, {
     timeoutSeconds,
-    maxResponseBytes: MAX_RESPONSE_BYTES,
+    maxResponseBytes: MAX_RESPONSE_BYTES2,
     errorPrefix: "tinyfish",
-    transientStatuses: TRANSIENT_STATUSES
+    transientStatuses: TRANSIENT_STATUSES2
   });
   if (!payload || typeof payload !== "object" || Array.isArray(payload) || !Array.isArray(payload.results)) {
     throw new ProviderRequestError("tinyfish_invalid_response", { transient: true });
@@ -4502,7 +4791,8 @@ function getApiKey(provider, runtimeConfig) {
     keenable: runtimeConfig.keenableApiKey,
     donsetch: runtimeConfig.donsetchBin,
     octen: runtimeConfig.monidApiKey,
-    tinyfish: runtimeConfig.tinyfishApiKey
+    tinyfish: runtimeConfig.tinyfishApiKey,
+    search1api: runtimeConfig.search1apiApiKey
   };
   return keyMap[provider];
 }
@@ -4521,6 +4811,7 @@ function validateApiKey(provider, runtimeConfig) {
     if (provider === "donsetch") throw new ProviderConfigError("Missing DonSeTch executable path (pluginConfig.donsetchBin)");
     if (provider === "octen") throw new ProviderConfigError("Missing Monid API key for Octen (pluginConfig.monidApiKey)");
     if (provider === "tinyfish") throw new ProviderConfigError("Missing TinyFish API key (pluginConfig.tinyfishApiKey)");
+    if (provider === "search1api") throw new ProviderConfigError("Missing Search1API key (pluginConfig.search1apiApiKey)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
@@ -4528,7 +4819,7 @@ function validateApiKey(provider, runtimeConfig) {
 function toTimeRange(value) {
   return value && ["hour", "day", "week", "month", "year"].includes(value) ? value : void 0;
 }
-var FRESHNESS_VALUES2 = ["day", "week", "month", "year"];
+var FRESHNESS_VALUES3 = ["day", "week", "month", "year"];
 var EXA_FRESHNESS_DAYS = { day: 1, week: 7, month: 30, year: 365 };
 function exaDateBounds(freshness, now = /* @__PURE__ */ new Date()) {
   if (!freshness || EXA_FRESHNESS_DAYS[freshness] == null) return {};
@@ -4553,6 +4844,8 @@ var PROVIDER_FRESHNESS_FORMATS = {
   // Octen and TinyFish expose native recency controls in their source APIs.
   octen: { day: "day", week: "week", month: "month", year: "year" },
   tinyfish: { day: "day", week: "week", month: "month", year: "year" },
+  // Search1API: body.time_range accepts the unified values directly.
+  search1api: { day: "day", week: "week", month: "month", year: "year" },
   // searchYou: freshness query param (native values match the unified ones)
   you: { day: "day", week: "week", month: "month", year: "year" },
   // searchSearxng: time_range query param
@@ -4562,8 +4855,8 @@ function normalizeFreshness(value) {
   if (value == null) return null;
   const normalized = String(value).trim().toLowerCase();
   if (!normalized) return null;
-  if (!FRESHNESS_VALUES2.includes(normalized)) {
-    throw new Error(`Invalid freshness value: ${JSON.stringify(value)}. Valid values: ${FRESHNESS_VALUES2.join(", ")}`);
+  if (!FRESHNESS_VALUES3.includes(normalized)) {
+    throw new Error(`Invalid freshness value: ${JSON.stringify(value)}. Valid values: ${FRESHNESS_VALUES3.join(", ")}`);
   }
   return normalized;
 }
@@ -4581,7 +4874,9 @@ var PROVIDER_SEARCH_TYPES = {
   // searchSerper: endpoint path https://google.serper.dev/<type>
   serper: { search: "search", news: "news" },
   // TinyFish: domain_type query parameter.
-  tinyfish: { search: "web", news: "news" }
+  tinyfish: { search: "web", news: "news" },
+  // Search1API: endpoint path api.search1api.com/<search|news>.
+  search1api: { search: "search", news: "news" }
 };
 function normalizeSearchType(value) {
   if (value == null) return null;
@@ -5655,6 +5950,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
         if (p === "keenable") return searchKeenable(query, key || void 0, count, timeRange, includeDomains, runtimeConfig.keenableAllowPublic === true);
         if (p === "octen") return searchOcten(query, key, count, { freshness: freshness || void 0, timeRange, searchType: searchType === "news" ? "news" : "search", includeDomains, excludeDomains, timeoutSeconds: runtimeConfig.octenTimeoutSeconds });
         if (p === "tinyfish") return searchTinyFish(query, key, count, { freshness: freshness || void 0, timeRange, searchType: searchType || "search", includeDomains, excludeDomains, country: locale?.country, language: locale?.language, timeoutSeconds: runtimeConfig.tinyfishTimeoutSeconds });
+        if (p === "search1api") return searchSearch1Api(query, key, count, { freshness: freshness || void 0, timeRange, searchType: searchType || "search", includeDomains, excludeDomains, searchService: runtimeConfig.search1apiSearchService, newsService: runtimeConfig.search1apiNewsService, timeoutSeconds: runtimeConfig.search1apiTimeoutSeconds });
         if (p === "donsetch") {
           if (!runtimeConfig.runCommandWithTimeout) throw new ProviderConfigError("donsetch_openclaw_runner_unavailable");
           return searchDonsetch(runtimeConfig.runCommandWithTimeout, {
@@ -6128,7 +6424,7 @@ var index_default = definePluginEntry({
 export {
   CANONICAL_DOMAIN_RULES,
   FAILURE_DECAY_SECONDS,
-  FRESHNESS_VALUES2 as FRESHNESS_VALUES,
+  FRESHNESS_VALUES3 as FRESHNESS_VALUES,
   MAX_RETRY_AFTER_WAIT_SECONDS,
   PROVIDER_FRESHNESS_FORMATS,
   PROVIDER_SEARCH_TYPES,

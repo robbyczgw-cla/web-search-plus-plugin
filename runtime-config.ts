@@ -17,6 +17,10 @@ export type RuntimeConfig = {
   octenTimeoutSeconds?: number;
   tinyfishApiKey?: string;
   tinyfishTimeoutSeconds?: number;
+  search1apiApiKey?: string;
+  search1apiTimeoutSeconds?: number;
+  search1apiSearchService?: string;
+  search1apiNewsService?: string;
   searxngInstanceUrl?: string;
   searxngAllowPrivate?: boolean;
   keenableApiKey?: string;
@@ -80,6 +84,10 @@ export function getRuntimeConfig(pluginConfig: Record<string, any>, runCommandWi
     octenTimeoutSeconds: maybeBoundedInt(pluginConfig?.octenTimeoutSeconds, 1, 120),
     tinyfishApiKey: maybeString(pluginConfig?.tinyfishApiKey),
     tinyfishTimeoutSeconds: maybeBoundedInt(pluginConfig?.tinyfishTimeoutSeconds, 1, 120),
+    search1apiApiKey: maybeString(pluginConfig?.search1apiApiKey),
+    search1apiTimeoutSeconds: maybeBoundedInt(pluginConfig?.search1apiTimeoutSeconds, 1, 120),
+    search1apiSearchService: maybeString(pluginConfig?.search1apiSearchService),
+    search1apiNewsService: maybeString(pluginConfig?.search1apiNewsService),
     searxngInstanceUrl: maybeString(pluginConfig?.searxngInstanceUrl),
     searxngAllowPrivate: pluginConfig?.searxngAllowPrivate === true ? true : undefined,
     keenableApiKey: maybeString(pluginConfig?.keenableApiKey),

@@ -20,7 +20,7 @@ test("onboarding CLI lists providers and presets", async () => {
   assert.match((byName.get("exa") as any).capability, /source-only/);
   assert.doesNotMatch((byName.get("exa") as any).capability, /deep-reasoning/);
   assert.deepEqual(
-    ["donsetch", "octen", "tinyfish"].map((name) => ({
+    ["donsetch", "octen", "tinyfish", "search1api"].map((name) => ({
       name,
       field: (byName.get(name) as any).field,
       guarded: (byName.get(name) as any).guarded,
@@ -29,6 +29,7 @@ test("onboarding CLI lists providers and presets", async () => {
       { name: "donsetch", field: "donsetchBin", guarded: true },
       { name: "octen", field: "monidApiKey", guarded: true },
       { name: "tinyfish", field: "tinyfishApiKey", guarded: true },
+      { name: "search1api", field: "search1apiApiKey", guarded: true },
     ],
   );
 

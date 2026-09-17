@@ -51,6 +51,7 @@ test("guarded providers default to auto_allow false but explicit validation acce
   assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.donsetch, false);
   assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.octen, false);
   assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.tinyfish, false);
+  assert.equal(DEFAULT_ROUTING_PREFERENCES.auto_allow.search1api, false);
   const config = validateRoutingPreferences({ provider_priority: ["parallel", "serpbase"], auto_allow: { parallel: true } });
   assert.equal(config.auto_allow.parallel, true);
   assert.equal(config.auto_allow.serpbase, false);
@@ -104,8 +105,8 @@ test("SerpBase search provider is explicit and normalized", async () => {
   });
 });
 
-test("extraction priority appends explicit-only DonSeTch after hosted fallbacks", () => {
-  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY, ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch"]);
+test("extraction priority appends explicit-only DonSeTch and Search1API after hosted fallbacks", () => {
+  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY, ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch", "search1api"]);
 });
 
 test("Parallel extraction provider is normalized", async () => {

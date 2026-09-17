@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Search1API as a BYOK, source-only Search and Extract provider with native news (`/news`), freshness (`time_range`), and domain filters (`include_sites`/`exclude_sites`). One `search1apiApiKey` serves both pools; extraction uses `/crawl` and returns Markdown text only, so html/raw-html/render-js flags have no upstream effect. It is explicit-only by default, sends credentials only to the fixed `api.search1api.com` origin, rejects redirects, bounds requests/responses, and stops a multi-URL extraction batch after a transient upstream failure instead of spending quota against an unhealthy endpoint. Optional `search1apiSearchService`/`search1apiNewsService` overrides are allowlist-validated.
+
 ## [4.0.3] - 2026-08-30
 
 Feature sync with Hermes Web Search Plus 3.3.0–4.0.3, adapted to OpenClaw's in-process plugin and host-runner boundaries.

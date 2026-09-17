@@ -5,6 +5,7 @@ import type { RuntimeConfig } from "./runtime-config.ts";
 import { DEFAULT_EXTRACT_PROVIDER_PRIORITY, type ExtractProviderName } from "./routing-config.ts";
 import { selectSpans, type SemanticSpan } from "./span-extraction.ts";
 import { extractDonsetch } from "./donsetch-provider.ts";
+import { extractSearch1Api } from "./search1api-provider.ts";
 import { preflightDeadline } from "./budget-preflight.ts";
 
 type Json = Record<string, any>;
@@ -210,12 +211,12 @@ export const EXTRACT_PARAMETERS_SCHEMA = {
     raw_content_end: { type: "integer", minimum: 0, description: "Exclusive Unicode codepoint offset for a distinct provider raw text (maximum range 60000)." },
     provider: {
       type: "string",
-      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch"],
+      enum: ["auto", "firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch", "search1api"],
       description: "Try this provider first with extraction fallback, or use auto priority (default: auto). Use routing_override_provider for a strict single-provider call.",
     },
     routing_override_provider: {
       type: "string",
-      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch"],
+      enum: ["firecrawl", "linkup", "tavily", "exa", "parallel", "you", "keenable", "serper", "donsetch", "search1api"],
       description: "Disable automatic extraction routing and force this provider for this request. Reported visibly in routing.override_provider.",
     },
     format: {
@@ -336,6 +337,7 @@ function getExtractApiKey(provider: ExtractProviderName, runtimeConfig: RuntimeC
     keenable: runtimeConfig.keenableApiKey,
     serper: runtimeConfig.serperApiKey,
     donsetch: runtimeConfig.donsetchBin,
+    search1api: runtimeConfig.search1apiApiKey,
   };
   return keyMap[provider];
 }
@@ -1059,6 +1061,12 @@ export async function extractPlus(
           timeoutSeconds: runtimeConfig.donsetchTimeoutSeconds,
           maxContentChars: runtimeConfig.donsetchMaxContentChars,
           tier: String(runtimeConfig.donsetchTier ?? "auto"),
+        });
+      } else if (currentProvider === "search1api") {
+        result = await extractSearch1Api(cleanedUrls as string[], providerCredential!, {
+          outputFormat,
+          includeRawHtml,
+          timeoutSeconds: runtimeConfig.search1apiTimeoutSeconds,
         });
       } else {
         result = await extractYou(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);

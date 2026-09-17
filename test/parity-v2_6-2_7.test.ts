@@ -18,7 +18,7 @@ test.beforeEach(() => {
 
 test("routing priorities match Hermes 4.0.3 and keep DonSeTch explicit-only", () => {
   assert.deepEqual(DEFAULT_PROVIDER_PRIORITY, ["you", "serper", "exa", "firecrawl", "tavily", "linkup", "brave", "parallel", "serpbase", "querit", "searxng", "keenable"]);
-  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY.slice(-3), ["keenable", "serper", "donsetch"]);
+  assert.deepEqual(EXTRACT_PROVIDER_PRIORITY.slice(-3), ["serper", "donsetch", "search1api"]);
 });
 
 test("keyed keenable search uses the authenticated endpoint", async (t) => {
