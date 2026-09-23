@@ -1,3 +1,4 @@
+import { selectSpans } from "./span-extraction.ts";
 import { createHash } from "node:crypto";
 import type { ProviderName } from "./routing-config.ts";
 import { rerankDuplicateCandidates } from "./diversity.ts";
@@ -617,7 +618,15 @@ export async function runResearchMode(options: RunResearchModeOptions): Promise<
   };
   if (extractionError) routing.extraction_error = extractionError;
 
-  const sourceSummaries = extracted.results || [];
+  const sourceSummaries = (extracted.results || []).map((source) => {
+    const text = String(source.content || source.raw_content || "").trim();
+    const excerpt = text.length > 500 && query
+      ? selectSpans(text, query, { maxSpans: 1, maxSpanChars: 500 })[0]?.text || text
+      : text;
+    const summary = excerpt.slice(0, 500);
+    return { ...source, content: summary, ...(source.raw_content != null ? { raw_content: summary } : {}),
+      ...(text.length > 500 ? { summary_truncated: true, summary_original_chars: text.length } : {}) };
+  });
   const materialProviderErrors = publicProviderErrors.filter((entry) => entry.error !== "preempted_after_quorum");
   const finalQuorumSnapshot = quorumSnapshot();
   const status = providerResults.length === 0

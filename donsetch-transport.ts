@@ -2,7 +2,7 @@ import path from "node:path";
 
 type JsonObject = Record<string, unknown>;
 
-export const DONSETCH_TESTED_VERSION = "3.2.1";
+export const DONSETCH_TESTED_VERSION = "4.2.9";
 export const DONSETCH_MCP_PROTOCOL_VERSION = "2025-11-25";
 
 const DEFAULT_TIMEOUT_SECONDS = 180;
@@ -54,6 +54,7 @@ export type DonsetchToolCall = {
 
 export type DonsetchToolPayload = {
   structured: JsonObject;
+  meta?: JsonObject;
   text: string;
   textTruncated: boolean;
   originalTextChars: number;
@@ -69,7 +70,7 @@ export type DonsetchReadiness = {
   state: "missing" | "executable" | "timeout" | "unavailable";
   version: string | null;
   testedVersion: string;
-  compatibility: "unknown" | "tested" | "compatible_unverified" | "incompatible_major";
+  compatibility: "unknown" | "tested" | "compatible_unverified";
   binaryConfigured: boolean;
   diagnostic?: string;
 };
@@ -274,6 +275,7 @@ function payloadFromResult(result: JsonObject, maxTextChars: number): DonsetchTo
   const content = boundedTextContent(result.content, maxTextChars);
   return {
     structured,
+    meta: result._meta && typeof result._meta === "object" && !Array.isArray(result._meta) ? result._meta as JsonObject : {},
     text: content.text,
     textTruncated: content.truncated,
     originalTextChars: content.originalChars,
@@ -356,7 +358,7 @@ export function donsetchVersionCompatibility(version: string | null): DonsetchRe
   const testedParts = DONSETCH_TESTED_VERSION.split(".").map(Number);
   if (versionParts.some((part) => !Number.isInteger(part)) || versionParts.length !== 3) return "unknown";
   if (versionParts.every((part, index) => part === testedParts[index])) return "tested";
-  return versionParts[0] === testedParts[0] ? "compatible_unverified" : "incompatible_major";
+  return "compatible_unverified";
 }
 
 export async function inspectDonsetchReadiness(

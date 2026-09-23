@@ -194,3 +194,55 @@ test("createDonsetchAdapter binds the injected OpenClaw runner", async () => {
   assert.equal(result.provider, "donsetch");
   assert.equal(invocations.length, 1);
 });
+
+test("compact search binds evidence and namespaced diagnostics before domain filtering", async () => {
+  const runner = sessionRunner(() => ({
+    structuredContent: { results: [
+      { rank: 1, handle: "ref1", url: "https://example.net/dropped" },
+      { rank: 3, handle: "ref3", url: "https://example.com/kept" },
+      { rank: 4, handle: "ref4", url: "https://example.com/mismatch" },
+    ] },
+    content: [{ type: "text", text: "1. ref1 · Dropped : example.net\n   Wrong snippet\n3. ref3 · Kept: colon title : example.com · ⚠ warning\n   Bound snippet\n   More evidence\n4. ref3 · Mismatched : example.com\n   Must not attach\nWeak results footer\n   Not evidence" }],
+    _meta: { "com.donsetch/search-debug": { intent: "news", elapsed_ms: 12, cached: true, weak: true,
+      engines: [{ engine: "first", status: "ok" }, { engine: "second", status: "blocked" }],
+      results: [{ score: 0.1 }, { score: 0.9, engines: ["first"], consensus: "strong", secret: "must not leak" }],
+      secret: "must not leak" }, secret: "must not leak" },
+  }), []);
+  const result = await searchDonsetch(runner, { binary: "/opt/donsetch", query: "evidence", includeDomains: ["example.com"] }) as JsonObject;
+  assert.equal(result.results[0].position, 3);
+  assert.equal(result.results[0].title, "Kept: colon title");
+  assert.equal(result.results[0].snippet, "Bound snippet\nMore evidence");
+  assert.equal(result.results[0].score, 0.9);
+  assert.deepEqual(result.results[0].engines, ["first"]);
+  assert.equal(result.results[1].snippet, "");
+  assert.equal(result.metadata.cached, true);
+  assert.equal(result.metadata.weak, true);
+  assert.equal(result.metadata.intent, "news");
+  assert.equal(result.metadata.duration_ms, 12);
+  assert.deepEqual(result.metadata.engine_blocked, ["second"]);
+  assert.ok(!JSON.stringify(result).includes("must not leak"));
+});
+
+test("compact fetch uses whitelisted debug fields and respects legacy field precedence", async () => {
+  for (const legacy of [false, true]) {
+    const runner = sessionRunner(() => ({
+      structuredContent: { url: "https://example.com/page", ...(legacy ? { title: "Legacy title", status: 200, content_ok: true } : {}) },
+      content: [{ type: "text", text: "Source evidence" }],
+      _meta: { "com.donsetch/fetch-debug": { title: "Compact title", status: legacy ? 503 : 200, verdict: "ContentOk", quality: 0.8, site: "example.com", secret: "must not leak" } },
+    }), []);
+    const result = await extractDonsetch(runner, { binary: "/opt/donsetch", urls: ["https://example.com/page"] });
+    assert.equal(result.results[0].error, undefined);
+    assert.equal(result.results[0].title, legacy ? "Legacy title" : "Compact title");
+    assert.equal(result.results[0].metadata?.quality, 0.8);
+    assert.ok(!JSON.stringify(result).includes("must not leak"));
+  }
+});
+
+test("compact fetch rejects blocked and failed diagnostic verdicts", async () => {
+  const runner = sessionRunner(() => ({
+    structuredContent: {}, content: [{ type: "text", text: "Blocked page" }],
+    _meta: { "com.donsetch/fetch-debug": { status: 403, verdict: "Blocked" } },
+  }), []);
+  const result = await extractDonsetch(runner, { binary: "/opt/donsetch", urls: ["https://example.com/page"] });
+  assert.equal(result.results[0].error, "donsetch_fetch_failed");
+});

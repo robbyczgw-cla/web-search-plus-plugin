@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [4.3.1] - 2026-09-23
+
+Matches Hermes Web Search Plus and web-search-plus-mcp 4.3.1. Their 4.3.1 change (keep-alive provider connections; MCP running search in-process) needs no port here: the plugin already runs in-process and Node `fetch` pools connections.
+
+- Ported Hermes 4.0.4–4.3.0 search behavior: compact DonSeTch evidence with rank/URL binding and namespaced diagnostics; Exa highlight preference; Parallel native count/domain policy; Tavily native recency; shared Exa date receipts.
+- Added search `no_cache` and `cache_ttl`, recency TTL caps (hour/live 60s, day/latest 300s, week 1800s), cache age and recency labels, and query-ranked research source summaries capped at 500 characters. `time_range` wins over `freshness` for dispatch, receipts, and TTL.
+- Updated the DonSeTch tested version to 4.2.9. Other parsed versions report `compatible_unverified`.
+- Adaptive routing records each provider attempt, including retries and research members. Cache hits and configuration errors do not add samples. Stats remain process-local; there is no stats file requiring a lock or atomic replacement.
+- Search uses `defaults.max_results` when count is omitted; explicit counts win and clamp to 1–20.
+- Confirmed leading-dash queries and span queries already pass as data. Python argument parsing/runtime cleanup and daily budget section validation have no counterpart: this plugin calls TypeScript functions directly and has no daily budget ledger.
+- Skipped Jev, the Hermes native backend, and Desktop settings as requested. Skipped Windows fcntl because stats are in memory, and keep-alive pooling because Node fetch already pools connections.
+
 ## [4.0.3] - 2026-08-30
 
 Feature sync with Hermes Web Search Plus 3.3.0–4.0.3, adapted to OpenClaw's in-process plugin and host-runner boundaries.
