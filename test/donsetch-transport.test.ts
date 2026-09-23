@@ -144,7 +144,7 @@ test("inspectDonsetchReadiness reports tested, compatible, incompatible, and tim
     assert.deepEqual(await inspectDonsetchReadiness(runner, ""), {
       state: "missing",
       version: null,
-      testedVersion: "3.2.1",
+      testedVersion: "4.2.9",
       compatibility: "unknown",
       binaryConfigured: false,
     });
@@ -159,11 +159,11 @@ test("inspectDonsetchReadiness reports tested, compatible, incompatible, and tim
       assert.equal(options.maxCombinedOutputBytes, 40 * 1024);
       assert.equal(options.killProcessTree, true);
       assert.equal(options.terminateOnOutputLimit, true);
-      return completed("DonSeTch 3.2.1\n");
+      return completed("DonSeTch 4.2.9\n");
     };
     const report = await inspectDonsetchReadiness(runner, "/opt/donsetch");
     assert.equal(report.state, "executable");
-    assert.equal(report.version, "3.2.1");
+    assert.equal(report.version, "4.2.9");
     assert.equal(report.compatibility, "tested");
   });
 
@@ -183,7 +183,7 @@ test("inspectDonsetchReadiness reports tested, compatible, incompatible, and tim
   });
 
   assert.equal(donsetchVersionCompatibility("3.0.0"), "compatible_unverified");
-  assert.equal(donsetchVersionCompatibility("2.3.1"), "incompatible_major");
+  assert.equal(donsetchVersionCompatibility("2.3.1"), "compatible_unverified");
   assert.equal(donsetchVersionCompatibility(null), "unknown");
 });
 

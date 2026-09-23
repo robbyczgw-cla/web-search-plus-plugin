@@ -1,6 +1,6 @@
 ---
 name: web-search-plus-plugin-v2
-version: 4.0.3
+version: 4.3.1
 description: OpenClaw plugin for source-only Routing v2 multi-provider search, completion-order Research with quality quorum and attributed provenance, heading-aware extraction spans, Tavily-first extraction, explicit-only Octen/TinyFish, optional separately installed DonSeTch through the OpenClaw host runner, process-local health, routing preferences, and extraction benchmarks. Registers five optional web tools.
 ---
 
@@ -84,10 +84,10 @@ OpenClaw plugin config is the only credential source; this package does not disc
 
 ## DonSeTch
 
-Install the independent AGPL-3.0-only DonSeTch 3.2.1 package separately:
+Install the independent AGPL-3.0-only DonSeTch 4.2.9 package separately:
 
 ```bash
-npm install -g donsetch@3.2.1
+npm install -g donsetch@4.2.9
 command -v donsetch
 donsetch --version
 donsetch doctor

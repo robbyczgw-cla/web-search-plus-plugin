@@ -39,10 +39,10 @@ test("normalizeFreshness accepts unified values and rejects junk", () => {
 test("freshnessMetadata reports native mapping or non-application", () => {
   assert.deepEqual(freshnessMetadata("serper", "week"), { requested: "week", applied: true, provider: "serper", native_value: "qdr:w" });
   assert.equal(freshnessMetadata("brave", "month").native_value, "pm");
-  const unsupported = freshnessMetadata("tavily", "week");
+  const unsupported = freshnessMetadata("linkup", "week");
   assert.equal(unsupported.applied, false);
   assert.match(unsupported.reason, /does not support freshness/);
-  assert.ok(!("tavily" in PROVIDER_FRESHNESS_FORMATS));
+  assert.ok(!("linkup" in PROVIDER_FRESHNESS_FORMATS));
   assert.deepEqual(freshnessMetadata("exa", "week", {
     startPublishedDate: "2026-08-23T00:00:00Z",
     endPublishedDate: "2026-08-30T00:00:00Z",
@@ -69,14 +69,14 @@ test("freshness maps natively for serper and lands in metadata", async (t) => {
   assert.deepEqual(payload.metadata.freshness, { requested: "week", applied: true, provider: "serper", native_value: "qdr:w" });
 });
 
-test("freshness on an unsupported provider reports applied=false and runs normally", async (t) => {
+test("Tavily freshness reports the applied native filter", async (t) => {
   t.mock.method(globalThis, "fetch", async () => {
     return new Response(JSON.stringify({ results: [{ title: "t", url: "https://example.com/a", content: "c" }] }), { status: 200 });
   });
   const tool = searchTool({ tavilyApiKey: "k" });
   const payload = JSON.parse((await tool.execute("id", { query: "q", provider: "tavily", freshness: "month" })).content[0].text);
   assert.equal(payload.results.length, 1);
-  assert.equal(payload.metadata.freshness.applied, false);
+  assert.equal(payload.metadata.freshness.applied, true);
 });
 
 test("invalid freshness values fail loudly", async () => {

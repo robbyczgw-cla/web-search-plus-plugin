@@ -122,6 +122,53 @@ function engineMetadata(structured: JsonObject): { enginesUsed: string[]; engine
   return { enginesUsed, enginesBlocked };
 }
 
+function resultRank(value: unknown, index: number): number {
+  const rank = Number(value);
+  return Number.isFinite(rank) && rank >= 1 ? Math.floor(rank) : index + 1;
+}
+
+function namespacedDebug(payload: DonsetchToolPayload, key: string): JsonObject {
+  const value = payload.meta?.[`com.donsetch/${key}-debug`];
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
+}
+
+export function parseSearchEvidence(text: string, rows: unknown[]): Map<number, { title: string; snippet: string }> {
+  const bindings = new Map<number, JsonObject>();
+  rows.forEach((row, index) => {
+    if (row && typeof row === "object" && !Array.isArray(row)) {
+      const source = row as JsonObject;
+      bindings.set(resultRank(source.rank, index), source);
+    }
+  });
+  const evidence = new Map<number, { title: string; snippet: string }>();
+  let current: { title: string; snippet: string } | undefined;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || line.trim().startsWith("#")) continue;
+    if (!line.startsWith("   ") && /^(Weak results|Degraded retrieval|No results\.|\*degraded:|\*fetch results)/.test(line.trim())) {
+      current = undefined;
+      continue;
+    }
+    const header = /^(\d+)\.\s+(.+)$/.exec(line);
+    if (header) {
+      current = undefined;
+      const rank = Number(header[1]);
+      const row = bindings.get(rank);
+      if (!row) continue;
+      const [reference, ...rest] = header[2].trim().split(" · ");
+      const url = typeof row.url === "string" ? row.url : "";
+      if (reference !== row.handle && reference !== url && (!url || reference.replace(/\/+$/, "") !== url.replace(/\/+$/, ""))) continue;
+      let title = rest.join(" · ").replace(/\s+·\s+⚠.*$/, "");
+      const separator = title.lastIndexOf(" : ");
+      if (separator >= 0) title = title.slice(0, separator);
+      current = { title: title.trim(), snippet: "" };
+      evidence.set(rank, current);
+    } else if (current && line.startsWith("   ")) {
+      current.snippet = [current.snippet, line.slice(3).trimEnd()].filter(Boolean).join("\n").trim();
+    }
+  }
+  return evidence;
+}
+
 export async function searchDonsetch(
   runCommandWithTimeout: DonsetchCommandRunner,
   request: DonsetchSearchRequest,
@@ -150,26 +197,31 @@ export async function searchDonsetch(
 
   const upstreamResults = payload.structured.results;
   if (!Array.isArray(upstreamResults)) throw new Error("donsetch_search_contract_failed");
+  const debug = namespacedDebug(payload, "search");
+  const evidence = parseSearchEvidence(payload.text, upstreamResults);
   const results: JsonObject[] = [];
-  for (const item of upstreamResults) {
+  for (const [index, item] of upstreamResults.entries()) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const source = item as JsonObject;
+    const rank = resultRank(source.rank, index);
+    const bound = evidence.get(rank);
+    const diagnostic = Array.isArray(debug.results) ? debug.results[index] || {} : {};
     const url = urlAllowed(source.url, includeDomains, excludeDomains);
     if (!url) continue;
     results.push({
-      title: boundedString(source.title, MAX_TITLE_CHARS),
+      title: boundedString(bound?.title || source.title, MAX_TITLE_CHARS),
       url,
-      snippet: boundedString(source.snippet, MAX_SNIPPET_CHARS),
-      score: finiteNumber(source.score),
-      position: results.length + 1,
+      snippet: boundedString(bound?.snippet || source.snippet, MAX_SNIPPET_CHARS),
+      score: finiteNumber(source.score ?? diagnostic.score),
+      position: rank,
       source: "donsetch",
-      engines: cleanStrings(source.engines, 20, 128),
-      engines_consensus: boundedString(source.consensus, 512),
+      engines: cleanStrings(source.engines ?? diagnostic.engines, 20, 128),
+      engines_consensus: boundedString(source.consensus ?? diagnostic.consensus, 512),
       source_type: "web",
     });
     if (results.length >= maxResults) break;
   }
-  const engines = engineMetadata(payload.structured);
+  const engines = engineMetadata({ ...debug, ...payload.structured });
   return {
     provider: "donsetch",
     query,
@@ -178,10 +230,10 @@ export async function searchDonsetch(
     metadata: {
       engines_used: engines.enginesUsed,
       engine_blocked: engines.enginesBlocked,
-      intent: boundedString(payload.structured.intent, 64),
-      cached: payload.structured.cached === true,
-      weak: payload.structured.weak === true,
-      duration_ms: finiteNumber(payload.structured.elapsed_ms),
+      intent: boundedString((payload.structured.intent ?? debug.intent), 64),
+      cached: (payload.structured.cached ?? debug.cached) === true,
+      weak: (payload.structured.weak ?? debug.weak) === true,
+      duration_ms: finiteNumber((payload.structured.elapsed_ms ?? debug.elapsed_ms)),
       local_sidecar: true,
     },
   };
@@ -198,11 +250,16 @@ function projectFetchItem(
   includeImages: boolean,
   includeRawHtml: boolean,
 ): ExtractResult {
-  const structured = payload.structured;
+  const debug = namespacedDebug(payload, "fetch");
+  const structured = { ...payload.structured };
+  for (const key of ["status", "title", "quality", "site", "verdict", "tier"]) {
+    if (structured[key] == null) structured[key] = debug[key];
+  }
   const observedUrl = safeHttpUrl(structured.url) || requestedUrl;
   const status = boundedInt(structured.status, 0, 0, 999);
   const verdict = boundedString(structured.verdict, 32).toLowerCase();
-  const failed = structured.content_ok !== true
+  const contentOk = structured.content_ok ?? (verdict === "contentok" && status > 0 && status < 400);
+  const failed = contentOk !== true
     || ["error", "blocked", "failed"].includes(verdict)
     || status >= 400
     || !payload.text.trim();

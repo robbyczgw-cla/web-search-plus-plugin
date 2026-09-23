@@ -6,7 +6,11 @@
 
 Native OpenClaw source-only plugin for one clean set of web tools.
 
-Current version: **4.0.3**
+Current version: **4.3.1**
+
+Search accepts `no_cache` to bypass cache reads and writes and `cache_ttl` in seconds. Recency caps are 60 seconds for hour/live, 300 for day/latest, 1800 for week, and 3600 otherwise. `time_range` wins over `freshness`; the stricter query-intent cap still applies. Cached responses include age and a recency label. Research source summaries keep up to 500 characters, preferring query-matching evidence.
+
+Set `defaults.max_results` in plugin config to choose the default search count. Explicit `count` wins; counts clamp to 1–20. Adaptive routing records every search attempt, including retries, in process memory.
 
 It registers:
 
@@ -105,10 +109,10 @@ Set `spans: true` to add up to three deterministic, non-overlapping passages per
 
 ### DonSeTch installation and OpenClaw host runner
 
-DonSeTch is not bundled or redistributed by this plugin. It is an independent AGPL-3.0-only component and must be installed and reviewed separately. The adapter is tested with DonSeTch 3.2.1:
+DonSeTch is not bundled or redistributed by this plugin. It is an independent AGPL-3.0-only component and must be installed and reviewed separately. The adapter is tested with DonSeTch 4.2.9:
 
 ```bash
-npm install -g donsetch@3.2.1
+npm install -g donsetch@4.2.9
 command -v donsetch
 donsetch --version
 donsetch doctor

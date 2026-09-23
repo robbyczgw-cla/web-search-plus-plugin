@@ -18,7 +18,7 @@ import { ProviderConfigError, ProviderRequestError } from "./provider-http.ts";
 import { searchOcten } from "./octen-provider.ts";
 import { searchTinyFish } from "./tinyfish-provider.ts";
 import { searchDonsetch } from "./donsetch-provider.ts";
-import { inspectDonsetchReadiness } from "./donsetch-transport.ts";
+import { inspectDonsetchReadiness, DonsetchTransportError } from "./donsetch-transport.ts";
 import { validateSourceOnlyAdapterResult, validateSourceOnlyOutboundRequest } from "./source-only-gate.ts";
 
 export { deduplicateResultsAcrossProviders } from "./research.ts";
@@ -60,7 +60,9 @@ const PARAMETERS_SCHEMA = {
       enum: SEARCH_PROVIDER_ENUM.filter((provider) => provider !== "auto"),
       description: "Disable automatic search routing and force this provider for this request. Reported visibly in routing.override_provider.",
     },
-    count: { type: "integer", minimum: 1, maximum: 10, default: 5, description: "Number of source results (default: 5)" },
+    no_cache: { type: "boolean", default: false, description: "Bypass search cache reads and writes." },
+    cache_ttl: { type: "integer", minimum: 1, maximum: 86400, description: "Search cache TTL in seconds, capped by recency." },
+    count: { type: "integer", minimum: 1, maximum: 20, description: "Number of source results (defaults.max_results or 5)" },
     time_range: {
       type: "string",
       enum: ["hour", "day", "week", "month", "year"],
@@ -139,6 +141,8 @@ type ToolParams = {
   provider?: ProviderName | "auto";
   routing_override_provider?: ProviderName;
   count?: number;
+  no_cache?: boolean;
+  cache_ttl?: number;
   time_range?: "hour" | "day" | "week" | "month" | "year";
   freshness?: "day" | "week" | "month" | "year";
   search_type?: "search" | "news";
@@ -240,6 +244,14 @@ export function buildCacheKey(query: string, provider: string, maxResults: numbe
 
 const memoryCache = new Map<string, any>();
 const providerHealthState: Json = {};
+
+export function effectiveSearchCacheTtl(query: string, recency?: string, requested = DEFAULT_CACHE_TTL): number {
+  const intent = new QueryAnalyzer().detectRecencyIntent(query);
+  const caps: Record<string, number> = { hour: 60, day: 300, week: 1800 };
+  const ttl = Number.isFinite(requested) && requested > 0 ? requested : DEFAULT_CACHE_TTL;
+  return Math.min(ttl, DEFAULT_CACHE_TTL, caps[recency || ""] ?? DEFAULT_CACHE_TTL,
+    intent.is_recency_focused ? (intent.score >= 3 ? 60 : 300) : DEFAULT_CACHE_TTL);
+}
 
 function cacheGet(query: string, provider: string, maxResults: number, ttl: number, params?: Json): any | null {
   const key = buildCacheKey(query, provider, maxResults, params);
@@ -464,7 +476,7 @@ function toTimeRange(value?: string): string | undefined {
 // =============================================================================
 
 export const FRESHNESS_VALUES = ["day", "week", "month", "year"] as const;
-const EXA_FRESHNESS_DAYS: Record<string, number> = { day: 1, week: 7, month: 30, year: 365 };
+const EXA_FRESHNESS_DAYS: Record<string, number> = { hour: 1 / 24, day: 1, week: 7, month: 30, year: 365 };
 
 export function exaDateBounds(freshness?: string | null, now: Date = new Date()): { startPublishedDate?: string; endPublishedDate?: string } {
   if (!freshness || EXA_FRESHNESS_DAYS[freshness] == null) return {};
@@ -476,9 +488,10 @@ export function exaDateBounds(freshness?: string | null, now: Date = new Date())
 
 // Native recency formats per provider, derived from the request bodies the
 // provider functions in this module already send. Providers absent from this
-// table (for example Tavily, Linkup, and Parallel) have no native recency
+// table (for example Linkup and Parallel) have no native recency
 // parameter in their current API calls, so no value is invented for them.
 export const PROVIDER_FRESHNESS_FORMATS: Record<string, Record<string, string>> = {
+  tavily: { day: "day", week: "week", month: "month", year: "year" },
   // searchSerper: body.tbs
   serper: { day: "qdr:d", week: "qdr:w", month: "qdr:m", year: "qdr:y" },
   // searchBrave: freshness query param
@@ -490,7 +503,7 @@ export const PROVIDER_FRESHNESS_FORMATS: Record<string, Record<string, string>> 
   // searchKeenable: body.published_after
   keenable: { day: "1d", week: "7d", month: "1mo", year: "1y" },
   // Exa receives absolute UTC start/end publication bounds.
-  exa: { day: "day", week: "week", month: "month", year: "year" },
+  exa: { hour: "hour", day: "day", week: "week", month: "month", year: "year" },
   // Octen and TinyFish expose native recency controls in their source APIs.
   octen: { day: "day", week: "week", month: "month", year: "year" },
   tinyfish: { day: "day", week: "week", month: "month", year: "year" },
@@ -514,8 +527,8 @@ export function normalizeFreshness(value?: string | null): string | null {
 export function freshnessMetadata(provider: string, requested: string, exaBounds?: { startPublishedDate?: string; endPublishedDate?: string }): Json {
   const native = PROVIDER_FRESHNESS_FORMATS[provider]?.[requested];
   if (provider === "exa" && native != null) {
-    const bounds = exaBounds || exaDateBounds(requested);
-    return { requested, applied: true, provider, native_value: bounds };
+    const bounds = exaBounds || {};
+    return { requested, applied: Boolean(bounds.startPublishedDate || bounds.endPublishedDate), provider, native_value: bounds };
   }
   if (native != null) return { requested, applied: true, provider, native_value: native };
   return { requested, applied: false, provider, reason: `provider ${provider} does not support freshness` };
@@ -1017,10 +1030,11 @@ export async function searchBrave(query: string, apiKey: string, maxResults: num
   return { provider: "brave", query, results, images: [], mixed: data?.mixed };
 }
 
-async function searchTavily(query: string, apiKey: string, maxResults: number, includeDomains?: string[], excludeDomains?: string[]): Promise<SearchResponse> {
+async function searchTavily(query: string, apiKey: string, maxResults: number, includeDomains?: string[], excludeDomains?: string[], timeRange?: string): Promise<SearchResponse> {
   const body: Json = { api_key: apiKey, query, max_results: maxResults, search_depth: "basic", topic: "general", include_images: false, include_answer: false, include_raw_content: false };
   if (includeDomains?.length) body.include_domains = includeDomains;
   if (excludeDomains?.length) body.exclude_domains = excludeDomains;
+  if (timeRange) body.time_range = timeRange;
   validateSourceOnlyOutboundRequest("tavily", body);
   const data = await httpJson("https://api.tavily.com/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const results = (data.results || []).slice(0, maxResults).map((item: any) => ({ title: item.title || "", url: item.url || "", snippet: item.content || "", score: Number((item.score || 0).toFixed(3)) }));
@@ -1077,7 +1091,7 @@ async function searchExa(query: string, apiKey: string, maxResults: number, incl
   validateSourceOnlyOutboundRequest("exa", body);
   const data = await httpJson("https://api.exa.ai/search", { method: "POST", headers: { "x-api-key": apiKey, "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
-  const results = (data.results || []).slice(0, maxResults).map((item: any) => ({ title: item.title || "", url: item.url || "", snippet: item.text ? String(item.text).slice(0, 800) : Array.isArray(item.highlights) ? item.highlights.slice(0, 2).join(" ... ") : "", score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author }));
+  const results = (data.results || []).slice(0, maxResults).map((item: any) => ({ title: item.title || "", url: item.url || "", snippet: (Array.isArray(item.highlights) ? item.highlights.filter((value: unknown) => typeof value === "string" && value.trim()).slice(0, 2).join(" ... ") : "") || String(item.text || "").slice(0, 800), score: Number((item.score || 0).toFixed(3)), published_date: item.publishedDate, author: item.author }));
   return { provider: "exa", query, results, images: [], metadata: freshness ? { freshness: { requested: freshness, ...dateBounds } } : {} };
 }
 
@@ -1156,11 +1170,13 @@ async function searchSerpBase(query: string, apiKey: string, maxResults: number,
 }
 
 async function searchParallel(query: string, apiKey: string, maxResults: number, includeDomains?: string[], excludeDomains?: string[], mode: RuntimeConfig["parallelMode"] = "fast"): Promise<SearchResponse> {
-  const searchQuery = [query, ...(includeDomains || []).map((domain) => `site:${domain}`), ...(excludeDomains || []).map((domain) => `-site:${domain}`)].join(" ").trim();
+  const advanced_settings: Json = { max_results: maxResults };
+  if (includeDomains?.length) advanced_settings.source_policy = { include_domains: includeDomains };
+  if (excludeDomains?.length) advanced_settings.source_policy = { ...advanced_settings.source_policy, exclude_domains: excludeDomains };
   const data = await httpJson("https://api.parallel.ai/v1/search", {
     method: "POST",
     headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ objective: query, search_queries: [searchQuery], mode: mode || "fast" }),
+    body: JSON.stringify({ objective: query, search_queries: [query], advanced_settings, mode: mode || "fast" }),
   }, 45000);
   const raw = data.results || [];
   const results = raw.slice(0, maxResults).map((item: any, i: number) => {
@@ -1308,7 +1324,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const query = String(params.query || "").trim();
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
 
-    const count = Math.max(1, Math.min(10, Math.floor(Number(params.count || 5))));
+    const requestedCount = Number(params.count ?? pluginConfig.defaults?.max_results ?? 5);
+    const count = Number.isFinite(requestedCount) ? Math.max(1, Math.min(20, Math.floor(requestedCount))) : 5;
     const routingOverride = params.routing_override_provider == null ? null : normalizeRequestedProvider(params.routing_override_provider);
     if (routingOverride === "auto") return { ok: false, payload: { error: "Search failed: routing_override_provider must name a provider" } };
     if (routingOverride && params.provider && params.provider !== "auto" && params.provider !== routingOverride) {
@@ -1323,11 +1340,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     } catch (error: any) {
       return { ok: false, payload: { error: `Search failed: ${String(error?.message || error)}` } };
     }
-    const exaFreshnessBounds = exaDateBounds(freshness);
-    // The unified freshness value doubles as the shared time-range hint: provider
-    // functions with a native recency parameter map it themselves, providers
-    // without one ignore it and metadata reports freshness.applied=false.
-    const timeRange = freshness || toTimeRange(params.time_range);
+    const timeRange = toTimeRange(params.time_range) || freshness || undefined;
+    const exaFreshnessBounds = exaDateBounds(timeRange);
     const includeDomains = Array.isArray(params.include_domains) ? params.include_domains.filter(Boolean) : undefined;
     const excludeDomains = Array.isArray(params.exclude_domains) ? params.exclude_domains.filter(Boolean) : undefined;
     const routingConfigResult = loadRoutingPreferences(pluginConfig);
@@ -1409,15 +1423,16 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
 
     const runProvider = async (p: ProviderName): Promise<SearchResponse> => {
       const key = validateApiKey(p, runtimeConfig);
+      if (p === "donsetch" && timeRange) throw new ProviderConfigError("donsetch_freshness_unsupported");
       const locale = providerSupportsLocale(p) ? resolveLocale(p, runtimeConfig, query) : undefined;
       const executeProvider = async (): Promise<SearchResponse> => {
         if (p === "serper") return searchSerper(query, key, count, timeRange, locale, PROVIDER_SEARCH_TYPES.serper[searchType || "search"] || "search");
         if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
-        if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains);
+        if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains, timeRange);
         if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
         if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains, locale);
         if (p === "exa") {
-          return searchExa(query, key, count, includeDomains, excludeDomains, freshness, exaFreshnessBounds);
+          return searchExa(query, key, count, includeDomains, excludeDomains, timeRange, exaFreshnessBounds);
         }
         if (p === "firecrawl") return searchFirecrawl(query, key, count, timeRange, includeDomains, excludeDomains, locale);
         if (p === "parallel") return searchParallel(query, key, count, includeDomains, excludeDomains, runtimeConfig.parallelMode);
@@ -1442,9 +1457,17 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         return searchSearxng(query, key, count, timeRange, runtimeConfig, locale);
       };
 
-      const response = await executeProvider();
-      validateSourceOnlyAdapterResult(p, response);
-      return response;
+      const startedAt = Date.now();
+      try {
+        const response = await executeProvider();
+        validateSourceOnlyAdapterResult(p, response);
+        recordProviderOutcome(p, (Date.now() - startedAt) / 1000, (response.results || []).length, false);
+        return response;
+      } catch (error) {
+        if (error instanceof DonsetchTransportError && error.code === "donsetch_binary_not_configured") throw new ProviderConfigError(error.code);
+        if (!(error instanceof ProviderConfigError)) recordProviderOutcome(p, (Date.now() - startedAt) / 1000, 0, true);
+        throw error;
+      }
     };
 
     if (params.mode === "research") {
@@ -1483,15 +1506,12 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         query,
         researchProviders,
         executeSearch: async (p) => {
-          const startedAt = Date.now();
           try {
             const response = await executeWithRetry(() => runProvider(p as ProviderName));
-            recordProviderOutcome(p, (Date.now() - startedAt) / 1000, (response.results || []).length, false);
             resetProviderHealth(p);
             return response;
           } catch (error: any) {
             if (!(error instanceof ProviderConfigError)) {
-              recordProviderOutcome(p, (Date.now() - startedAt) / 1000, 0, true);
               markProviderFailure(p, String(error?.message || error), error?.retryAfter);
             }
             throw error;
@@ -1516,10 +1536,10 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       });
       result.metadata = { ...(result.metadata || {}), budget_preflight: { research: researchFanout, daily_quota: "not_supported_without_persistent_ledger" } };
 
-      if (freshness) {
+      if (timeRange) {
         result.metadata = {
           ...(result.metadata || {}),
-          freshness: { requested: freshness, per_provider: researchProviders.map((p) => freshnessMetadata(p, freshness!, exaFreshnessBounds)) },
+          freshness: { requested: timeRange, per_provider: researchProviders.map((p) => freshnessMetadata(p, timeRange, exaFreshnessBounds)) },
         };
       }
       if (searchType && searchType !== "search") {
@@ -1548,11 +1568,12 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       routing_preferences: routingConfig,
     };
 
-    const cached = cacheGet(query, provider, count, DEFAULT_CACHE_TTL, cacheContext);
+    const cached = params.no_cache ? null : cacheGet(query, provider, count, effectiveSearchCacheTtl(query, timeRange, params.cache_ttl), cacheContext);
     if (cached) {
       const result = { ...cached };
       for (const key of Object.keys(result)) if (key.startsWith("_cache_")) delete result[key];
       result.cached = true;
+      result.recency_query = new QueryAnalyzer().detectRecencyIntent(query).is_recency_focused || Boolean(timeRange);
       result.cache_age_seconds = Math.floor(Date.now() / 1000 - Number(cached._cache_timestamp || 0));
       result.routing = { ...routingInfo, ...(cooldownSkips.length ? { cooldown_skips: cooldownSkips } : {}), ...(routingConfigResult.warning ? { config_warning: routingConfigResult.warning } : {}) };
       return { ok: true, payload: sanitizeOutput(result) };
@@ -1562,10 +1583,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const successes: Array<[string, SearchResponse]> = [];
 
     for (const p of eligibleProviders) {
-      const startedAt = Date.now();
       try {
         const result = await executeWithRetry(() => runProvider(p));
-        recordProviderOutcome(p, (Date.now() - startedAt) / 1000, (result.results || []).length, false);
         resetProviderHealth(p);
         successes.push([p, result]);
         if (strictProviderMode || (result.results || []).length >= count || errors.length === 0) break;
@@ -1574,7 +1593,6 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
         // Configuration errors such as missing API keys are not provider
         // failures: they must not mark cooldowns or pollute performance stats.
         const isConfigError = error instanceof ProviderConfigError;
-        if (!isConfigError) recordProviderOutcome(p, (Date.now() - startedAt) / 1000, 0, true);
         const skipCooldown = strictProviderMode || isConfigError;
         const cooldown = skipCooldown ? { cooldown_seconds: 0 } : markProviderFailure(p, message, error?.retryAfter);
         errors.push({ provider: p, error: message, ...(skipCooldown ? {} : { cooldown_seconds: cooldown.cooldown_seconds }) });
@@ -1637,8 +1655,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       }
     }
 
-    if (freshness) {
-      result.metadata = { ...(result.metadata || {}), freshness: freshnessMetadata(successfulProvider, freshness, exaFreshnessBounds) };
+    if (timeRange) {
+      result.metadata = { ...(result.metadata || {}), freshness: freshnessMetadata(successfulProvider, timeRange, exaFreshnessBounds) };
     }
     if (searchType && searchType !== "search") {
       result.metadata = { ...(result.metadata || {}), search_type: searchTypeMetadata(successfulProvider, searchType) };
@@ -1659,7 +1677,7 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       result.quality_report = buildQualityReport(result, routingInfo, errors, cooldownSkips, providersToTry);
     }
 
-    cachePut(query, successfulProvider, count, result, cacheContext);
+    if (!params.no_cache) cachePut(query, successfulProvider, count, result, cacheContext);
     return { ok: true, payload: sanitizeOutput(result) };
   } catch (error: any) {
     return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error?.message || error))}` } };
@@ -1785,7 +1803,7 @@ export function register(api: any) {
         const runtimeConfig = getRuntimeConfig((api.pluginConfig ?? {}) as Record<string, any>, commandRunner);
         const readiness = commandRunner
           ? await inspectDonsetchReadiness(commandRunner, runtimeConfig.donsetchBin, { timeoutSeconds: 5 })
-          : { state: runtimeConfig.donsetchBin ? "unavailable" : "missing", version: null, testedVersion: "3.2.1", compatibility: "unknown", binaryConfigured: Boolean(runtimeConfig.donsetchBin), diagnostic: runtimeConfig.donsetchBin ? "openclaw_command_runner_unavailable" : undefined };
+          : { state: runtimeConfig.donsetchBin ? "unavailable" : "missing", version: null, testedVersion: "4.2.9", compatibility: "unknown", binaryConfigured: Boolean(runtimeConfig.donsetchBin), diagnostic: runtimeConfig.donsetchBin ? "openclaw_command_runner_unavailable" : undefined };
         return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot(), donsetch: readiness }) }] };
       },
     },
