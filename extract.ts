@@ -394,29 +394,37 @@ export function isPrivateOrInternalIp(value: string): boolean {
   return false;
 }
 
+/**
+ * Check one extraction target. Returns an error message (never a resolved
+ * internal IP address) or null when the URL may be fetched.
+ */
+export async function checkExtractUrl(url: string, runtimeConfig: RuntimeConfig): Promise<string | null> {
+  if (runtimeConfig.extractAllowPrivateUrls === true) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `Invalid URL: ${url}`;
+  }
+  const hostname = parsed.hostname.trim().toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
+  if (!hostname) return `Invalid URL — hostname is required: ${url}`;
+  if (BLOCKED_EXTRACT_HOSTS.has(hostname)) return `Extraction URL blocked: ${hostname} is private/internal`;
+  if (net.isIP(hostname)) {
+    return isPrivateOrInternalIp(hostname) ? `Extraction URL blocked: ${hostname} is private/internal` : null;
+  }
+  const records = await dns.lookup(hostname, { all: true, verbatim: true }).catch(() => [] as dns.LookupAddress[]);
+  if (!records.length) return `Extraction URL blocked: cannot resolve hostname ${hostname}`;
+  if (records.some((record) => isPrivateOrInternalIp(record.address))) {
+    return `Extraction URL blocked: ${hostname} resolves to a private/internal address`;
+  }
+  return null;
+}
+
+/** Throws for the first URL that may not be fetched. extractPlus checks per URL instead. */
 export async function validateExtractUrls(urls: string[], runtimeConfig: RuntimeConfig): Promise<void> {
-  if (runtimeConfig.extractAllowPrivateUrls === true) return;
   for (const url of urls) {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new Error(`Invalid URL: ${url}`);
-    }
-    const hostname = parsed.hostname.trim().toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
-    if (!hostname) throw new Error(`Invalid URL — hostname is required: ${url}`);
-    if (BLOCKED_EXTRACT_HOSTS.has(hostname)) throw new Error(`Extraction URL blocked: ${hostname} is private/internal`);
-    if (net.isIP(hostname)) {
-      if (isPrivateOrInternalIp(hostname)) throw new Error(`Extraction URL blocked: ${hostname} is private/internal`);
-      continue;
-    }
-    const records = await dns.lookup(hostname, { all: true, verbatim: true }).catch(() => [] as dns.LookupAddress[]);
-    if (!records.length) throw new Error(`Extraction URL blocked: cannot resolve hostname ${hostname}`);
-    for (const record of records) {
-      if (isPrivateOrInternalIp(record.address)) {
-        throw new Error(`Extraction URL blocked: ${hostname} resolves to private/internal IP ${record.address}`);
-      }
-    }
+    const problem = await checkExtractUrl(url, runtimeConfig);
+    if (problem) throw new Error(problem);
   }
 }
 
@@ -600,6 +608,16 @@ export async function extractExa(
     });
   });
 
+  // Exa reports URLs it could not fetch in `statuses`, not in `results`.
+  const seen = new Set(results.map((item: ExtractResult) => item.url));
+  for (const status of Array.isArray(data?.statuses) ? data.statuses : []) {
+    const id = String(status?.id || status?.url || "");
+    if (!id || status?.status === "success" || seen.has(id)) continue;
+    const tag = status?.error?.tag ? String(status.error.tag) : "fetch_failed";
+    const http = status?.error?.httpStatusCode ? ` (HTTP ${status.error.httpStatusCode})` : "";
+    results.push(normalizeExtractResult("exa", id, "", "", undefined, { error: `Exa could not fetch the URL: ${tag}${http}` }));
+    seen.add(id);
+  }
   return { provider: "exa", results };
 }
 
@@ -947,13 +965,21 @@ export async function extractPlus(
     };
   }
 
-  try {
-    await validateExtractUrls(cleanedUrls as string[], runtimeConfig);
-  } catch (error: any) {
+  // One blocked or unresolvable URL must not sink the batch: it gets its own
+  // error line and the remaining URLs are still extracted.
+  const urlProblems = await Promise.all((cleanedUrls as string[]).map((url) => checkExtractUrl(url, runtimeConfig)));
+  const blockedItems: ExtractResult[] = [];
+  const fetchUrls: string[] = [];
+  (cleanedUrls as string[]).forEach((url, index) => {
+    const problem = urlProblems[index];
+    if (problem) blockedItems.push(normalizeExtractResult("policy" as ExtractProviderName, url, "", "", undefined, { error: problem }));
+    else fetchUrls.push(url);
+  });
+  if (!fetchUrls.length) {
     return {
       provider: requestedProvider,
       results: [],
-      error: String(error?.message || error),
+      error: urlProblems.find(Boolean) as string,
       routing: { requested_provider: requestedProvider },
     };
   }
@@ -1031,27 +1057,27 @@ export async function extractPlus(
     try {
       let result: ExtractResponse;
       if (currentProvider === "tavily") {
-        result = await extractTavily(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractTavily(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "exa") {
-        result = await extractExa(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractExa(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "linkup") {
-        result = await extractLinkup(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractLinkup(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "parallel") {
-        result = await extractParallel(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs, {
+        result = await extractParallel(fetchUrls, providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs, {
           maxCharsPerResult: runtimeConfig.parallelMaxCharsPerResult,
           maxCharsTotal: runtimeConfig.parallelMaxCharsTotal,
         });
       } else if (currentProvider === "firecrawl") {
-        result = await extractFirecrawl(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractFirecrawl(fetchUrls, providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "keenable") {
-        result = await extractKeenable(cleanedUrls as string[], providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
+        result = await extractKeenable(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
       } else if (currentProvider === "serper") {
-        result = await extractSerper(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractSerper(fetchUrls, providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "donsetch") {
         if (!runtimeConfig.runCommandWithTimeout) throw new Error("donsetch_openclaw_runner_unavailable");
         result = await extractDonsetch(runtimeConfig.runCommandWithTimeout, {
           binary: providerCredential!,
-          urls: cleanedUrls as string[],
+          urls: fetchUrls,
           outputFormat,
           includeImages,
           includeRawHtml,
@@ -1061,15 +1087,31 @@ export async function extractPlus(
           tier: String(runtimeConfig.donsetchTier ?? "auto"),
         });
       } else {
-        result = await extractYou(cleanedUrls as string[], providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractYou(fetchUrls, providerCredential!, outputFormat, includeImages, includeRawHtml, renderJs);
       }
 
-      const resultList = Array.isArray(result.results) ? result.results : [];
-      const allUrlsFailed = resultList.length > 0 && resultList.every((item) => item?.error);
-      if (allUrlsFailed) {
-        errors.push({ provider: currentProvider, error: "all_urls_failed", details: resultList.map((item) => item.error) });
+      const providerResults = Array.isArray(result.results) ? result.results : [];
+      // Blank pages (cookie wall, "enable JavaScript" shells, empty bodies) are
+      // failures, not successes: they would otherwise be cached as good answers.
+      for (const item of providerResults) {
+        if (item && !item.error && (typeof item.content !== "string" || !sanitizeExtractContent(item.content).trim())) {
+          item.error = "empty_content: the page returned no readable text";
+          item.content = "";
+          item.raw_content = "";
+        }
+      }
+      if (providerResults.length === 0) {
+        errors.push({ provider: currentProvider, error: "no_results" });
         continue;
       }
+      if (providerResults.every((item) => item?.error)) {
+        errors.push({ provider: currentProvider, error: "all_urls_failed", details: providerResults.map((item) => item.error) });
+        continue;
+      }
+      const resultList = [...providerResults, ...blockedItems];
+      result.results = resultList;
+      // Only an answer that covers every requested URL may be cached.
+      const completeAnswer = blockedItems.length === 0 && providerResults.length >= fetchUrls.length && providerResults.every((item) => !item.error);
 
       const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
       const contentItems = resultList
@@ -1172,7 +1214,7 @@ export async function extractPlus(
       };
       // Only successful/degraded provider output is cacheable. Failed calls
       // carry transient diagnostics and must be retried on a later request.
-      if (!contextOptions.cacheBypass && cacheableFullText) {
+      if (!contextOptions.cacheBypass && cacheableFullText && completeAnswer) {
         extractCachePut(
           cacheKey,
           response,

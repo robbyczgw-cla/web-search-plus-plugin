@@ -272,8 +272,8 @@ test("registered web_search_plus still falls back in auto mode using routing pre
       });
 
       await registered.get("web_routing_config_plus").execute("cfg-1", {
-        action: "set_default_provider",
-        provider: "firecrawl",
+        action: "set_provider_priority",
+        providers: ["firecrawl"],
       });
       await registered.get("web_routing_config_plus").execute("cfg-2", {
         action: "set_confidence_threshold",

@@ -1,5 +1,6 @@
 // index.ts
 import crypto2 from "crypto";
+import { AsyncLocalStorage } from "async_hooks";
 import dns2 from "dns/promises";
 import net2 from "net";
 import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
@@ -8,7 +9,7 @@ import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-
 var openclaw_plugin_default = {
   id: "web-search-plus-plugin-v2",
   name: "Web Search Plus",
-  version: "4.3.1",
+  version: "4.4.0",
   description: "OpenClaw-native source-only web search and extraction with Routing v2, research quorum, result provenance, unified freshness/news/locale controls, hosted providers, and an optional separately installed DonSeTch stdio provider.",
   contracts: {
     tools: [
@@ -524,7 +525,15 @@ function maybeBoundedInt(value, minimum, maximum) {
 
 // routing-config.ts
 var ALL_PROVIDER_NAMES = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "you", "searxng", "parallel", "serpbase", "keenable", "donsetch", "octen", "tinyfish"];
-var DEFAULT_PROVIDER_PRIORITY = ["you", "serper", "exa", "firecrawl", "tavily", "linkup", "brave", "parallel", "serpbase", "querit", "searxng", "keenable"];
+var DEFAULT_PROVIDER_PRIORITY = ["brave", "serper", "exa", "tavily", "you", "firecrawl", "linkup", "parallel", "serpbase", "querit", "searxng", "keenable"];
+var PRE_5_DEFAULT_PROVIDER_PRIORITY = ["you", "serper", "exa", "firecrawl", "tavily", "linkup", "brave", "parallel", "serpbase", "querit", "searxng", "keenable"];
+function sameProviderList(left, right) {
+  return left.length === right.length && left.every((provider, index) => provider === right[index]);
+}
+function isCustomProviderOrder(priority) {
+  if (!priority || !priority.length) return false;
+  return !sameProviderList(priority, DEFAULT_PROVIDER_PRIORITY) && !sameProviderList(priority, PRE_5_DEFAULT_PROVIDER_PRIORITY);
+}
 var DEFAULT_EXTRACT_PROVIDER_PRIORITY = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch"];
 var GUARDED_AUTO_PROVIDERS = ["serpbase", "querit", "donsetch", "octen", "tinyfish"];
 var DEFAULT_ROUTING_PREFERENCES = {
@@ -657,6 +666,7 @@ function validateRoutingPreferences(raw) {
   config.auto_routing = input.auto_routing == null ? config.auto_routing : Boolean(input.auto_routing);
   config.default_provider = input.default_provider == null ? config.default_provider : normalizeOptionalProvider(input.default_provider);
   config.provider_priority = input.provider_priority == null ? config.provider_priority : normalizePriority(input.provider_priority);
+  if (sameProviderList(config.provider_priority, PRE_5_DEFAULT_PROVIDER_PRIORITY)) config.provider_priority = [...DEFAULT_PROVIDER_PRIORITY];
   config.extract_provider_priority = input.extract_provider_priority == null ? config.extract_provider_priority : normalizeExtractPriority(input.extract_provider_priority);
   config.fallback_provider = input.fallback_provider == null ? config.fallback_provider : normalizeOptionalProvider(input.fallback_provider);
   config.disabled_providers = input.disabled_providers == null ? config.disabled_providers : normalizeProviderList(input.disabled_providers);
@@ -916,7 +926,7 @@ function selectSpans(text, query, options = {}) {
 
 // donsetch-transport.ts
 import path from "node:path";
-var DONSETCH_TESTED_VERSION = "4.2.9";
+var DONSETCH_TESTED_VERSION = "4.7.0";
 var DONSETCH_MCP_PROTOCOL_VERSION = "2025-11-25";
 var DEFAULT_TIMEOUT_SECONDS = 180;
 var DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -1754,30 +1764,26 @@ function isPrivateOrInternalIp(value) {
   }
   return false;
 }
-async function validateExtractUrls(urls, runtimeConfig) {
-  if (runtimeConfig.extractAllowPrivateUrls === true) return;
-  for (const url of urls) {
-    let parsed;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new Error(`Invalid URL: ${url}`);
-    }
-    const hostname = parsed.hostname.trim().toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
-    if (!hostname) throw new Error(`Invalid URL \u2014 hostname is required: ${url}`);
-    if (BLOCKED_EXTRACT_HOSTS.has(hostname)) throw new Error(`Extraction URL blocked: ${hostname} is private/internal`);
-    if (net.isIP(hostname)) {
-      if (isPrivateOrInternalIp(hostname)) throw new Error(`Extraction URL blocked: ${hostname} is private/internal`);
-      continue;
-    }
-    const records = await dns.lookup(hostname, { all: true, verbatim: true }).catch(() => []);
-    if (!records.length) throw new Error(`Extraction URL blocked: cannot resolve hostname ${hostname}`);
-    for (const record of records) {
-      if (isPrivateOrInternalIp(record.address)) {
-        throw new Error(`Extraction URL blocked: ${hostname} resolves to private/internal IP ${record.address}`);
-      }
-    }
+async function checkExtractUrl(url, runtimeConfig) {
+  if (runtimeConfig.extractAllowPrivateUrls === true) return null;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `Invalid URL: ${url}`;
   }
+  const hostname = parsed.hostname.trim().toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
+  if (!hostname) return `Invalid URL \u2014 hostname is required: ${url}`;
+  if (BLOCKED_EXTRACT_HOSTS.has(hostname)) return `Extraction URL blocked: ${hostname} is private/internal`;
+  if (net.isIP(hostname)) {
+    return isPrivateOrInternalIp(hostname) ? `Extraction URL blocked: ${hostname} is private/internal` : null;
+  }
+  const records = await dns.lookup(hostname, { all: true, verbatim: true }).catch(() => []);
+  if (!records.length) return `Extraction URL blocked: cannot resolve hostname ${hostname}`;
+  if (records.some((record) => isPrivateOrInternalIp(record.address))) {
+    return `Extraction URL blocked: ${hostname} resolves to a private/internal address`;
+  }
+  return null;
 }
 async function extractFirecrawl(urls, apiKey, outputFormat = "markdown", includeImages = false, includeRawHtml = false, renderJs = false, apiUrl = "https://api.firecrawl.dev/v2/scrape", timeout = 60) {
   const formats = outputFormat === "html" ? ["html"] : ["markdown"];
@@ -1908,6 +1914,15 @@ async function extractExa(urls, apiKey, outputFormat = "markdown", includeImages
       metadata: Object.keys(metadata).length ? metadata : void 0
     });
   });
+  const seen = new Set(results.map((item) => item.url));
+  for (const status of Array.isArray(data?.statuses) ? data.statuses : []) {
+    const id = String(status?.id || status?.url || "");
+    if (!id || status?.status === "success" || seen.has(id)) continue;
+    const tag = status?.error?.tag ? String(status.error.tag) : "fetch_failed";
+    const http = status?.error?.httpStatusCode ? ` (HTTP ${status.error.httpStatusCode})` : "";
+    results.push(normalizeExtractResult("exa", id, "", "", void 0, { error: `Exa could not fetch the URL: ${tag}${http}` }));
+    seen.add(id);
+  }
   return { provider: "exa", results };
 }
 var PARALLEL_MAX_CHARS_PER_RESULT = 6e4;
@@ -2155,13 +2170,19 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
       routing: { requested_provider: requestedProvider }
     };
   }
-  try {
-    await validateExtractUrls(cleanedUrls, runtimeConfig);
-  } catch (error) {
+  const urlProblems = await Promise.all(cleanedUrls.map((url) => checkExtractUrl(url, runtimeConfig)));
+  const blockedItems = [];
+  const fetchUrls = [];
+  cleanedUrls.forEach((url, index) => {
+    const problem = urlProblems[index];
+    if (problem) blockedItems.push(normalizeExtractResult("policy", url, "", "", void 0, { error: problem }));
+    else fetchUrls.push(url);
+  });
+  if (!fetchUrls.length) {
     return {
       provider: requestedProvider,
       results: [],
-      error: String(error?.message || error),
+      error: urlProblems.find(Boolean),
       routing: { requested_provider: requestedProvider }
     };
   }
@@ -2227,27 +2248,27 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
     try {
       let result;
       if (currentProvider === "tavily") {
-        result = await extractTavily(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractTavily(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "exa") {
-        result = await extractExa(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractExa(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "linkup") {
-        result = await extractLinkup(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractLinkup(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "parallel") {
-        result = await extractParallel(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, {
+        result = await extractParallel(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, {
           maxCharsPerResult: runtimeConfig.parallelMaxCharsPerResult,
           maxCharsTotal: runtimeConfig.parallelMaxCharsTotal
         });
       } else if (currentProvider === "firecrawl") {
-        result = await extractFirecrawl(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractFirecrawl(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "keenable") {
-        result = await extractKeenable(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
+        result = await extractKeenable(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs, keylessAllowed);
       } else if (currentProvider === "serper") {
-        result = await extractSerper(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractSerper(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       } else if (currentProvider === "donsetch") {
         if (!runtimeConfig.runCommandWithTimeout) throw new Error("donsetch_openclaw_runner_unavailable");
         result = await extractDonsetch(runtimeConfig.runCommandWithTimeout, {
           binary: providerCredential,
-          urls: cleanedUrls,
+          urls: fetchUrls,
           outputFormat,
           includeImages,
           includeRawHtml,
@@ -2257,14 +2278,27 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           tier: String(runtimeConfig.donsetchTier ?? "auto")
         });
       } else {
-        result = await extractYou(cleanedUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
+        result = await extractYou(fetchUrls, providerCredential, outputFormat, includeImages, includeRawHtml, renderJs);
       }
-      const resultList = Array.isArray(result.results) ? result.results : [];
-      const allUrlsFailed = resultList.length > 0 && resultList.every((item) => item?.error);
-      if (allUrlsFailed) {
-        errors.push({ provider: currentProvider, error: "all_urls_failed", details: resultList.map((item) => item.error) });
+      const providerResults = Array.isArray(result.results) ? result.results : [];
+      for (const item of providerResults) {
+        if (item && !item.error && (typeof item.content !== "string" || !sanitizeExtractContent(item.content).trim())) {
+          item.error = "empty_content: the page returned no readable text";
+          item.content = "";
+          item.raw_content = "";
+        }
+      }
+      if (providerResults.length === 0) {
+        errors.push({ provider: currentProvider, error: "no_results" });
         continue;
       }
+      if (providerResults.every((item) => item?.error)) {
+        errors.push({ provider: currentProvider, error: "all_urls_failed", details: providerResults.map((item) => item.error) });
+        continue;
+      }
+      const resultList = [...providerResults, ...blockedItems];
+      result.results = resultList;
+      const completeAnswer = blockedItems.length === 0 && providerResults.length >= fetchUrls.length && providerResults.every((item) => !item.error);
       const charLimit = runtimeConfig.extractCharLimit ?? DEFAULT_EXTRACT_CHAR_LIMIT;
       const contentItems = resultList.map((item, resultIndex) => ({ item, resultIndex })).filter(({ item }) => !item?.error && typeof item?.content === "string");
       const fullText = resultList.map((item) => {
@@ -2351,7 +2385,7 @@ async function extractPlus(urls, provider = "auto", outputFormat = "markdown", i
           fallback_errors: errors
         }
       };
-      if (!contextOptions.cacheBypass && cacheableFullText) {
+      if (!contextOptions.cacheBypass && cacheableFullText && completeAnswer) {
         extractCachePut(
           cacheKey,
           response,
@@ -3271,6 +3305,87 @@ function buildAuthoritySignals(routingClass, results) {
   };
 }
 
+// query-limits.ts
+var MAX_QUERY_CHARS = 2e3;
+var PROVIDER_QUERY_LIMITS = {
+  brave: { chars: 600, words: 75 }
+};
+function capQueryLength(query) {
+  const chars = Array.from(query);
+  return chars.length > MAX_QUERY_CHARS ? chars.slice(0, MAX_QUERY_CHARS).join("").trim() : query;
+}
+function fitQuery(provider, text) {
+  const limit = PROVIDER_QUERY_LIMITS[provider];
+  const words = text.split(/\s+/).filter(Boolean);
+  if (!limit || text.length <= limit.chars && words.length <= limit.words) return { query: text };
+  const kept = [];
+  let used = 0;
+  for (const word of words) {
+    const add = word.length + (kept.length ? 1 : 0);
+    if (used + add > limit.chars || kept.length + 1 > limit.words) break;
+    kept.push(word);
+    used += add;
+  }
+  if (!kept.length && words.length) kept.push(words[0].slice(0, limit.chars));
+  const query = kept.join(" ");
+  return {
+    query,
+    truncated: {
+      provider,
+      limit_chars: limit.chars,
+      limit_words: limit.words,
+      original_chars: text.length,
+      original_words: words.length,
+      sent_chars: query.length,
+      sent_words: kept.length
+    }
+  };
+}
+
+// intent-routing.ts
+var INTENT_FIRST_PROVIDER = {
+  academic: "exa",
+  docs: "exa",
+  security: "serper",
+  shopping: "serper"
+};
+var MEASURED_PROVIDER_ORDER = ["brave", "serper", "exa", "tavily"];
+var SHOPPING_WORDS = /\b(buy|price|preis|kaufen|shop|shopping)\b/;
+function mapRoutingClassToIntent(routingClass, query) {
+  switch (routingClass) {
+    case "academic/arxiv":
+      return "academic";
+    case "docs/api":
+      return "docs";
+    case "security/cve":
+      return "security";
+    case "community/reddit":
+      return "community";
+    case "multilingual/current":
+      return "news";
+    case "local/shopping":
+      return SHOPPING_WORDS.test(query.toLowerCase()) ? "shopping" : "local";
+    // official/*, finance/IR, weather/factual, oss-discovery, answer/synthesis
+    // and general have no measured reason to leave the Brave default.
+    default:
+      return "general";
+  }
+}
+function planIntentRouting(routingClass, query, providerPriority) {
+  const intent = mapRoutingClassToIntent(routingClass, query);
+  const customOrder = isCustomProviderOrder(providerPriority);
+  if (customOrder) {
+    return { intent, customOrder, reason: "custom_order", preferred: [...providerPriority] };
+  }
+  const first = INTENT_FIRST_PROVIDER[intent];
+  return {
+    intent,
+    customOrder,
+    reason: routingClass === "general" ? "no_signals_matched" : `intent_${intent}`,
+    preferred: [...first ? [first] : [], ...MEASURED_PROVIDER_ORDER, ...providerPriority]
+  };
+}
+
 // provider-stats.ts
 var MAX_SAMPLES_PER_PROVIDER = 50;
 var SAMPLE_MAX_AGE_SECONDS = 7 * 24 * 3600;
@@ -3325,14 +3440,6 @@ function performanceAdjustment(provider, now) {
   const combined = 0.6 * reliability + 0.4 * speed;
   const adjustment = (combined - PERFORMANCE_BASELINE) * 2 * MAX_SCORE_ADJUSTMENT;
   return Number(Math.max(-MAX_SCORE_ADJUSTMENT, Math.min(MAX_SCORE_ADJUSTMENT, adjustment)).toFixed(3));
-}
-function performanceAdjustments(providers, now) {
-  const adjustments = {};
-  for (const provider of providers) {
-    const value = performanceAdjustment(provider, now);
-    if (value !== 0) adjustments[provider] = value;
-  }
-  return adjustments;
 }
 function getProviderHealthSnapshot(providers, now) {
   const nowMs = Date.now();
@@ -3867,7 +3974,7 @@ var TINYFISH_PROVIDER_METADATA = Object.freeze({
 });
 var API_URL = "https://api.search.tinyfish.ai/";
 var MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-var MAX_QUERY_CHARS = 2e3;
+var MAX_QUERY_CHARS2 = 2e3;
 var MAX_DOMAIN_COUNT = 20;
 var MAX_DOMAIN_CHARS = 253;
 var MAX_DOMAIN_LIST_CHARS = 2048;
@@ -4038,7 +4145,7 @@ async function searchTinyFish(query, apiKey, maxResults, options = {}) {
   }
   if (typeof query !== "string") throw new ProviderConfigError("tinyfish_query_invalid");
   const normalizedQuery = query.trim();
-  if (!normalizedQuery || codePointLength2(normalizedQuery) > MAX_QUERY_CHARS) {
+  if (!normalizedQuery || codePointLength2(normalizedQuery) > MAX_QUERY_CHARS2) {
     throw new ProviderConfigError("tinyfish_query_invalid");
   }
   const count = boundedResultCount(maxResults);
@@ -4256,6 +4363,7 @@ function validateSourceOnlyAdapterResult(provider, result) {
 
 // index.ts
 var DEFAULT_CACHE_TTL = 3600;
+var NO_RESULTS_MESSAGE = "No results found for this query. Do not invent sources or facts; say that nothing was found, or retry with a broader or differently worded query.";
 var RETRY_BACKOFF_MS = [1e3, 3e3, 9e3];
 var RETRY_JITTER_FRACTION = 0.5;
 var DEFAULT_RESEARCH_EXTRACT_COUNT = 3;
@@ -4391,8 +4499,21 @@ function sanitizeOutput(input) {
   }
   return input;
 }
+var toolCallSignal = new AsyncLocalStorage();
+function toolCallCancelled() {
+  return toolCallSignal.getStore()?.aborted === true;
+}
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  const signal = toolCallSignal.getStore();
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 function sha256(input) {
   return crypto2.createHash("sha256").update(input).digest("hex");
@@ -4531,47 +4652,50 @@ function pickStrictDefaultProvider(availableProviders, routingConfig) {
 function selectAutoProvider(query, availableProviders, routingConfig) {
   const autoExcluded = availableProviders.filter((provider2) => routingConfig.auto_allow?.[provider2] === false);
   const autoProviders = availableProviders.filter((provider2) => routingConfig.auto_allow?.[provider2] !== false);
-  const orderedProviders = orderProvidersByPreference(autoProviders.length ? autoProviders : availableProviders, routingConfig);
+  const candidates2 = autoProviders.length ? autoProviders : availableProviders;
+  const orderedProviders = orderProvidersByPreference(candidates2, routingConfig);
   const analyzer = new QueryAnalyzer();
-  const baseAnalysis = analyzer.analyze(query);
-  const hasQuerySignals = Math.max(...orderedProviders.map((provider2) => Number(baseAnalysis.provider_scores[provider2] || 0)), 0) > 0;
-  const adaptiveAdjustments = hasQuerySignals ? performanceAdjustments(orderedProviders) : {};
-  const analysis = analyzer.route(query, orderedProviders, adaptiveAdjustments);
-  const provider = analysis.provider;
+  const analysis = analyzer.analyze(query);
+  const plan = planIntentRouting(analysis.routing_class, query, routingConfig.provider_priority?.length ? routingConfig.provider_priority : DEFAULT_PROVIDER_PRIORITY);
+  const provider = plan.preferred.find((candidate) => candidates2.includes(candidate)) ?? orderedProviders[0] ?? "serper";
+  const hasIntent = plan.customOrder || analysis.routing_class !== "general";
   return {
     provider,
     routing: {
       requested_provider: "auto",
       auto_routed: true,
       provider,
-      confidence_level: analysis.confidence >= routingConfig.confidence_threshold ? analysis.confidence_level : "low",
-      reason: analysis.reason,
+      confidence_level: plan.customOrder ? "high" : hasIntent ? "medium" : "low",
+      reason: plan.reason,
       confidence_threshold: routingConfig.confidence_threshold,
-      exa_depth: analysis.exa_depth,
-      routing_policy: analysis.routing_policy,
-      language_hint: analysis.analysis_summary?.language_hint,
-      routing_class: analysis.analysis_summary?.routing_class,
-      scores: analysis.scores,
-      adaptive_adjustments: analysis.adaptive_adjustments,
-      below_threshold: analysis.confidence < routingConfig.confidence_threshold,
+      exa_depth: "normal",
+      routing_policy: "routing-v3-intent-lite",
+      language_hint: analysis.language_hint,
+      routing_class: analysis.routing_class,
+      routing_intent: plan.intent,
+      provider_order: plan.customOrder ? "custom" : "measured",
+      scores: {},
+      adaptive_adjustments: {},
+      below_threshold: false,
       auto_allow_excluded: autoExcluded
     }
   };
 }
 function buildAutoFallbackOrder(primary, availableProviders, routingConfig) {
+  const priority = routingConfig.provider_priority?.length ? routingConfig.provider_priority : DEFAULT_PROVIDER_PRIORITY;
+  const custom = isCustomProviderOrder(priority);
   const ordered = orderProvidersByPreference(availableProviders, routingConfig);
   const unique = [primary];
   const seen = new Set(unique);
-  if (isProviderUsable(routingConfig.fallback_provider, availableProviders, routingConfig.disabled_providers) && !seen.has(routingConfig.fallback_provider)) {
-    unique.push(routingConfig.fallback_provider);
-    seen.add(routingConfig.fallback_provider);
-  }
-  for (const provider of ordered) {
-    if (!seen.has(provider)) {
+  const push = (provider) => {
+    if (provider && !seen.has(provider) && isProviderUsable(provider, availableProviders, routingConfig.disabled_providers)) {
       unique.push(provider);
       seen.add(provider);
     }
-  }
+  };
+  if (routingConfig.fallback_provider && routingConfig.fallback_provider !== DEFAULT_ROUTING_PREFERENCES.fallback_provider) push(routingConfig.fallback_provider);
+  if (!custom) MEASURED_PROVIDER_ORDER.forEach(push);
+  ordered.forEach(push);
   return unique;
 }
 function getApiKey(provider, runtimeConfig) {
@@ -4712,6 +4836,13 @@ function titleFromUrl2(url) {
 async function httpJson(url, init, timeoutMs = 3e4) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const hostSignal = toolCallSignal.getStore();
+  const onHostAbort = () => controller.abort();
+  if (hostSignal?.aborted) {
+    clearTimeout(timer);
+    throw new ProviderRequestError("Request cancelled: the tool call was aborted", { transient: false });
+  }
+  hostSignal?.addEventListener("abort", onHostAbort, { once: true });
   try {
     const res = await fetch(url, {
       ...init,
@@ -4734,11 +4865,13 @@ async function httpJson(url, init, timeoutMs = 3e4) {
     }
     return data ?? {};
   } catch (error) {
+    if (hostSignal?.aborted) throw new ProviderRequestError("Request cancelled: the tool call was aborted", { transient: false });
     if (error?.name === "AbortError") throw new ProviderRequestError(`Request timed out after ${timeoutMs}ms`, { transient: true });
     if (error instanceof ProviderRequestError) throw error;
     throw new ProviderRequestError(`Network error: ${String(error?.message || error)}`, { transient: true });
   } finally {
     clearTimeout(timer);
+    hostSignal?.removeEventListener("abort", onHostAbort);
   }
 }
 async function validateSearxngUrl(input, runtimeConfig) {
@@ -5589,9 +5722,11 @@ async function executeWithRetry(fn) {
   let lastError;
   for (let attempt = 0; attempt < RETRY_BACKOFF_MS.length; attempt += 1) {
     try {
+      if (toolCallCancelled()) throw lastError ?? new ProviderRequestError("Request cancelled: the tool call was aborted", { transient: false });
       return await fn();
     } catch (error) {
       lastError = error;
+      if (toolCallCancelled()) break;
       if (!(error instanceof ProviderRequestError) || !error.transient || error.statusCode === 401 || error.statusCode === 403) break;
       const isRateLimited = error.statusCode === 429;
       const attemptCap = isRateLimited ? Math.min(RETRY_BACKOFF_MS.length, RATE_LIMIT_MAX_ATTEMPTS) : RETRY_BACKOFF_MS.length;
@@ -5639,7 +5774,7 @@ function buildQualityReport(result, routingInfo, errors, cooldownSkips, provider
 }
 async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
   try {
-    const query = String(params.query || "").trim();
+    const query = capQueryLength(String(params.query || "").trim());
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
     const requestedCount = Number(params.count ?? pluginConfig.defaults?.max_results ?? 5);
     const count = Number.isFinite(requestedCount) ? Math.max(1, Math.min(20, Math.floor(requestedCount))) : 5;
@@ -5735,7 +5870,13 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       const locale = providerSupportsLocale(p) ? resolveLocale(p, runtimeConfig, query) : void 0;
       const executeProvider = async () => {
         if (p === "serper") return searchSerper(query, key, count, timeRange, locale, PROVIDER_SEARCH_TYPES.serper[searchType || "search"] || "search");
-        if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
+        if (p === "brave") {
+          const fitted = fitQuery("brave", query);
+          const response = await searchBrave(fitted.query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
+          response.query = query;
+          if (fitted.truncated) response.metadata = { ...response.metadata || {}, query_truncated: fitted.truncated };
+          return response;
+        }
         if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains, timeRange);
         if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
         if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains, locale);
@@ -5879,11 +6020,16 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     const errors = [];
     const successes = [];
     for (const p of eligibleProviders) {
+      if (toolCallCancelled()) {
+        errors.push({ provider: p, error: "skipped: the tool call was aborted before this provider started" });
+        break;
+      }
       try {
         const result2 = await executeWithRetry(() => runProvider(p));
         resetProviderHealth(p);
         successes.push([p, result2]);
-        if (strictProviderMode || (result2.results || []).length >= count || errors.length === 0) break;
+        const gotResults = (result2.results || []).length;
+        if (strictProviderMode || gotResults >= count || errors.length === 0 && gotResults > 0) break;
       } catch (error) {
         const message = sanitizeOutput(String(error?.message || error));
         const isConfigError = error instanceof ProviderConfigError;
@@ -5897,16 +6043,17 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
       return { ok: false, payload: sanitizeOutput({ error: "All providers failed", provider, query, routing: { ...routingInfo, ...cooldownSkips.length ? { cooldown_skips: cooldownSkips } : {}, ...routingConfigResult.warning ? { config_warning: routingConfigResult.warning } : {} }, provider_errors: errors }) };
     }
     let result;
+    const leadSuccess = successes.find(([, response]) => (response.results || []).length > 0) ?? successes[0];
     if (successes.length === 1) {
       result = successes[0][1];
     } else {
-      result = { ...successes[0][1] };
+      result = { ...leadSuccess[1] };
       const deduped = deduplicateResultsAcrossProviders(successes, count);
       result.results = deduped.results;
       result.deduplicated = deduped.dedupCount > 0;
       result.metadata = { ...result.metadata || {}, dedup_count: deduped.dedupCount, providers_merged: successes.map(([p]) => p) };
     }
-    const successfulProvider = successes[0][0];
+    const successfulProvider = leadSuccess[0];
     if (!strictProviderMode && successfulProvider !== provider) {
       routingInfo = { ...routingInfo, fallback_used: true, original_provider: provider, provider: successfulProvider };
     }
@@ -5948,6 +6095,11 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     if (providerSupportsLocale(successfulProvider)) {
       result.metadata = { ...result.metadata || {}, locale: resolveLocale(successfulProvider, runtimeConfig, query).metadata };
     }
+    const noResults = Array.isArray(result.results) && result.results.length === 0;
+    if (noResults) {
+      result.message = NO_RESULTS_MESSAGE;
+      result.metadata = { ...result.metadata || {}, no_results: true };
+    }
     result.routing = routingInfo;
     result.cached = false;
     if (!result.metadata) result.metadata = {};
@@ -5956,7 +6108,7 @@ async function executeSearch(runtimeConfig, params, pluginConfig = {}) {
     if (params.quality_report) {
       result.quality_report = buildQualityReport(result, routingInfo, errors, cooldownSkips, providersToTry);
     }
-    if (!params.no_cache) cachePut(query, successfulProvider, count, result, cacheContext);
+    if (!params.no_cache && !noResults) cachePut(query, successfulProvider, count, result, cacheContext);
     return { ok: true, payload: sanitizeOutput(result) };
   } catch (error) {
     return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error?.message || error))}` } };
@@ -6075,7 +6227,7 @@ function register(api) {
       parameters: { type: "object", properties: {} },
       async execute() {
         const runtimeConfig = getRuntimeConfig(api.pluginConfig ?? {}, commandRunner);
-        const readiness = commandRunner ? await inspectDonsetchReadiness(commandRunner, runtimeConfig.donsetchBin, { timeoutSeconds: 5 }) : { state: runtimeConfig.donsetchBin ? "unavailable" : "missing", version: null, testedVersion: "4.2.9", compatibility: "unknown", binaryConfigured: Boolean(runtimeConfig.donsetchBin), diagnostic: runtimeConfig.donsetchBin ? "openclaw_command_runner_unavailable" : void 0 };
+        const readiness = commandRunner ? await inspectDonsetchReadiness(commandRunner, runtimeConfig.donsetchBin, { timeoutSeconds: 5 }) : { state: runtimeConfig.donsetchBin ? "unavailable" : "missing", version: null, testedVersion: "4.7.0", compatibility: "unknown", binaryConfigured: Boolean(runtimeConfig.donsetchBin), diagnostic: runtimeConfig.donsetchBin ? "openclaw_command_runner_unavailable" : void 0 };
         return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot(), donsetch: readiness }) }] };
       }
     },
@@ -6123,13 +6275,13 @@ function register(api) {
   api.registerTool(
     {
       name: "web_search_plus",
-      description: "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, explicit-only Octen/TinyFish, and optional separately installed DonSeTch. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and stop after a conservative source-quality quorum.",
+      description: "Search the web, routing each query to the best configured provider with automatic fallback. Source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, explicit-only Octen/TinyFish, and optional separately installed DonSeTch. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and stop after a conservative source-quality quorum.",
       parameters: PARAMETERS_SCHEMA,
-      async execute(_id, params) {
+      async execute(_id, params, signal) {
         try {
           const pluginConfig = api.pluginConfig ?? {};
           const runtimeConfig = getRuntimeConfig(pluginConfig, commandRunner);
-          const result = await executeSearch(runtimeConfig, params, pluginConfig);
+          const result = await toolCallSignal.run(signal, () => executeSearch(runtimeConfig, params, pluginConfig));
           if (!result.ok) {
             const failure = result.payload;
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(failure)) }] };
@@ -6162,7 +6314,7 @@ function register(api) {
   api.registerTool(
     {
       name: "web_extract_plus",
-      description: "Extract URL content across configured providers, including optional separately installed DonSeTch over a host-managed stdio process, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
+      description: "Extract page content from URLs, with per-URL errors and provider fallback. Extraction runs across configured providers, including optional separately installed DonSeTch over a host-managed stdio process, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig = api.pluginConfig ?? {};

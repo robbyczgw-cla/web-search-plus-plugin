@@ -81,7 +81,7 @@ test("web_routing_config_plus supports set/show/reset actions", async () => {
   const show = JSON.parse((await tool.execute("cfg-show", { action: "show" })).content[0].text);
   assert.equal(show.config.default_provider, "tavily");
   assert.equal(show.config.auto_routing, false);
-  assert.deepEqual(show.config.provider_priority.slice(0, 3), ["brave", "serper", "you"]);
+  assert.deepEqual(show.config.provider_priority.slice(0, 3), ["brave", "serper", "exa"]);
   assert.deepEqual(show.config.extract_provider_priority.slice(0, 4), ["serper", "linkup", "tavily", "exa"]);
   assert.equal(show.config.fallback_provider, "serper");
   assert.deepEqual(show.config.disabled_providers, []);

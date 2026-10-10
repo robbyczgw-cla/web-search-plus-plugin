@@ -1,6 +1,6 @@
 {
   "name": "web-search-plus-plugin-v2",
-  "version": "4.3.1",
+  "version": "4.4.0",
   "description": "OpenClaw-native source-only Routing v2 search and extraction across hosted providers plus an optional separately installed DonSeTch stdio provider.",
   "type": "module",
   "main": "dist/index.js",
@@ -40,6 +40,8 @@
     "provider-stats.ts",
     "search-locale.ts",
     "routing-config.ts",
+    "intent-routing.ts",
+    "query-limits.ts",
     "runtime-config.ts",
     "budget-preflight.ts",
     "shadow-quality.ts",

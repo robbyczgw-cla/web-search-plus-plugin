@@ -1,15 +1,15 @@
 # DonSeTch operator guide
 
-This guide covers the optional DonSeTch integration in Web Search Plus 4.3.1. DonSeTch is not bundled, redistributed, or started as a service by this plugin. It is an independent **AGPL-3.0-only** component that the operator must install, license-review, and maintain separately.
+This guide covers the optional DonSeTch integration in Web Search Plus 4.4.0. DonSeTch is not bundled, redistributed, or started as a service by this plugin. It is an independent **AGPL-3.0-only** component that the operator must install, license-review, and maintain separately.
 
 ## Supported version and preflight
 
-The adapter is currently tested and pinned against **DonSeTch 4.2.9**. Other parsed versions are reported as `compatible_unverified`; they are not claimed to be tested.
+The adapter is currently tested and pinned against **DonSeTch 4.7.0**. Other parsed versions are reported as `compatible_unverified`; they are not claimed to be tested.
 
 Install the pinned DonSeTch package separately from Web Search Plus:
 
 ```bash
-npm install -g donsetch@4.2.9
+npm install -g donsetch@4.7.0
 ```
 
 Then resolve and inspect the executable on the same host and as the same operating-system user that runs OpenClaw:
@@ -118,7 +118,7 @@ When `donsetchBin` is configured, `web_search_health_plus` runs the bounded `[do
 
 - `state`: `missing`, `executable`, `timeout`, or `unavailable`;
 - the parsed `version`, when available;
-- `testedVersion`, currently `4.2.9`;
+- `testedVersion`, currently `4.7.0`;
 - `compatibility`: `tested`, `compatible_unverified`, or `unknown`;
 - `binaryConfigured` and, for failures, a sanitized diagnostic when available.
 
@@ -139,7 +139,7 @@ Web Search Plus 4.0.3 removes the Hound HTTP MCP adapter and replaces that optio
 
 1. Remove the obsolete `houndMcpUrl`, `houndTimeoutSeconds`, `houndMaxResponseBytes`, and `houndMaxContentChars` plugin fields. The 4.0.3 schema rejects unknown fields.
 2. Remove or replace `hound` in configured provider priorities, disabled-provider lists, defaults, and `auto_allow` maps. Use `donsetch` only after completing the explicit smoke tests above.
-3. Install and review DonSeTch separately, pin 4.2.9, and set the absolute `donsetchBin` path.
+3. Install and review DonSeTch separately, pin 4.7.0, and set the absolute `donsetchBin` path.
 4. Map `houndTimeoutSeconds` to `donsetchTimeoutSeconds` and `houndMaxContentChars` to `donsetchMaxContentChars` only after reassessing the new defaults. There is no DonSeTch endpoint field and no public replacement for `houndMaxResponseBytes`; the DonSeTch transport owns a bounded output ceiling internally.
 5. Restart OpenClaw, inspect `web_search_health_plus`, then test explicit Search and Extract before enabling `auto_allow.donsetch`.
 6. Retire the old Hound sidecar using its own operator procedure after confirming that no other workload depends on it.
