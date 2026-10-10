@@ -66,7 +66,7 @@ test("search and extraction provider enums reflect the 4.0.3 surface", () => {
 
 test("changelog keeps Unreleased empty and records 4.0.3 review fixes", () => {
   const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
-  const [beforeCurrent] = changelog.split("## [4.3.1]");
+  const [beforeCurrent] = changelog.split("## [4.4.0]");
   assert.match(beforeCurrent, /^# Changelog\n\n## \[Unreleased\]\n\n$/);
   assert.match(changelog, /## \[4.0.3\].*contribution guide/s);
   assert.match(changelog, /donsetchBin rejects non-absolute/);
@@ -82,9 +82,9 @@ test("publishable files exist and the OpenClaw SDK remains a host dependency", (
 });
 
 
-test("manifest accepts configured default count and package version is 4.3.1", () => {
+test("manifest accepts configured default count and package version is 4.4.0", () => {
   const parsed = pluginEntry.configSchema.safeParse({ defaults: { max_results: 12 } });
   assert.equal(parsed.success, true);
   if (parsed.success) assert.equal(parsed.data.defaults.max_results, 12);
-  assert.equal(packageJson.version, "4.3.1");
+  assert.equal(packageJson.version, "4.4.0");
 });

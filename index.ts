@@ -1,15 +1,18 @@
 import crypto from "crypto";
+import { AsyncLocalStorage } from "async_hooks";
 import dns from "dns/promises";
 import net from "net";
 import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import pluginManifest from "./openclaw.plugin.json" with { type: "json" };
 import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
-import { ALL_PROVIDER_NAMES, applyRoutingProfile, DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
+import { ALL_PROVIDER_NAMES, applyRoutingProfile, DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, DEFAULT_ROUTING_PREFERENCES, normalizeProviderOrder, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential, isExtractProviderAvailable, readCachedExtractContent } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
 import { scoreDiversity } from "./diversity.ts";
-import { __resetProviderStatsForTests, getProviderHealthSnapshot, performanceAdjustments, recordProviderOutcome } from "./provider-stats.ts";
+import { capQueryLength, fitQuery } from "./query-limits.ts";
+import { planIntentRouting, MEASURED_PROVIDER_ORDER } from "./intent-routing.ts";
+import { __resetProviderStatsForTests, getProviderHealthSnapshot, recordProviderOutcome } from "./provider-stats.ts";
 import { providerSupportsLocale, resolveLocale, type ResolvedLocale } from "./search-locale.ts";
 import { preflightResearchFanout } from "./budget-preflight.ts";
 import { getShadowQualitySnapshot, recordShadowQualityObservation } from "./shadow-quality.ts";
@@ -25,6 +28,7 @@ export { deduplicateResultsAcrossProviders } from "./research.ts";
 export { CANONICAL_DOMAIN_RULES, buildAuthoritySignals, rerankResultsForIntent } from "./quality.ts";
 
 const DEFAULT_CACHE_TTL = 3600;
+const NO_RESULTS_MESSAGE = "No results found for this query. Do not invent sources or facts; say that nothing was found, or retry with a broader or differently worded query.";
 const RETRY_BACKOFF_MS = [1000, 3000, 9000];
 export const RETRY_JITTER_FRACTION = 0.5;
 const DEFAULT_RESEARCH_EXTRACT_COUNT = 3;
@@ -110,6 +114,7 @@ const ROUTING_CONFIG_ACTIONS = [
   "set_default_provider",
   "set_auto_routing",
   "set_provider_priority",
+  "set_provider_order",
   "set_extract_provider_priority",
   "set_fallback_provider",
   "disable_provider",
@@ -129,6 +134,7 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     provider: { type: "string", enum: [...SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto"), "none", "null"] },
     enabled: { type: "boolean", description: "Boolean value used by set_auto_routing and set_auto_allow." },
     providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Search or extraction priority order, depending on the selected action. Missing providers are appended in default order." },
+    order: { type: "string", enum: ["measured", "custom"], description: "Used by set_provider_order. measured: query intent picks the first provider (Brave, Exa for docs/academic, Serper for security/shopping) and provider_priority orders the fallback chain. custom: provider_priority is the order for every query." },
     confidence_threshold: { type: "number", minimum: 0, maximum: 1 },
     profile: { type: "string", enum: ["standard", "self_hosted"] },
   },
@@ -218,8 +224,20 @@ function sanitizeOutput(input: any): any {
   return input;
 }
 
+// The host's per-call AbortSignal (tool deadline or user cancel). Once it has
+// fired, no provider attempt or retry may start and in-flight requests abort.
+const toolCallSignal = new AsyncLocalStorage<AbortSignal | undefined>();
+function toolCallCancelled(): boolean {
+  return toolCallSignal.getStore()?.aborted === true;
+}
+
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  const signal = toolCallSignal.getStore();
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done() { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); }
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 function sha256(input: string): string {
@@ -377,13 +395,16 @@ function pickStrictDefaultProvider(availableProviders: ProviderName[], routingCo
 function selectAutoProvider(query: string, availableProviders: ProviderName[], routingConfig: RoutingPreferences): { provider: ProviderName; routing: Json } {
   const autoExcluded = availableProviders.filter((provider) => routingConfig.auto_allow?.[provider] === false);
   const autoProviders = availableProviders.filter((provider) => routingConfig.auto_allow?.[provider] !== false);
-  const orderedProviders = orderProvidersByPreference(autoProviders.length ? autoProviders : availableProviders, routingConfig);
+  const candidates = autoProviders.length ? autoProviders : availableProviders;
+  const orderedProviders = orderProvidersByPreference(candidates, routingConfig);
   const analyzer = new QueryAnalyzer();
-  const baseAnalysis = analyzer.analyze(query);
-  const hasQuerySignals = Math.max(...orderedProviders.map((provider) => Number(baseAnalysis.provider_scores[provider] || 0)), 0) > 0;
-  const adaptiveAdjustments = hasQuerySignals ? performanceAdjustments(orderedProviders) : {};
-  const analysis = analyzer.route(query, orderedProviders, adaptiveAdjustments);
-  const provider = analysis.provider;
+  const analysis = analyzer.analyze(query);
+  const plan = planIntentRouting(analysis.routing_class, query, routingConfig.provider_priority?.length ? routingConfig.provider_priority : DEFAULT_PROVIDER_PRIORITY, routingConfig.provider_order === "custom");
+  // First provider: the intent table (or the operator's own order), then the
+  // measured chain; never a provider that is disabled, unconfigured or not
+  // auto-allowed.
+  const provider = plan.preferred.find((candidate) => candidates.includes(candidate)) ?? orderedProviders[0] ?? ("serper" as ProviderName);
+  const hasIntent = plan.customOrder || analysis.routing_class !== "general";
 
   return {
     provider,
@@ -391,35 +412,41 @@ function selectAutoProvider(query: string, availableProviders: ProviderName[], r
       requested_provider: "auto",
       auto_routed: true,
       provider,
-      confidence_level: analysis.confidence >= routingConfig.confidence_threshold ? analysis.confidence_level : "low",
-      reason: analysis.reason,
+      confidence_level: plan.customOrder ? "high" : hasIntent ? "medium" : "low",
+      reason: plan.reason,
       confidence_threshold: routingConfig.confidence_threshold,
-      exa_depth: analysis.exa_depth,
-      routing_policy: analysis.routing_policy,
-      language_hint: analysis.analysis_summary?.language_hint,
-      routing_class: analysis.analysis_summary?.routing_class,
-      scores: analysis.scores,
-      adaptive_adjustments: analysis.adaptive_adjustments,
-      below_threshold: analysis.confidence < routingConfig.confidence_threshold,
+      exa_depth: "normal",
+      routing_policy: "routing-v3-intent-lite",
+      language_hint: analysis.language_hint,
+      routing_class: analysis.routing_class,
+      routing_intent: plan.intent,
+      provider_order: plan.customOrder ? "custom" : "measured",
+      scores: {},
+      adaptive_adjustments: {},
+      below_threshold: false,
       auto_allow_excluded: autoExcluded,
     },
   };
 }
 
 function buildAutoFallbackOrder(primary: ProviderName, availableProviders: ProviderName[], routingConfig: RoutingPreferences): ProviderName[] {
+  const priority = routingConfig.provider_priority?.length ? routingConfig.provider_priority : DEFAULT_PROVIDER_PRIORITY;
+  const custom = routingConfig.provider_order === "custom";
   const ordered = orderProvidersByPreference(availableProviders, routingConfig);
   const unique: ProviderName[] = [primary];
   const seen = new Set<ProviderName>(unique);
-  if (isProviderUsable(routingConfig.fallback_provider, availableProviders, routingConfig.disabled_providers) && !seen.has(routingConfig.fallback_provider)) {
-    unique.push(routingConfig.fallback_provider);
-    seen.add(routingConfig.fallback_provider);
-  }
-  for (const provider of ordered) {
-    if (!seen.has(provider)) {
+  const push = (provider: ProviderName | null | undefined) => {
+    if (provider && !seen.has(provider) && isProviderUsable(provider, availableProviders, routingConfig.disabled_providers)) {
       unique.push(provider);
       seen.add(provider);
     }
-  }
+  };
+  // "serper" is the shipped fallback_provider default and not an operator
+  // choice; an explicit different fallback_provider still goes right after the
+  // first provider.
+  if (routingConfig.fallback_provider && routingConfig.fallback_provider !== DEFAULT_ROUTING_PREFERENCES.fallback_provider) push(routingConfig.fallback_provider);
+  if (!custom) MEASURED_PROVIDER_ORDER.forEach(push);
+  ordered.forEach(push);
   return unique;
 }
 
@@ -605,6 +632,13 @@ function domainFromUrl(url: string): string {
 async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Promise<any> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const hostSignal = toolCallSignal.getStore();
+  const onHostAbort = () => controller.abort();
+  if (hostSignal?.aborted) {
+    clearTimeout(timer);
+    throw new ProviderRequestError("Request cancelled: the tool call was aborted", { transient: false });
+  }
+  hostSignal?.addEventListener("abort", onHostAbort, { once: true });
   try {
     const res = await fetch(url, {
       ...init,
@@ -624,11 +658,13 @@ async function httpJson(url: string, init: RequestInit, timeoutMs = 30000): Prom
     }
     return data ?? {};
   } catch (error: any) {
+    if (hostSignal?.aborted) throw new ProviderRequestError("Request cancelled: the tool call was aborted", { transient: false });
     if (error?.name === "AbortError") throw new ProviderRequestError(`Request timed out after ${timeoutMs}ms`, { transient: true });
     if (error instanceof ProviderRequestError) throw error;
     throw new ProviderRequestError(`Network error: ${String(error?.message || error)}`, { transient: true });
   } finally {
     clearTimeout(timer);
+    hostSignal?.removeEventListener("abort", onHostAbort);
   }
 }
 
@@ -1270,9 +1306,11 @@ async function executeWithRetry(fn: () => Promise<SearchResponse>): Promise<Sear
   let lastError: any;
   for (let attempt = 0; attempt < RETRY_BACKOFF_MS.length; attempt += 1) {
     try {
+      if (toolCallCancelled()) throw lastError ?? new ProviderRequestError("Request cancelled: the tool call was aborted", { transient: false });
       return await fn();
     } catch (error: any) {
       lastError = error;
+      if (toolCallCancelled()) break;
       if (!(error instanceof ProviderRequestError) || !error.transient || error.statusCode === 401 || error.statusCode === 403) break;
       const isRateLimited = error.statusCode === 429;
       const attemptCap = isRateLimited ? Math.min(RETRY_BACKOFF_MS.length, RATE_LIMIT_MAX_ATTEMPTS) : RETRY_BACKOFF_MS.length;
@@ -1321,7 +1359,7 @@ function buildQualityReport(result: SearchResponse, routingInfo: Json, errors: J
 
 async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, pluginConfig: Record<string, any> = {}): Promise<SearchExecutionResult> {
   try {
-    const query = String(params.query || "").trim();
+    const query = capQueryLength(String(params.query || "").trim());
     if (!query) return { ok: false, payload: { error: "Search failed: query is required" } };
 
     const requestedCount = Number(params.count ?? pluginConfig.defaults?.max_results ?? 5);
@@ -1427,7 +1465,14 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       const locale = providerSupportsLocale(p) ? resolveLocale(p, runtimeConfig, query) : undefined;
       const executeProvider = async (): Promise<SearchResponse> => {
         if (p === "serper") return searchSerper(query, key, count, timeRange, locale, PROVIDER_SEARCH_TYPES.serper[searchType || "search"] || "search");
-        if (p === "brave") return searchBrave(query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
+        if (p === "brave") {
+          // Brave rejects queries over 600 characters / 75 words with a 4xx.
+          const fitted = fitQuery("brave", query);
+          const response = await searchBrave(fitted.query, key, count, { ...braveOptions, country: locale?.country, search_lang: locale?.language, time_range: timeRange });
+          response.query = query;
+          if (fitted.truncated) response.metadata = { ...(response.metadata || {}), query_truncated: fitted.truncated };
+          return response;
+        }
         if (p === "tavily") return searchTavily(query, key, count, includeDomains, excludeDomains, timeRange);
         if (p === "linkup") return searchLinkup(query, key, count, includeDomains, excludeDomains);
         if (p === "querit") return searchQuerit(query, key, count, timeRange, includeDomains, excludeDomains, locale);
@@ -1583,11 +1628,17 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     const successes: Array<[string, SearchResponse]> = [];
 
     for (const p of eligibleProviders) {
+      if (toolCallCancelled()) {
+        errors.push({ provider: p, error: "skipped: the tool call was aborted before this provider started" });
+        break;
+      }
       try {
         const result = await executeWithRetry(() => runProvider(p));
         resetProviderHealth(p);
         successes.push([p, result]);
-        if (strictProviderMode || (result.results || []).length >= count || errors.length === 0) break;
+        // An empty answer is not a final answer in automatic mode: try the next provider.
+        const gotResults = (result.results || []).length;
+        if (strictProviderMode || gotResults >= count || (errors.length === 0 && gotResults > 0)) break;
       } catch (error: any) {
         const message = sanitizeOutput(String(error?.message || error));
         // Configuration errors such as missing API keys are not provider
@@ -1605,17 +1656,18 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
     }
 
     let result: SearchResponse;
+    const leadSuccess = successes.find(([, response]) => (response.results || []).length > 0) ?? successes[0];
     if (successes.length === 1) {
       result = successes[0][1];
     } else {
-      result = { ...successes[0][1] };
+      result = { ...leadSuccess[1] };
       const deduped = deduplicateResultsAcrossProviders(successes, count);
       result.results = deduped.results;
       result.deduplicated = deduped.dedupCount > 0;
       result.metadata = { ...(result.metadata || {}), dedup_count: deduped.dedupCount, providers_merged: successes.map(([p]) => p) };
     }
 
-    const successfulProvider = successes[0][0] as ProviderName;
+    const successfulProvider = leadSuccess[0] as ProviderName;
     if (!strictProviderMode && successfulProvider !== provider) {
       routingInfo = { ...routingInfo, fallback_used: true, original_provider: provider, provider: successfulProvider };
     }
@@ -1667,6 +1719,12 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       result.metadata = { ...(result.metadata || {}), locale: resolveLocale(successfulProvider, runtimeConfig, query).metadata };
     }
 
+    const noResults = Array.isArray(result.results) && result.results.length === 0;
+    if (noResults) {
+      result.message = NO_RESULTS_MESSAGE;
+      result.metadata = { ...(result.metadata || {}), no_results: true };
+    }
+
     result.routing = routingInfo;
     result.cached = false;
     if (!(result as any).metadata) result.metadata = {};
@@ -1677,7 +1735,8 @@ async function executeSearch(runtimeConfig: RuntimeConfig, params: ToolParams, p
       result.quality_report = buildQualityReport(result, routingInfo, errors, cooldownSkips, providersToTry);
     }
 
-    if (!params.no_cache) cachePut(query, successfulProvider, count, result, cacheContext);
+    // An empty answer is not cached: repeats must reach a provider again.
+    if (!params.no_cache && !noResults) cachePut(query, successfulProvider, count, result, cacheContext);
     return { ok: true, payload: sanitizeOutput(result) };
   } catch (error: any) {
     return { ok: false, payload: { error: `Search failed: ${sanitizeOutput(String(error?.message || error))}` } };
@@ -1732,6 +1791,11 @@ function executeRoutingConfigAction(pluginConfig: Record<string, any>, params: R
       for (const provider of DEFAULT_PROVIDER_PRIORITY) {
         if (!config.provider_priority.includes(provider)) config.provider_priority.push(provider);
       }
+    }));
+  }
+  if (action === "set_provider_order") {
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.provider_order = normalizeProviderOrder(params?.order);
     }));
   }
   if (action === "set_extract_provider_priority") {
@@ -1803,7 +1867,7 @@ export function register(api: any) {
         const runtimeConfig = getRuntimeConfig((api.pluginConfig ?? {}) as Record<string, any>, commandRunner);
         const readiness = commandRunner
           ? await inspectDonsetchReadiness(commandRunner, runtimeConfig.donsetchBin, { timeoutSeconds: 5 })
-          : { state: runtimeConfig.donsetchBin ? "unavailable" : "missing", version: null, testedVersion: "4.2.9", compatibility: "unknown", binaryConfigured: Boolean(runtimeConfig.donsetchBin), diagnostic: runtimeConfig.donsetchBin ? "openclaw_command_runner_unavailable" : undefined };
+          : { state: runtimeConfig.donsetchBin ? "unavailable" : "missing", version: null, testedVersion: "4.7.0", compatibility: "unknown", binaryConfigured: Boolean(runtimeConfig.donsetchBin), diagnostic: runtimeConfig.donsetchBin ? "openclaw_command_runner_unavailable" : undefined };
         return { content: [{ type: "text", text: JSON.stringify({ ...getProviderHealthSnapshot(ALL_PROVIDERS), shadow_quality: getShadowQualitySnapshot(), donsetch: readiness }) }] };
       },
     },
@@ -1858,13 +1922,13 @@ export function register(api: any) {
     {
       name: "web_search_plus",
       description:
-        "Search the web with source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, explicit-only Octen/TinyFish, and optional separately installed DonSeTch. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and stop after a conservative source-quality quorum.",
+        "Search the web, routing each query to the best configured provider with automatic fallback. Source-only multi-provider routing across Serper, Brave, Tavily, Linkup, Querit, Exa, Firecrawl, Parallel, SerpBase, You.com, SearXNG, Keenable, explicit-only Octen/TinyFish, and optional separately installed DonSeTch. Automatic routing supports canonical-source reranking, a process-local response cache, bounded transient retries, and provider fallback. mode=research can query up to three providers and stop after a conservative source-quality quorum.",
       parameters: PARAMETERS_SCHEMA,
-      async execute(_id: string, params: ToolParams) {
+      async execute(_id: string, params: ToolParams, signal?: AbortSignal) {
         try {
           const pluginConfig: Record<string, any> = (api.pluginConfig ?? {}) as Record<string, any>;
           const runtimeConfig = getRuntimeConfig(pluginConfig, commandRunner);
-          const result = await executeSearch(runtimeConfig, params, pluginConfig);
+          const result = await toolCallSignal.run(signal, () => executeSearch(runtimeConfig, params, pluginConfig));
           if (!result.ok) {
             const failure = result.payload as Json;
             return { content: [{ type: "text", text: JSON.stringify(sanitizeOutput(failure)) }] };
@@ -1901,7 +1965,7 @@ export function register(api: any) {
     {
       name: "web_extract_plus",
       description:
-        "Extract URL content across configured providers, including optional separately installed DonSeTch over a host-managed stdio process, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
+        "Extract page content from URLs, with per-URL errors and provider fallback. Extraction runs across configured providers, including optional separately installed DonSeTch over a host-managed stdio process, with bounded automatic fallback, per-URL errors, and unified output. The aggregate context budget selects a prefix before the per-result head/tail window. Inline raw_content mirrors final budgeted content; distinct provider raw text remains available through process-local full-content references. routing_override_provider makes one strict provider attempt with no fallback.",
       parameters: EXTRACT_PARAMETERS_SCHEMA,
       checkFn() {
         const pluginConfig: Record<string, string> = (api.pluginConfig ?? {}) as Record<string, string>;

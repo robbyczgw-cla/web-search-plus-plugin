@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+## [4.4.0] - 2026-10-10
+
+Light sync toward Hermes Web Search Plus 5.0.1. This is not a 5.x engine port: the plugin keeps its in-process TypeScript design and takes over the 5.0 routing table plus the 5.0.1 fixes that apply here. The assessment of every 5.0.1 fix (applies / does not apply) is in the commit message and PR notes.
+
+### Breaking changes
+
+- **Automatic routing picks the first provider by query intent**, using the 5.0 table: Exa for docs and academic queries, Serper for security and shopping, Brave for everything else (general, news, local, community). The plugin's existing query classes are mapped onto the 5.0 intents; Hermes' intent classifier is not ported. Fallback order is first provider, Brave, Serper, Exa, Tavily, then `provider_priority`. Expect noticeably more Brave and fewer You.com, Firecrawl, Tavily and Linkup first picks. `routing_class` is unchanged (authority reranking still uses it); new `routing_intent`, `provider_order` (`measured` or `custom`) and `reason` (`intent_<name>`, `no_signals_matched`, `custom_order`) are added; `routing_policy` is `routing-v3-intent-lite`, `scores` and `adaptive_adjustments` are empty.
+- **The default `provider_priority` is now Brave, Serper, Exa, Tavily, You.com, Firecrawl, Linkup, Parallel, SerpBase, Querit, SearXNG, Keenable** (was You.com, Serper, Exa, Firecrawl, Tavily, Linkup, Brave, ...). A stored list equal to the old default is replaced by the new default. `provider_priority` keeps its 4.3.1 meaning (it orders the fallback chain after Brave, Serper, Exa and Tavily and breaks ties) unless you opt in to your own order with the new `provider_order: "custom"`.
+- Adaptive score adjustments and `confidence_threshold` no longer influence which provider goes first. Provider statistics are still recorded for `web_search_health_plus`.
+
+### Added
+
+- `provider_order` routing preference, `"measured"` (default) or `"custom"`. `measured`: the 5.0 intent table picks the first provider. `custom`: `provider_priority` is the order for every query (`reason: custom_order`). It is an explicit setting, never inferred from `provider_priority`: set it in `routingPreferences.provider_order` of the plugin config (the plugin's routing preferences are a flat object, so there is no `auto_routing.order` nesting as in Hermes) or with `web_routing_config_plus(action="set_provider_order", order=...)`. `reset` returns to `measured`.
+
+### Fixed
+
+- A successful search with no hits now returns `message` ("No results found for this query. Do not invent sources or facts; ...") and `metadata.no_results`, is no longer cached, and in automatic mode the next provider is tried before giving up (an empty first answer used to end the search).
+- Brave queries are shortened at a word boundary only past Brave's documented limit of 600 characters and 75 words (not the 400/50 that Hermes 5.0.1 used); `metadata.query_truncated` reports sizes, `query` still shows the original. Queries over 2,000 characters are cut before any provider.
+- The host's abort signal now reaches `web_search_plus`: once the tool call is aborted no provider attempt or retry starts, a pending retry sleep ends, and in-flight provider requests are cancelled. (Retry-After was already capped at 30 s for inline waits and 3,600 s for cooldowns, and retries without it already back off 1 s, 3 s, 9 s with jitter.)
+- One blocked, private or unresolvable URL no longer sinks an extraction batch: it gets its own error line and the other URLs are still extracted. Error messages no longer print the internal IP a host resolved to.
+- Blank pages (cookie wall, empty body) are errors, not successes: they fall through to the next extraction provider and are not cached. An empty provider answer also falls through. Exa URLs listed in `statuses` as failed are reported as error lines instead of being dropped. Extraction answers that do not cover every requested URL are returned but not cached.
+- Tool descriptions of `web_search_plus` and `web_extract_plus` start with a short first sentence.
+
+### Changed
+
+- DonSeTch tested version is 4.7.0 (was 4.2.9), matching Hermes Web Search Plus 5.0. Verified here against the real DonSeTch 4.7.0 binary for `--version`, one MCP `web_search` and one `web_fetch` through the plugin's transport; the unit tests still use mocked runners.
+- Added `intent-routing.ts` and `query-limits.ts` to the package.
+
+### Checked, no change needed
+
+- The source-only gate only scans instruction-, prompt- and system-like fields, never query text, so "synthesizer" or "verify the claim" in a query does not fail Exa, Tavily or Linkup (new regression tests).
+- Firecrawl and Linkup extraction already run per URL and keep pages they fetched. Extraction reports the real page length (`original_chars`) and points to the process-local full text (`full_content_ref`, `full_content_chars`), so there is no "full text stored" claim to correct.
+- `web_extract_plus` availability already reads plugin config; there is no environment-only `check_fn` for search. Auto routing disabled without `default_provider` returns an explicit error instead of provider "None"; a private SearXNG URL only fails SearXNG itself.
+- OpenClaw 2026.9.x compatibility: the plugin imports only `openclaw/plugin-sdk/plugin-entry` (`definePluginEntry`, `buildJsonPluginConfigSchema`) and uses `api.registerTool`, `api.pluginConfig` and `api.runtime.system.runCommandWithTimeout(argv, options)`; all are unchanged in the 2026.9.9 type declarations and none of the deprecated or removed subpaths are used. `compat.pluginApi` stays `>=2026.8.1` (a minimum, not a tested ceiling). The build target stays node22: OpenClaw's own Node floor is enforced by the host.
+
+### Not ported from Hermes 5.0 / 5.0.1
+
+Hedged (p75) fallback and per-request attempt engine; per-URL extraction rewrite with cross-provider per-URL retry and requested-order results (only the pieces above); `site:` operator domain filters for Brave, Serper, SerpBase and You.com; Tavily public-suffix domain validation; `Query rejected ... may be too long` error text for 413/414/422; the 998-line intent classifier, language detection, publication dates in result titles and snippet truncation; extra-result fetching (count + 5) and the two-per-domain cap change; RRF research fusion with passages; v3 state store, circuit breaker, receipts and Operator Console; Keenable `--keyless-public` setup flow; Hermes-only items (native backend, Desktop settings, config.json/.env loading).
+
 ## [4.3.1] - 2026-09-23
 
 Matches Hermes Web Search Plus and web-search-plus-mcp 4.3.1. Their 4.3.1 change (keep-alive provider connections; MCP running search in-process) needs no port here: the plugin already runs in-process and Node `fetch` pools connections.

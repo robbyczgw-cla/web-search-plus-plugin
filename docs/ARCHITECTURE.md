@@ -261,4 +261,4 @@ Removed in v2.0.0:
 - `scripts/search.py`
 - `scripts/setup.py`
 
-The legacy Python subprocess architecture remains replaced by the in-process TypeScript implementation. The optional DonSeTch 4.2.9 boundary is narrower: a separately installed executable is invoked only through OpenClaw's host-owned runner and stdio MCP contract.
+The legacy Python subprocess architecture remains replaced by the in-process TypeScript implementation. The optional DonSeTch 4.7.0 boundary is narrower: a separately installed executable is invoked only through OpenClaw's host-owned runner and stdio MCP contract.

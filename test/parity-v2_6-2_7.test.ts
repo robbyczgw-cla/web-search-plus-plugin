@@ -16,8 +16,8 @@ test.beforeEach(() => {
   __resetRoutingPreferencesForTests();
 });
 
-test("routing priorities match Hermes 4.0.3 and keep DonSeTch explicit-only", () => {
-  assert.deepEqual(DEFAULT_PROVIDER_PRIORITY, ["you", "serper", "exa", "firecrawl", "tavily", "linkup", "brave", "parallel", "serpbase", "querit", "searxng", "keenable"]);
+test("routing priorities match Hermes 5.0 and keep DonSeTch explicit-only", () => {
+  assert.deepEqual(DEFAULT_PROVIDER_PRIORITY, ["brave", "serper", "exa", "tavily", "you", "firecrawl", "linkup", "parallel", "serpbase", "querit", "searxng", "keenable"]);
   assert.deepEqual(EXTRACT_PROVIDER_PRIORITY.slice(-3), ["keenable", "serper", "donsetch"]);
 });
 

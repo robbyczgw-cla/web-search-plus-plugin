@@ -6,7 +6,7 @@
 
 Native OpenClaw source-only plugin for one clean set of web tools.
 
-Current version: **4.3.1**
+Current version: **4.4.0**
 
 Search accepts `no_cache` to bypass cache reads and writes and `cache_ttl` in seconds. Recency caps are 60 seconds for hour/live, 300 for day/latest, 1800 for week, and 3600 otherwise. `time_range` wins over `freshness`; the stricter query-intent cap still applies. Cached responses include age and a recency label. Research source summaries keep up to 500 characters, preferring query-matching evidence.
 
@@ -14,7 +14,7 @@ Set `defaults.max_results` in plugin config to choose the default search count. 
 
 It registers:
 
-- `web_search_plus` — Routing v2 intelligent multi-provider web search with research mode and canonical-source reranking
+- `web_search_plus` — Intent-routed multi-provider web search with research mode and canonical-source reranking
 - `web_extract_plus` — Tavily-first URL extraction across supported providers
 - `web_routing_config_plus` — process-local routing preferences, valid until host restart
 - `web_search_health_plus` — read-only process-local provider health and shadow-quality observations
@@ -109,10 +109,10 @@ Set `spans: true` to add up to three deterministic, non-overlapping passages per
 
 ### DonSeTch installation and OpenClaw host runner
 
-DonSeTch is not bundled or redistributed by this plugin. It is an independent AGPL-3.0-only component and must be installed and reviewed separately. The adapter is tested with DonSeTch 4.2.9:
+DonSeTch is not bundled or redistributed by this plugin. It is an independent AGPL-3.0-only component and must be installed and reviewed separately. The adapter is tested with DonSeTch 4.7.0:
 
 ```bash
-npm install -g donsetch@4.2.9
+npm install -g donsetch@4.7.0
 command -v donsetch
 donsetch --version
 donsetch doctor
@@ -196,23 +196,24 @@ Example:
 
 ## Routing v2
 
-`web_search_plus(provider="auto")` uses class-aware benchmarked routing. Diagnostics expose `language_hint`, `routing_class`, and `routing_policy` on every response.
+`web_search_plus(provider="auto")` picks the first provider by query intent, using the Hermes Web Search Plus 5.0 first-provider table. The plugin keeps its own query classes and maps them onto the 5.0 intents (it does not port Hermes' intent classifier). Diagnostics expose `routing_class` (plugin class), `routing_intent` (5.0 intent), `provider_order`, `reason`, `language_hint` and `routing_policy`.
 
-Classes:
+| Plugin routing class | 5.0 intent | First provider |
+| --- | --- | --- |
+| docs/api | docs | Exa |
+| academic/arxiv | academic | Exa |
+| security/cve | security | Serper |
+| local/shopping with buy/price/shop words | shopping | Serper |
+| local/shopping otherwise (near me, place names) | local | Brave |
+| community/reddit | community | Brave |
+| multilingual/current | news | Brave |
+| everything else (official/*, finance/IR, weather/factual, oss-discovery, answer/synthesis, general) | general | Brave |
 
-- multilingual/current → Querit/Brave when allowed
-- local/shopping → Serper
-- docs/api → Exa/Firecrawl
-- academic/arxiv → Exa
-- community/reddit → Serper/Brave
-- security/cve → Firecrawl for vendor/source pages
-- official/vendor-release → You.com/Linkup for vendor announcements (Anthropic, OpenAI, Mistral, …)
-- official/regulatory → Linkup
-- finance/IR → Linkup/Tavily
-- weather/factual → You.com snippet-first
-- oss-discovery → Exa neural source discovery
+The first provider is the first one in that list that is configured, enabled and auto-allowed. Fallback order: first provider, then Brave, Serper, Exa, Tavily, then `provider_priority`. `routing_class` still drives authority reranking, so the authority rules for docs, security, vendor releases, regulatory pages and finance IR pages are unchanged.
 
-Default search priority is You.com, Serper, Exa, Firecrawl, Tavily, Linkup, Brave, Parallel, SerpBase, Querit, SearXNG, then Keenable. Configured Parallel and Brave are in the normal automatic pool; operators can still opt either out with `auto_allow=false`.
+Your own order: `provider_order` is an explicit setting in the routing preferences (`routingPreferences.provider_order` in plugin config, or `web_routing_config_plus(action="set_provider_order", order="custom")`). With `measured` (the default) the intent table above picks the first provider and `provider_priority` orders the rest of the fallback chain after Brave, Serper, Exa and Tavily. With `custom`, `provider_priority` is the order for every query (`reason: custom_order`, `provider_order: custom`), for example `set_provider_priority providers=["exa","serper","brave"]` followed by `set_provider_order order="custom"`. Setting only `provider_priority` does not switch to custom. A stored 4.x default `provider_priority` is replaced by the new default. `action="reset"` returns to `measured`. An explicit `fallback_provider` other than the default `serper` is tried right after the first provider. `confidence_threshold` and adaptive scoring no longer influence the first provider.
+
+Default search priority is Brave, Serper, Exa, Tavily, You.com, Firecrawl, Linkup, Parallel, SerpBase, Querit, SearXNG, then Keenable. Configured Parallel and Brave are in the normal automatic pool; operators can still opt either out with `auto_allow=false`.
 
 Guarded providers require `auto_allow=true` for automatic traffic: SerpBase, Querit, DonSeTch, Octen, and TinyFish. Explicit calls remain available when the provider is configured and enabled. This gate is operational policy, not a privacy or contractual guarantee.
 
@@ -222,7 +223,7 @@ Search `provider_priority` and extraction `extract_provider_priority` are indepe
 
 Pass `quality_report: true` to receive routing scores, result-quality hints, fallback-chain diagnostics, `authority_signals` (canonical domain hits, demoted domain hits, and whether the top result is a primary source), and a deterministic `diversity` score. The score combines registrable-domain coverage, canonical-URL uniqueness, snippet-trigram diversity, and provider mix. Set `qualityDiversityRerank: true` to move near-duplicate Research candidates behind the diverse head without removing results.
 
-Auto routing additionally learns from recent provider behavior: every call records latency, result volume, and errors into an in-memory rolling window, and routing scores get a bounded (±1.0) adjustment (`routing.adaptive_adjustments`) once enough fresh samples exist — enough to break ties, never enough to override a clear query-class winner.
+Every call still records latency, result volume, and errors into an in-memory rolling window for `web_search_health_plus`. Since 4.4.0 these samples no longer adjust routing scores (Hermes removed adaptive routing in 5.0).
 
 ### Result hygiene
 
@@ -271,6 +272,7 @@ Supported actions:
 - `set_auto_routing`
 - `set_auto_allow`
 - `set_provider_priority`
+- `set_provider_order` (`order`: `measured` or `custom`)
 - `set_extract_provider_priority`
 - `set_profile`
 - `set_fallback_provider`

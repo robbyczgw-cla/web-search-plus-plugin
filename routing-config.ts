@@ -3,10 +3,32 @@ export type ExtractProviderName = Extract<ProviderName, "tavily" | "exa" | "link
 
 export const ALL_PROVIDER_NAMES: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "you", "searxng", "parallel", "serpbase", "keenable", "donsetch", "octen", "tinyfish"];
 
-// Match Hermes 4.0.3's Routing v2 priority. Explicit-only provider modules do
-// not enter this default order; they remain valid when named directly or when
-// an operator deliberately adds them to a custom priority and auto_allow.
-export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["you", "serper", "exa", "firecrawl", "tavily", "linkup", "brave", "parallel", "serpbase", "querit", "searxng", "keenable"];
+// Matches Hermes 5.0's default fallback chain (Brave, Serper, Exa, Tavily, then
+// the rest). Explicit-only provider modules do not enter this default order;
+// they remain valid when named directly or when an operator deliberately adds
+// them to a custom priority and auto_allow.
+export const DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["brave", "serper", "exa", "tavily", "you", "firecrawl", "linkup", "parallel", "serpbase", "querit", "searxng", "keenable"];
+// The default every 4.x release shipped (Hermes 4.0.3 Routing v2). A config
+// that still holds it never chose an order, so it gets the current default.
+export const PRE_5_DEFAULT_PROVIDER_PRIORITY: ProviderName[] = ["you", "serper", "exa", "firecrawl", "tavily", "linkup", "brave", "parallel", "serpbase", "querit", "searxng", "keenable"];
+
+function sameProviderList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((provider, index) => provider === right[index]);
+}
+
+/**
+ * "measured": the 5.0 intent table picks the first provider and provider_priority
+ * orders the rest of the fallback chain. "custom": provider_priority is the order
+ * for every query. Never inferred from provider_priority; always an explicit choice.
+ */
+export const PROVIDER_ORDERS = ["measured", "custom"] as const;
+export type ProviderOrder = (typeof PROVIDER_ORDERS)[number];
+
+export function normalizeProviderOrder(value: unknown): ProviderOrder {
+  const order = String(value ?? "").trim().toLowerCase();
+  if ((PROVIDER_ORDERS as readonly string[]).includes(order)) return order as ProviderOrder;
+  throw new Error(`Invalid provider_order: ${String(value)} (use "measured" or "custom")`);
+}
 export const DEFAULT_EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily", "exa", "linkup", "parallel", "firecrawl", "you", "keenable", "serper", "donsetch"];
 
 // Parallel joined the normal automatic pool in WSP 4.0.2. DonSeTch, Octen,
@@ -20,6 +42,7 @@ export type RoutingPreferences = {
   auto_routing: boolean;
   default_provider: ProviderName | null;
   provider_priority: ProviderName[];
+  provider_order: ProviderOrder;
   extract_provider_priority: ExtractProviderName[];
   fallback_provider: ProviderName | null;
   disabled_providers: ProviderName[];
@@ -42,6 +65,7 @@ export const DEFAULT_ROUTING_PREFERENCES: RoutingPreferences = {
   auto_routing: true,
   default_provider: null,
   provider_priority: [...DEFAULT_PROVIDER_PRIORITY],
+  provider_order: "measured",
   extract_provider_priority: [...DEFAULT_EXTRACT_PROVIDER_PRIORITY],
   fallback_provider: "serper",
   disabled_providers: [],
@@ -181,6 +205,9 @@ export function validateRoutingPreferences(raw: unknown): RoutingPreferences {
   config.auto_routing = input.auto_routing == null ? config.auto_routing : Boolean(input.auto_routing);
   config.default_provider = input.default_provider == null ? config.default_provider : normalizeOptionalProvider(input.default_provider);
   config.provider_priority = input.provider_priority == null ? config.provider_priority : normalizePriority(input.provider_priority);
+  // A stored 4.x default list means "no order chosen": use the 5.0 default.
+  if (sameProviderList(config.provider_priority, PRE_5_DEFAULT_PROVIDER_PRIORITY)) config.provider_priority = [...DEFAULT_PROVIDER_PRIORITY];
+  config.provider_order = input.provider_order == null ? config.provider_order : normalizeProviderOrder(input.provider_order);
   config.extract_provider_priority = input.extract_provider_priority == null ? config.extract_provider_priority : normalizeExtractPriority(input.extract_provider_priority);
   config.fallback_provider = input.fallback_provider == null ? config.fallback_provider : normalizeOptionalProvider(input.fallback_provider);
   config.disabled_providers = input.disabled_providers == null ? config.disabled_providers : normalizeProviderList(input.disabled_providers);

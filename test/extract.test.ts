@@ -170,7 +170,7 @@ test("extractYou parses contents markdown", async () => {
 
 test("extractPlus auto prefers linkup when available (Tavily > Exa > Linkup > Firecrawl order)", async () => {
   await withMockedFetch(
-    () => mockJsonResponse({ results: [{ url: "https://example.com", content: "linkup content" }] }),
+    () => mockJsonResponse({ markdown: "linkup content" }),
     async (calls) => {
       const result = await extractPlus(["https://example.com"], "auto", "markdown", false, false, false, {
         firecrawlApiKey: "fc-test",

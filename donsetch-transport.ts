@@ -2,7 +2,7 @@ import path from "node:path";
 
 type JsonObject = Record<string, unknown>;
 
-export const DONSETCH_TESTED_VERSION = "4.2.9";
+export const DONSETCH_TESTED_VERSION = "4.7.0";
 export const DONSETCH_MCP_PROTOCOL_VERSION = "2025-11-25";
 
 const DEFAULT_TIMEOUT_SECONDS = 180;

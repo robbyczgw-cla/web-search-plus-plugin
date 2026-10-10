@@ -1,6 +1,6 @@
 ---
 name: web-search-plus-plugin-v2
-version: 4.3.1
+version: 4.4.0
 description: OpenClaw plugin for source-only Routing v2 multi-provider search, completion-order Research with quality quorum and attributed provenance, heading-aware extraction spans, Tavily-first extraction, explicit-only Octen/TinyFish, optional separately installed DonSeTch through the OpenClaw host runner, process-local health, routing preferences, and extraction benchmarks. Registers five optional web tools.
 ---
 
@@ -38,7 +38,7 @@ For least privilege, remove any names the agent does not need. `tools.alsoAllow`
 
 ## Good starter setup
 
-Start with one or more of You.com, Serper, and Linkup. Tavily is first in the default extraction order:
+Start with one or more of Brave, Serper, and Exa. Tavily is first in the default extraction order:
 
 Tavily → Exa → Linkup → Parallel → Firecrawl → You.com → Keenable → Serper → DonSeTch.
 
@@ -84,10 +84,10 @@ OpenClaw plugin config is the only credential source; this package does not disc
 
 ## DonSeTch
 
-Install the independent AGPL-3.0-only DonSeTch 4.2.9 package separately:
+Install the independent AGPL-3.0-only DonSeTch 4.7.0 package separately:
 
 ```bash
-npm install -g donsetch@4.2.9
+npm install -g donsetch@4.7.0
 command -v donsetch
 donsetch --version
 donsetch doctor
@@ -99,7 +99,9 @@ Use `provider="donsetch"` explicitly first. Only after verifying the target host
 
 ## Routing v2
 
-Default search priority: You.com → Serper → Exa → Firecrawl → Tavily → Linkup → Brave → Parallel → SerpBase → Querit → SearXNG → Keenable.
+Automatic routing picks the first provider by query intent (Hermes Web Search Plus 5.0 table): Exa for docs and academic queries, Serper for security and shopping, Brave for everything else (general, news, local, community). Fallback: Brave → Serper → Exa → Tavily → `provider_priority`. `provider_priority` orders the rest of the fallback chain; to use your own order for every query set `provider_order` to `custom` (`web_routing_config_plus(action="set_provider_order", order="custom")`, reason `custom_order`).
+
+Default search priority: Brave → Serper → Exa → Tavily → You.com → Firecrawl → Linkup → Parallel → SerpBase → Querit → SearXNG → Keenable.
 
 SerpBase, Querit, DonSeTch, Octen, and TinyFish are guarded by `auto_allow=false`; Brave and Parallel are in the normal automatic pool. Search and extraction priorities are independent. The `self_hosted` profile derives SearXNG/Keenable automatic pools while preserving explicit configured-provider calls.
 
