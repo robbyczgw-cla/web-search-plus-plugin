@@ -211,7 +211,7 @@ Example:
 
 The first provider is the first one in that list that is configured, enabled and auto-allowed. Fallback order: first provider, then Brave, Serper, Exa, Tavily, then `provider_priority`. `routing_class` still drives authority reranking, so the authority rules for docs, security, vendor releases, regulatory pages and finance IR pages are unchanged.
 
-Your own order: if you set `provider_priority` to anything other than the shipped default (for example `web_routing_config_plus(action="set_provider_priority", providers=["exa","serper","brave"])`), that order is used for every query instead of the intent table (`reason: custom_order`, `provider_order: custom`). A stored 4.x default list does not count as your own order and gets the new default. `action="reset"` returns to the intent table. An explicit `fallback_provider` other than the default `serper` is tried right after the first provider. `confidence_threshold` and adaptive scoring no longer influence the first provider.
+Your own order: `provider_order` is an explicit setting in the routing preferences (`routingPreferences.provider_order` in plugin config, or `web_routing_config_plus(action="set_provider_order", order="custom")`). With `measured` (the default) the intent table above picks the first provider and `provider_priority` orders the rest of the fallback chain after Brave, Serper, Exa and Tavily. With `custom`, `provider_priority` is the order for every query (`reason: custom_order`, `provider_order: custom`), for example `set_provider_priority providers=["exa","serper","brave"]` followed by `set_provider_order order="custom"`. Setting only `provider_priority` does not switch to custom. A stored 4.x default `provider_priority` is replaced by the new default. `action="reset"` returns to `measured`. An explicit `fallback_provider` other than the default `serper` is tried right after the first provider. `confidence_threshold` and adaptive scoring no longer influence the first provider.
 
 Default search priority is Brave, Serper, Exa, Tavily, You.com, Firecrawl, Linkup, Parallel, SerpBase, Querit, SearXNG, then Keenable. Configured Parallel and Brave are in the normal automatic pool; operators can still opt either out with `auto_allow=false`.
 
@@ -272,6 +272,7 @@ Supported actions:
 - `set_auto_routing`
 - `set_auto_allow`
 - `set_provider_priority`
+- `set_provider_order` (`order`: `measured` or `custom`)
 - `set_extract_provider_priority`
 - `set_profile`
 - `set_fallback_provider`

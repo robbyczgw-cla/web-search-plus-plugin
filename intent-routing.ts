@@ -6,7 +6,7 @@
  * classifier. Only the first provider comes from this table; the fallback
  * chain is Brave, Serper, Exa, Tavily and then provider_priority.
  */
-import { isCustomProviderOrder, type ProviderName } from "./routing-config.ts";
+import type { ProviderName } from "./routing-config.ts";
 
 export type QueryIntent = "academic" | "community" | "docs" | "general" | "local" | "news" | "security" | "shopping";
 
@@ -46,9 +46,8 @@ export type IntentRoutingDecision = {
   preferred: ProviderName[];
 };
 
-export function planIntentRouting(routingClass: string, query: string, providerPriority: ProviderName[]): IntentRoutingDecision {
+export function planIntentRouting(routingClass: string, query: string, providerPriority: ProviderName[], customOrder: boolean): IntentRoutingDecision {
   const intent = mapRoutingClassToIntent(routingClass, query);
-  const customOrder = isCustomProviderOrder(providerPriority);
   if (customOrder) {
     return { intent, customOrder, reason: "custom_order", preferred: [...providerPriority] };
   }

@@ -99,7 +99,7 @@ Use `provider="donsetch"` explicitly first. Only after verifying the target host
 
 ## Routing v2
 
-Automatic routing picks the first provider by query intent (Hermes Web Search Plus 5.0 table): Exa for docs and academic queries, Serper for security and shopping, Brave for everything else (general, news, local, community). Fallback: Brave → Serper → Exa → Tavily → `provider_priority`. A `provider_priority` you set yourself replaces the intent table (`reason: custom_order`).
+Automatic routing picks the first provider by query intent (Hermes Web Search Plus 5.0 table): Exa for docs and academic queries, Serper for security and shopping, Brave for everything else (general, news, local, community). Fallback: Brave → Serper → Exa → Tavily → `provider_priority`. `provider_priority` orders the rest of the fallback chain; to use your own order for every query set `provider_order` to `custom` (`web_routing_config_plus(action="set_provider_order", order="custom")`, reason `custom_order`).
 
 Default search priority: Brave → Serper → Exa → Tavily → You.com → Firecrawl → Linkup → Parallel → SerpBase → Querit → SearXNG → Keenable.
 

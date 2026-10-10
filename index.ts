@@ -5,7 +5,7 @@ import net from "net";
 import { buildJsonPluginConfigSchema, definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import pluginManifest from "./openclaw.plugin.json" with { type: "json" };
 import { getRuntimeConfig, type RuntimeConfig } from "./runtime-config.ts";
-import { ALL_PROVIDER_NAMES, applyRoutingProfile, DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, DEFAULT_ROUTING_PREFERENCES, isCustomProviderOrder, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
+import { ALL_PROVIDER_NAMES, applyRoutingProfile, DEFAULT_EXTRACT_PROVIDER_PRIORITY, DEFAULT_PROVIDER_PRIORITY, DEFAULT_ROUTING_PREFERENCES, normalizeProviderOrder, loadRoutingPreferences, normalizeProviderName, resetRoutingPreferences, saveRoutingPreferences, type ProviderName, type RoutingPreferences } from "./routing-config.ts";
 import { EXTRACT_PARAMETERS_SCHEMA, extractPlus, hasAnyExtractProviderCredential, isExtractProviderAvailable, readCachedExtractContent } from "./extract.ts";
 import { deduplicateResultsAcrossProviders, runResearchMode, selectResearchProviders } from "./research.ts";
 import { buildAuthoritySignals, extractDomainConstraints, filterSpamResults, rerankDomainDiversity, rerankResultsForIntent } from "./quality.ts";
@@ -114,6 +114,7 @@ const ROUTING_CONFIG_ACTIONS = [
   "set_default_provider",
   "set_auto_routing",
   "set_provider_priority",
+  "set_provider_order",
   "set_extract_provider_priority",
   "set_fallback_provider",
   "disable_provider",
@@ -133,6 +134,7 @@ const ROUTING_CONFIG_PARAMETERS_SCHEMA = {
     provider: { type: "string", enum: [...SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto"), "none", "null"] },
     enabled: { type: "boolean", description: "Boolean value used by set_auto_routing and set_auto_allow." },
     providers: { type: "array", items: { type: "string", enum: SEARCH_PROVIDER_ENUM.filter((value) => value !== "auto") }, description: "Search or extraction priority order, depending on the selected action. Missing providers are appended in default order." },
+    order: { type: "string", enum: ["measured", "custom"], description: "Used by set_provider_order. measured: query intent picks the first provider (Brave, Exa for docs/academic, Serper for security/shopping) and provider_priority orders the fallback chain. custom: provider_priority is the order for every query." },
     confidence_threshold: { type: "number", minimum: 0, maximum: 1 },
     profile: { type: "string", enum: ["standard", "self_hosted"] },
   },
@@ -397,7 +399,7 @@ function selectAutoProvider(query: string, availableProviders: ProviderName[], r
   const orderedProviders = orderProvidersByPreference(candidates, routingConfig);
   const analyzer = new QueryAnalyzer();
   const analysis = analyzer.analyze(query);
-  const plan = planIntentRouting(analysis.routing_class, query, routingConfig.provider_priority?.length ? routingConfig.provider_priority : DEFAULT_PROVIDER_PRIORITY);
+  const plan = planIntentRouting(analysis.routing_class, query, routingConfig.provider_priority?.length ? routingConfig.provider_priority : DEFAULT_PROVIDER_PRIORITY, routingConfig.provider_order === "custom");
   // First provider: the intent table (or the operator's own order), then the
   // measured chain; never a provider that is disabled, unconfigured or not
   // auto-allowed.
@@ -429,7 +431,7 @@ function selectAutoProvider(query: string, availableProviders: ProviderName[], r
 
 function buildAutoFallbackOrder(primary: ProviderName, availableProviders: ProviderName[], routingConfig: RoutingPreferences): ProviderName[] {
   const priority = routingConfig.provider_priority?.length ? routingConfig.provider_priority : DEFAULT_PROVIDER_PRIORITY;
-  const custom = isCustomProviderOrder(priority);
+  const custom = routingConfig.provider_order === "custom";
   const ordered = orderProvidersByPreference(availableProviders, routingConfig);
   const unique: ProviderName[] = [primary];
   const seen = new Set<ProviderName>(unique);
@@ -1789,6 +1791,11 @@ function executeRoutingConfigAction(pluginConfig: Record<string, any>, params: R
       for (const provider of DEFAULT_PROVIDER_PRIORITY) {
         if (!config.provider_priority.includes(provider)) config.provider_priority.push(provider);
       }
+    }));
+  }
+  if (action === "set_provider_order") {
+    return routingConfigStatus(updateRoutingPreferences(pluginConfig, (config) => {
+      config.provider_order = normalizeProviderOrder(params?.order);
     }));
   }
   if (action === "set_extract_provider_priority") {

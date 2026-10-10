@@ -90,7 +90,7 @@
       },
       "routingPreferences": {
         "type": "object",
-        "description": "Initial routing preferences, including profile=standard or profile=self_hosted. Runtime updates remain in the selected in-memory namespace."
+        "description": "Initial routing preferences, including profile=standard or profile=self_hosted and provider_order=measured|custom (default measured: query intent picks the first provider; custom: provider_priority is the order for every query). Runtime updates remain in the selected in-memory namespace."
       },
       "parallelApiKey": {
         "type": "string",

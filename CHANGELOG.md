@@ -9,8 +9,12 @@ Light sync toward Hermes Web Search Plus 5.0.1. This is not a 5.x engine port: t
 ### Breaking changes
 
 - **Automatic routing picks the first provider by query intent**, using the 5.0 table: Exa for docs and academic queries, Serper for security and shopping, Brave for everything else (general, news, local, community). The plugin's existing query classes are mapped onto the 5.0 intents; Hermes' intent classifier is not ported. Fallback order is first provider, Brave, Serper, Exa, Tavily, then `provider_priority`. Expect noticeably more Brave and fewer You.com, Firecrawl, Tavily and Linkup first picks. `routing_class` is unchanged (authority reranking still uses it); new `routing_intent`, `provider_order` (`measured` or `custom`) and `reason` (`intent_<name>`, `no_signals_matched`, `custom_order`) are added; `routing_policy` is `routing-v3-intent-lite`, `scores` and `adaptive_adjustments` are empty.
-- **The default `provider_priority` is now Brave, Serper, Exa, Tavily, You.com, Firecrawl, Linkup, Parallel, SerpBase, Querit, SearXNG, Keenable** (was You.com, Serper, Exa, Firecrawl, Tavily, Linkup, Brave, ...). A stored list equal to the old default is replaced by the new default. A `provider_priority` that differs from both defaults is treated as your own order and now decides the first provider for every query (before, it only broke ties and ordered fallbacks). `reset` returns to the intent table.
+- **The default `provider_priority` is now Brave, Serper, Exa, Tavily, You.com, Firecrawl, Linkup, Parallel, SerpBase, Querit, SearXNG, Keenable** (was You.com, Serper, Exa, Firecrawl, Tavily, Linkup, Brave, ...). A stored list equal to the old default is replaced by the new default. `provider_priority` keeps its 4.3.1 meaning (it orders the fallback chain after Brave, Serper, Exa and Tavily and breaks ties) unless you opt in to your own order with the new `provider_order: "custom"`.
 - Adaptive score adjustments and `confidence_threshold` no longer influence which provider goes first. Provider statistics are still recorded for `web_search_health_plus`.
+
+### Added
+
+- `provider_order` routing preference, `"measured"` (default) or `"custom"`. `measured`: the 5.0 intent table picks the first provider. `custom`: `provider_priority` is the order for every query (`reason: custom_order`). It is an explicit setting, never inferred from `provider_priority`: set it in `routingPreferences.provider_order` of the plugin config (the plugin's routing preferences are a flat object, so there is no `auto_routing.order` nesting as in Hermes) or with `web_routing_config_plus(action="set_provider_order", order=...)`. `reset` returns to `measured`.
 
 ### Fixed
 

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { register, parseRetryAfter, __resetRuntimeStateForTests } from "../index.ts";
 import { extractPlus, __resetExtractCacheForTests } from "../extract.ts";
-import { __resetRoutingPreferencesForTests, isCustomProviderOrder, validateRoutingPreferences, DEFAULT_PROVIDER_PRIORITY, PRE_5_DEFAULT_PROVIDER_PRIORITY } from "../routing-config.ts";
+import { __resetRoutingPreferencesForTests, validateRoutingPreferences, DEFAULT_PROVIDER_PRIORITY, PRE_5_DEFAULT_PROVIDER_PRIORITY } from "../routing-config.ts";
 import { fitQuery, capQueryLength } from "../query-limits.ts";
 import { mapRoutingClassToIntent } from "../intent-routing.ts";
 
@@ -102,15 +102,54 @@ test("routing: first provider falls back to the next configured one when its key
   assert.equal(seen[0], "serper");
 });
 
-test("routing: a user-configured provider order wins over the intent table", async (t) => {
+test("routing: provider_order=custom makes provider_priority the order for every query", async (t) => {
   const seen: string[] = [];
   mockAllProviders(t, seen);
   const { search, routing } = tools(allKeys);
   await routing({ action: "set_provider_priority", providers: ["tavily", "serper"] });
+  const shown = await routing({ action: "set_provider_order", order: "custom" });
+  assert.equal(shown.config.provider_order, "custom");
   const payload = await search({ query: "fastapi github api docs", no_cache: true });
   assert.equal(seen[0], "tavily");
   assert.equal(payload.routing.reason, "custom_order");
   assert.equal(payload.routing.provider_order, "custom");
+});
+
+test("routing: a custom provider_priority without provider_order keeps intent routing", async (t) => {
+  const seen: string[] = [];
+  mockAllProviders(t, seen);
+  const { search, routing } = tools(allKeys);
+  const shown = await routing({ action: "set_provider_priority", providers: ["tavily", "serper"] });
+  assert.equal(shown.config.provider_order, "measured");
+  const docs = await search({ query: "fastapi github api docs", no_cache: true });
+  assert.equal(seen[0], "exa");
+  assert.equal(docs.routing.reason, "intent_docs");
+  assert.equal(docs.routing.provider_order, "measured");
+  seen.length = 0;
+  await search({ query: "bake sourdough bread tips", no_cache: true });
+  assert.equal(seen[0], "brave");
+});
+
+test("routing: provider_priority still orders the fallback chain after the measured chain", async (t) => {
+  const seen: string[] = [];
+  const fail = () => json({ error: "nope" }, 401);
+  mockAllProviders(t, seen, { brave: fail, serper: fail, exa: fail, tavily: fail });
+  const { search, routing } = tools({ ...allKeys, linkupApiKey: "l", youApiKey: "y" });
+  await routing({ action: "set_provider_priority", providers: ["linkup", "you"] });
+  await search({ query: "bake sourdough bread tips", no_cache: true });
+  assert.deepEqual(seen.slice(0, 4), ["brave", "serper", "exa", "tavily"]);
+  assert.equal(seen[4], "other");
+});
+
+test("routing: provider_order is validated and can be set from routingPreferences", async () => {
+  assert.equal(validateRoutingPreferences({}).provider_order, "measured");
+  assert.equal(validateRoutingPreferences({ provider_order: "CUSTOM" }).provider_order, "custom");
+  assert.throws(() => validateRoutingPreferences({ provider_order: "fastest" }), /provider_order/);
+  const { routing } = tools({ ...allKeys, routingPreferences: { provider_order: "custom", provider_priority: ["tavily"] } });
+  assert.equal((await routing({ action: "show" })).config.provider_order, "custom");
+  assert.equal((await routing({ action: "set_provider_order", order: "measured" })).config.provider_order, "measured");
+  const { routing: bad } = tools(allKeys);
+  assert.match((await bad({ action: "set_provider_order", order: "x" })).error, /provider_order/);
 });
 
 test("routing: auto_allow=false and disabled providers are never first", async (t) => {
@@ -122,10 +161,7 @@ test("routing: auto_allow=false and disabled providers are never first", async (
   assert.equal(seen[0], "serper");
 });
 
-test("routing: a stored 4.x default priority is treated as no chosen order", () => {
-  assert.equal(isCustomProviderOrder(DEFAULT_PROVIDER_PRIORITY), false);
-  assert.equal(isCustomProviderOrder(PRE_5_DEFAULT_PROVIDER_PRIORITY), false);
-  assert.equal(isCustomProviderOrder(["exa", ...DEFAULT_PROVIDER_PRIORITY.filter((p) => p !== "exa")]), true);
+test("routing: a stored 4.x default priority is migrated to the 5.0 default", () => {
   const config = validateRoutingPreferences({ provider_priority: [...PRE_5_DEFAULT_PROVIDER_PRIORITY] });
   assert.deepEqual(config.provider_priority, DEFAULT_PROVIDER_PRIORITY);
 });
