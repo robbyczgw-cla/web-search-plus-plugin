@@ -239,7 +239,7 @@ Then call `web_extract_plus` with a public URL from the search results, for exam
 }
 ```
 
-Successful responses identify `provider: "parallel"`; search also reports `metadata.mode`. The override requires Parallel for that call, so a provider failure is returned rather than hidden by fallback. Use `provider: "parallel"` instead when you want to try Parallel first and permit fallback.
+Successful responses identify `provider: "parallel"`; search also reports `metadata.mode`. The override requires Parallel for that call, so a provider failure is returned rather than hidden by fallback. For `web_extract_plus`, use `provider: "parallel"` instead when you want to try Parallel first and permit fallback. Search with `provider: "parallel"` is also strict.
 
 Configured Parallel normally participates in automatic search and extraction. To reserve it for explicit calls, merge this optional preference into the same plugin `config` object, preserving any other routing preferences:
 
