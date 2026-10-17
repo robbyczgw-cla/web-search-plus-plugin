@@ -48,6 +48,8 @@ Use `spans=true` for deterministic, query-conditioned passages. A query-matching
 
 ## Provider configuration
 
+For Parallel credentials, additive OpenClaw configuration, strict search/extract checks, and the automatic-routing opt-out, see [Parallel setup and explicit calls](README.md#parallel-setup-and-explicit-calls).
+
 Hosted Search credentials/settings:
 
 - `serperApiKey`, `braveApiKey`, `tavilyApiKey`, `exaApiKey`
