@@ -64,10 +64,11 @@ test("search and extraction provider enums reflect the 4.0.3 surface", () => {
   assert.equal(extractProviders.includes("hound"), false);
 });
 
-test("changelog keeps Unreleased empty and records 4.0.3 review fixes", () => {
+test("changelog keeps Unreleased before the current release and records 4.0.3 review fixes", () => {
   const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
+  assert.ok(changelog.includes("## [4.4.0]"));
   const [beforeCurrent] = changelog.split("## [4.4.0]");
-  assert.match(beforeCurrent, /^# Changelog\n\n## \[Unreleased\]\n\n$/);
+  assert.match(beforeCurrent, /^# Changelog\n\n## \[Unreleased\]\n\n/);
   assert.match(changelog, /## \[4.0.3\].*contribution guide/s);
   assert.match(changelog, /donsetchBin rejects non-absolute/);
   assert.match(changelog, /Monid FAILED envelopes are not retried/);

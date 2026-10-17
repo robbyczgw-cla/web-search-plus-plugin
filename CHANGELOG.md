@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Documentation
+
+- Added an OpenClaw Parallel setup walkthrough with explicit search/extract checks, native API credential guidance, and an optional automatic-routing opt-out.
+
 ## [4.4.0] - 2026-10-10
 
 Light sync toward Hermes Web Search Plus 5.0.1. This is not a 5.x engine port: the plugin keeps its in-process TypeScript design and takes over the 5.0 routing table plus the 5.0.1 fixes that apply here. The assessment of every 5.0.1 fix (applies / does not apply) is in the commit message and PR notes.

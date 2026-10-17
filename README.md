@@ -194,6 +194,67 @@ Example:
 }
 ```
 
+### Parallel setup and explicit calls
+
+The built-in Parallel provider uses the [Search API](https://docs.parallel.ai/search/search-quickstart) and [Extract API](https://docs.parallel.ai/extract/extract-quickstart). Create an API key on [Parallel Platform](https://platform.parallel.ai). This native API adapter requires `parallelApiKey`; setting `PARALLEL_API_KEY` in the environment or writing a setup CLI helper file does not configure the running plugin.
+
+Merge the following into your existing OpenClaw configuration, retaining other plugin settings and entries in `tools.alsoAllow`. If you already use `plugins.allow`, also include `web-search-plus-plugin-v2` there.
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "web-search-plus-plugin-v2": {
+        "config": {
+          "parallelApiKey": "REPLACE_WITH_PARALLEL_API_KEY",
+          "parallelMode": "fast"
+        }
+      }
+    }
+  },
+  "tools": {
+    "alsoAllow": ["web_search_plus", "web_extract_plus"]
+  }
+}
+```
+
+Keep the real key out of repositories and shared logs. Reload or restart the OpenClaw host after changing configuration. `parallelMode` controls search only; the plugin defaults to `fast` and also accepts `turbo`, `basic`, and `advanced`. See [Search modes](https://docs.parallel.ai/search/modes) for their cost and latency tradeoffs.
+
+To check Parallel without falling back to another configured provider, ask the agent to call `web_search_plus` with these arguments:
+
+```json
+{
+  "query": "OpenClaw plugin SDK documentation",
+  "routing_override_provider": "parallel",
+  "count": 3
+}
+```
+
+Then call `web_extract_plus` with a public URL from the search results, for example:
+
+```json
+{
+  "urls": ["https://docs.parallel.ai/search/search-quickstart"],
+  "routing_override_provider": "parallel"
+}
+```
+
+Successful responses identify `provider: "parallel"`; search also reports `metadata.mode`. The override requires Parallel for that call, so a provider failure is returned rather than hidden by fallback. Use `provider: "parallel"` instead when you want to try Parallel first and permit fallback.
+
+Configured Parallel normally participates in automatic search and extraction. To reserve it for explicit calls, merge this optional preference into the same plugin `config` object, preserving any other routing preferences:
+
+```json
+{
+  "routingPreferences": {
+    "auto_allow": {
+      "parallel": false
+    }
+  }
+}
+```
+
+This does not disable explicit Parallel calls. Automatic mode still needs another configured, auto-allowed provider. Settings saved in plugin config initialize routing after a host restart; changes made with `web_routing_config_plus` last only until that process restarts.
+
 ## Routing v2
 
 `web_search_plus(provider="auto")` picks the first provider by query intent, using the Hermes Web Search Plus 5.0 first-provider table. The plugin keeps its own query classes and maps them onto the 5.0 intents (it does not port Hermes' intent classifier). Diagnostics expose `routing_class` (plugin class), `routing_intent` (5.0 intent), `provider_order`, `reason`, `language_hint` and `routing_policy`.
