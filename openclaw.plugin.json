@@ -134,6 +134,16 @@
         "maximum": 120,
         "description": "TinyFish request timeout in seconds (default 30)."
       },
+      "specstreamApiKey": {
+        "type": "string",
+        "description": "SpecStream API key for explicit-only source search."
+      },
+      "specstreamTimeoutSeconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120,
+        "description": "SpecStream request timeout in seconds (default 30)."
+      },
       "donsetchBin": {
         "type": "string",
         "description": "Absolute path to a separately installed DonSeTch executable. The plugin does not bundle DonSeTch or invoke a shell."
@@ -347,6 +357,17 @@
     },
     "tinyfishTimeoutSeconds": {
       "label": "TinyFish timeout seconds",
+      "placeholder": "30",
+      "sensitive": false
+    },
+    "specstreamApiKey": {
+      "label": "SpecStream API Key",
+      "placeholder": "...",
+      "description": "Explicit-only BYOK provider.",
+      "sensitive": true
+    },
+    "specstreamTimeoutSeconds": {
+      "label": "SpecStream timeout seconds",
       "placeholder": "30",
       "sensitive": false
     },
