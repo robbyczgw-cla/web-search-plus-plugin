@@ -1,7 +1,7 @@
-export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "you" | "searxng" | "parallel" | "serpbase" | "keenable" | "donsetch" | "octen" | "tinyfish";
+export type ProviderName = "serper" | "brave" | "tavily" | "linkup" | "querit" | "exa" | "firecrawl" | "you" | "searxng" | "parallel" | "serpbase" | "keenable" | "donsetch" | "octen" | "tinyfish" | "specstream";
 export type ExtractProviderName = Extract<ProviderName, "tavily" | "exa" | "linkup" | "parallel" | "firecrawl" | "you" | "keenable" | "serper" | "donsetch">;
 
-export const ALL_PROVIDER_NAMES: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "you", "searxng", "parallel", "serpbase", "keenable", "donsetch", "octen", "tinyfish"];
+export const ALL_PROVIDER_NAMES: ProviderName[] = ["serper", "brave", "tavily", "linkup", "querit", "exa", "firecrawl", "you", "searxng", "parallel", "serpbase", "keenable", "donsetch", "octen", "tinyfish", "specstream"];
 
 // Matches Hermes 5.0's default fallback chain (Brave, Serper, Exa, Tavily, then
 // the rest). Explicit-only provider modules do not enter this default order;
@@ -34,7 +34,7 @@ export const DEFAULT_EXTRACT_PROVIDER_PRIORITY: ExtractProviderName[] = ["tavily
 // Parallel joined the normal automatic pool in WSP 4.0.2. DonSeTch, Octen,
 // TinyFish, SerpBase, and Querit remain explicit-only unless an operator opts
 // them in deliberately through auto_allow.
-export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "donsetch", "octen", "tinyfish"];
+export const GUARDED_AUTO_PROVIDERS: ProviderName[] = ["serpbase", "querit", "donsetch", "octen", "tinyfish", "specstream"];
 
 export type RoutingPreferences = {
   version: 2;

@@ -20,6 +20,7 @@ import { saveExtractBenchmark } from "./extract-benchmark.ts";
 import { ProviderConfigError, ProviderRequestError } from "./provider-http.ts";
 import { searchOcten } from "./octen-provider.ts";
 import { searchTinyFish } from "./tinyfish-provider.ts";
+import { searchSpecStream } from "./specstream-provider.ts";
 import { searchDonsetch } from "./donsetch-provider.ts";
 import { inspectDonsetchReadiness, DonsetchTransportError } from "./donsetch-transport.ts";
 import { validateSourceOnlyAdapterResult, validateSourceOnlyOutboundRequest } from "./source-only-gate.ts";
@@ -467,6 +468,7 @@ function getApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): string
     donsetch: runtimeConfig.donsetchBin,
     octen: runtimeConfig.monidApiKey,
     tinyfish: runtimeConfig.tinyfishApiKey,
+    specstream: runtimeConfig.specstreamApiKey,
   };
   return keyMap[provider];
 }
@@ -489,6 +491,7 @@ function validateApiKey(provider: ProviderName, runtimeConfig: RuntimeConfig): s
     if (provider === "donsetch") throw new ProviderConfigError("Missing DonSeTch executable path (pluginConfig.donsetchBin)");
     if (provider === "octen") throw new ProviderConfigError("Missing Monid API key for Octen (pluginConfig.monidApiKey)");
     if (provider === "tinyfish") throw new ProviderConfigError("Missing TinyFish API key (pluginConfig.tinyfishApiKey)");
+    if (provider === "specstream") throw new ProviderConfigError("Missing SpecStream API key (pluginConfig.specstreamApiKey)");
     throw new ProviderConfigError(`Missing API key for ${provider}`);
   }
   return key;
